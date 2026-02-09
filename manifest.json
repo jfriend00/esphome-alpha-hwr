@@ -1,0 +1,7 @@
+{
+  "name": "alpha-hwr",
+  "version": "0.1.0",
+  "description": "Grundfos ALPHA HWR BLE component for ESPHome",
+  "components": ["alpha_hwr"],
+  "dependencies": ["ble_client"]
+}

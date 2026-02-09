@@ -1,0 +1,119 @@
+esphome:
+  name: hwr-pump-example
+  friendly_name: HWR Pump (Example)
+
+# This file is an example configuration that uses secrets-example.yaml by default.
+# For actual use, copy secrets-example.yaml to secrets.yaml and use !secret references.
+  # 
+  # ALPHA HWR Device Discovery Methods:
+  # 
+  # 1. PRIMARY METHOD (Most Reliable):
+  #    Match by Grundfos Company ID (0xFE5D) in manufacturer service data
+  #    - Byte 2: Product Family (0x34 = ALPHA)
+  #    - Byte 3: Product Type (0x07 = HWR)
+  #    This is guaranteed to be present on all ALPHA HWR pumps
+  # 
+  # 2. SECONDARY METHOD (Fallback):
+  #    Check for GENI service UUID: 0000fdd0-0000-1000-8000-00805f9b34fb
+  #    May not always be advertised depending on firmware version
+  # 
+  # 3. TERTIARY METHOD (User-Friendly):
+  #    Device name pattern: ALPHA_<serial>
+  #    Not guaranteed but most user-friendly
+  #
+  # The alpha_hwr component automatically validates devices using these methods
+  # when connecting via MAC address.
+  #
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha_hwr]
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: "test-wifi"
+  password: "test-password"
+  fast_connect: true
+  ap:
+    ssid: hwr-pump-fallback
+    password: "test-ap12"
+
+captive_portal:
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+ota:
+  - platform: esphome
+    password: "test-ota"
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1.1s
+    window: 1.1s
+  # Optional: Enable automatic discovery of ALPHA HWR pumps
+  # Uncomment the on_ble_advertise section below to log discovered devices
+  # on_ble_advertise:
+  #   - manufacturer_id: FE5D  # Grundfos Company ID
+  #     then:
+  #       - lambda: |-
+  #           // Log discovered ALPHA HWR devices
+  #           if (x.size() >= 5 && x[2] == 0x34 && x[3] == 0x07) {
+  #             ESP_LOGI("ble_discovery", "Found ALPHA HWR pump: %s", 
+  #                      device.address_str().c_str());
+  #           }
+
+ble_client:
+  - mac_address: "00:00:00:00:00:00"
+    id: hwr_pump_client
+
+alpha_hwr:
+  ble_client_id: hwr_pump_client
+  flow:
+    name: "Flow"
+  head:
+    name: "Head"
+  power:
+    name: "Power"
+  rpm:
+    name: "RPM"
+  temp_media:
+    name: "Temperature"
+
+sensor:  
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+
+binary_sensor:
+  - platform: status
+    name: "HWR Pump Status"
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "WiFi SSID"
+    bssid:
+      name: "WiFi BSSID"
+    mac_address:
+      name: "WiFi MAC"
+
+button:
+  - platform: restart
+    name: "Restart HWR Pump"

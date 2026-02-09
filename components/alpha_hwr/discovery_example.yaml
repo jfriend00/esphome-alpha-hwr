@@ -1,0 +1,92 @@
+# ============================================================================
+# ALPHA HWR Discovery Example
+# ============================================================================
+#
+# This example demonstrates how to automatically discover ALPHA HWR pumps
+# without knowing the MAC address in advance. Use this configuration to
+# scan for and identify ALPHA HWR devices on your network.
+#
+# Once you have the MAC address, you can use it in your main configuration
+# (see hwr-pump.yaml for the full example with sensors).
+#
+# ============================================================================
+
+esphome:
+  name: alpha-hwr-discovery
+  friendly_name: ALPHA HWR Discovery
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: DEBUG
+
+api:
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1.1s
+    window: 1.1s
+    active: true
+  
+  # METHOD 1: Discover by Grundfos Company ID (Primary - Most Reliable)
+  on_ble_advertise:
+    - manufacturer_id: FE5D  # Grundfos Company ID
+      then:
+        - lambda: |-
+            // Check if this is an ALPHA HWR pump
+            // Byte 2: Product Family (0x34 = ALPHA)
+            // Byte 3: Product Type (0x07 = HWR)
+            if (x.size() >= 5 && x[2] == 0x34 && x[3] == 0x07) {
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "═══════════════════════════════════════════════");
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "Found ALPHA HWR Pump!");
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "  MAC Address: %s", device.address_str().c_str());
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "  RSSI: %d dBm", device.get_rssi());
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "  Name: %s", device.get_name().c_str());
+              ESP_LOGI("alpha_hwr_discovery", 
+                       "═══════════════════════════════════════════════");
+              
+              // You can also extract additional info from manufacturer data:
+              // Bytes 0-1: Frame header
+              // Bytes 2-3: Product ID (ALPHA HWR = 0x34 0x07)
+              // Byte 4+: Device-specific data
+            }
+  
+  # METHOD 2: Discover by GENI Service UUID (Secondary - Fallback)
+  # Uncomment this section if you want to also discover by service UUID
+  # on_ble_service_data_advertise:
+  #   - service_uuid: "0000fdd0-0000-1000-8000-00805f9b34fb"  # GENI Service
+  #     then:
+  #       - lambda: |-
+  #           ESP_LOGI("alpha_hwr_discovery", 
+  #                    "Found device with GENI service (possible ALPHA HWR):");
+  #           ESP_LOGI("alpha_hwr_discovery", 
+  #                    "  MAC Address: %s", device.address_str().c_str());
+
+# ============================================================================
+# Usage Instructions:
+# ============================================================================
+#
+# 1. Flash this configuration to your ESP32 device
+# 2. Open the logs (esphome logs alpha-hwr-discovery.yaml)
+# 3. Wait for the discovery logs - they will show any ALPHA HWR pumps found
+# 4. Note the MAC address from the logs
+# 5. Update your main configuration (hwr-pump.yaml) with the discovered MAC
+# 6. Flash your main configuration to connect and read sensor data
+#
+# The primary discovery method (Grundfos Company ID FE5D) is the most
+# reliable and will work with all ALPHA HWR pumps regardless of firmware.
+#
+# ============================================================================
