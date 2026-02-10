@@ -112,86 +112,39 @@ void AlphaHwrComponent::dump_services() {
   ESP_LOGI(TAG, "========================================");
 }
 
-void AlphaHwrComponent::setup() {
-  ESP_LOGI(TAG, "Alpha HWR Component setup");
-  if (parent_) {
-    ESP_LOGI(TAG, "Parent BLE client is available");
-  } else {
-    ESP_LOGW(TAG, "Parent BLE client is NULL!");
+void AlphaHwrComponent::init_security() {
+  if (!pairing_enabled_) {
+    ESP_LOGI(TAG, "BLE pairing disabled - using passive telemetry only");
+    return;
   }
   
-  // ===========================================================================
-  // EXPERIMENT 4: Configure BLE Security/Pairing
-  // ===========================================================================
-  // HYPOTHESIS: The Grundfos pump firmware requires BLE encryption/bonding
-  // before allowing service discovery. Python/Bleak handles this transparently
-  // through the OS Bluetooth stack, but ESP32/ESPHome may need explicit config.
-  // ===========================================================================
-  
-  ESP_LOGI(TAG, "==================================================");
-  ESP_LOGI(TAG, "EXPERIMENT 4: Configuring BLE Security");
-  ESP_LOGI(TAG, "The pump may require encryption/bonding before discovery");
-  ESP_LOGI(TAG, "==================================================");
+  ESP_LOGI(TAG, "Configuring BLE Security for Pairing/Bonding...");
   
   // Set IO capabilities to "No Input No Output" (Just Works pairing)
-  // This is the most permissive mode and doesn't require user interaction
   esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;
-  esp_err_t ret = esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set IO capability: No Input No Output (Just Works)");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set IO capability: 0x%x", ret);
-  }
+  esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
   
   // Set authentication requirements: Bonding + Secure Connections
-  // ESP_LE_AUTH_REQ_SC_BOND = Secure Connections with bonding
-  // This ensures encrypted connection with key storage
   uint8_t auth_req = ESP_LE_AUTH_REQ_SC_BOND;
-  ret = esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set auth requirement: Secure Connections + Bonding");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set auth requirement: 0x%x", ret);
-  }
+  esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
   
-  // Set maximum encryption key size (16 bytes)
+  // Set maximum/minimum encryption key size (16 bytes)
   uint8_t key_size = 16;
-  ret = esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set max encryption key size: 16 bytes");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set key size: 0x%x", ret);
-  }
+  esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_MIN_KEY_SIZE, &key_size, sizeof(uint8_t));
   
-  // Set minimum encryption key size (16 bytes - most secure)
-  ret = esp_ble_gap_set_security_param(ESP_BLE_SM_MIN_KEY_SIZE, &key_size, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set min encryption key size: 16 bytes");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set min key size: 0x%x", ret);
-  }
-  
-  // Enable all key distribution for both initiator and responder
-  // This ensures we can receive and generate all necessary keys for secure pairing
+  // Enable key distribution for encryption and identity
   uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
   uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-  
-  ret = esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set initiator key distribution");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set initiator keys: 0x%x", ret);
-  }
-  
-  ret = esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
-  if (ret == ESP_OK) {
-    ESP_LOGI(TAG, "✓ Set responder key distribution");
-  } else {
-    ESP_LOGW(TAG, "✗ Failed to set responder keys: 0x%x", ret);
-  }
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
   
   ESP_LOGI(TAG, "BLE security configuration complete");
-  ESP_LOGI(TAG, "==================================================");
+}
+
+void AlphaHwrComponent::setup() {
+  ESP_LOGI(TAG, "Alpha HWR Component setup");
+  init_security();
 }
 
 void AlphaHwrComponent::loop() {
@@ -480,35 +433,123 @@ void AlphaHwrComponent::send_auth_packet(const uint8_t *data, size_t len) {
 
 void AlphaHwrComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
   switch (event) {
-    case ESP_GAP_BLE_AUTH_CMPL_EVT:
-      if (param->ble_security.auth_cmpl.success) {
-        ESP_LOGI(TAG, "✓ BLE authentication complete!");
-        ESP_LOGI(TAG, "  Device address: %02x:%02x:%02x:%02x:%02x:%02x",
-                 param->ble_security.auth_cmpl.bd_addr[0],
-                 param->ble_security.auth_cmpl.bd_addr[1],
-                 param->ble_security.auth_cmpl.bd_addr[2],
-                 param->ble_security.auth_cmpl.bd_addr[3],
-                 param->ble_security.auth_cmpl.bd_addr[4],
-                 param->ble_security.auth_cmpl.bd_addr[5]);
+    case ESP_GAP_BLE_AUTH_CMPL_EVT: {
+      auto &auth_cmpl = param->ble_security.auth_cmpl;
+      char addr_str[18];
+      sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+              auth_cmpl.bd_addr[0], auth_cmpl.bd_addr[1], auth_cmpl.bd_addr[2],
+              auth_cmpl.bd_addr[3], auth_cmpl.bd_addr[4], auth_cmpl.bd_addr[5]);
+      
+      if (auth_cmpl.success) {
+        ESP_LOGI(TAG, "✓ BLE authentication complete (Pairing/Bonding successful)!");
+        ESP_LOGI(TAG, "  Device: %s", addr_str);
+        ESP_LOGI(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
+        ESP_LOGD(TAG, "  Key present: 0x%02x", auth_cmpl.key_present);
+        ESP_LOGD(TAG, "  Key type: 0x%02x", auth_cmpl.key_type);
+        if (pairing_status_sensor_ != nullptr) {
+          pairing_status_sensor_->publish_state(true);
+        }
       } else {
+        // Decode failure reason for better debugging
+        const char *fail_reason = "Unknown";
+        switch (auth_cmpl.fail_reason) {
+          case ESP_AUTH_SMP_PASSKEY_FAIL: fail_reason = "Passkey Entry Failed"; break;
+          case ESP_AUTH_SMP_OOB_FAIL: fail_reason = "OOB Data Not Available"; break;
+          case ESP_AUTH_SMP_PAIR_AUTH_FAIL: fail_reason = "Authentication Requirements Not Met"; break;
+          case ESP_AUTH_SMP_CONFIRM_VALUE_FAIL: fail_reason = "Confirm Value Mismatch"; break;
+          case ESP_AUTH_SMP_PAIR_NOT_SUPPORT: fail_reason = "Pairing Not Supported"; break;
+          case ESP_AUTH_SMP_ENC_KEY_SIZE: fail_reason = "Encryption Key Size Too Small"; break;
+          case ESP_AUTH_SMP_INVALID_CMD: fail_reason = "Invalid SMP Command"; break;
+          case ESP_AUTH_SMP_UNKNOWN_ERR: fail_reason = "Unspecified Error"; break;
+          case ESP_AUTH_SMP_REPEATED_ATTEMPT: fail_reason = "Repeated Pairing Attempts"; break;
+          case ESP_AUTH_SMP_INVALID_PARAMETERS: fail_reason = "Invalid Parameters"; break;
+          case ESP_AUTH_SMP_DHKEY_CHK_FAIL: fail_reason = "DHKey Check Failed"; break;
+          case ESP_AUTH_SMP_NUM_COMP_FAIL: fail_reason = "Numeric Comparison Failed"; break;
+          case ESP_AUTH_SMP_BR_PARING_IN_PROGR: fail_reason = "BR/EDR Pairing In Progress"; break;
+          case ESP_AUTH_SMP_XTRANS_DERIVE_NOT_ALLOW: fail_reason = "Cross-Transport Key Derivation Not Allowed"; break;
+          case ESP_AUTH_SMP_INTERNAL_ERR: fail_reason = "Internal Error"; break;
+          case ESP_AUTH_SMP_UNKNOWN_IO: fail_reason = "Unknown IO Capability"; break;
+          case ESP_AUTH_SMP_INIT_FAIL: fail_reason = "Pairing Initiation Failed"; break;
+          case ESP_AUTH_SMP_CONFIRM_FAIL: fail_reason = "Confirmation Failed"; break;
+          case ESP_AUTH_SMP_BUSY: fail_reason = "Security Manager Busy"; break;
+          case ESP_AUTH_SMP_ENC_FAIL: fail_reason = "Encryption Start Failed"; break;
+          case ESP_AUTH_SMP_STARTED: fail_reason = "Pairing Already Started"; break;
+          case ESP_AUTH_SMP_RSP_TIMEOUT: fail_reason = "Response Timeout"; break;
+          case ESP_AUTH_SMP_DIV_NOT_AVAIL: fail_reason = "Diversifier Not Available"; break;
+          case ESP_AUTH_SMP_UNSPEC_ERR: fail_reason = "Unspecified Failure"; break;
+          case ESP_AUTH_SMP_CONN_TOUT: fail_reason = "Connection Timeout"; break;
+          default: fail_reason = "Other"; break;
+        }
         ESP_LOGW(TAG, "✗ BLE authentication failed!");
-        ESP_LOGW(TAG, "  Failure reason: 0x%x", param->ble_security.auth_cmpl.fail_reason);
+        ESP_LOGW(TAG, "  Device: %s", addr_str);
+        ESP_LOGW(TAG, "  Failure reason: %s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
+        ESP_LOGW(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
+        if (pairing_status_sensor_ != nullptr) {
+          pairing_status_sensor_->publish_state(false);
+        }
       }
       break;
+    }
       
-    case ESP_GAP_BLE_SEC_REQ_EVT:
-      ESP_LOGI(TAG, "BLE security request from device - accepting");
+    case ESP_GAP_BLE_SEC_REQ_EVT: {
+      char addr_str[18];
+      sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+              param->ble_security.ble_req.bd_addr[0], param->ble_security.ble_req.bd_addr[1],
+              param->ble_security.ble_req.bd_addr[2], param->ble_security.ble_req.bd_addr[3],
+              param->ble_security.ble_req.bd_addr[4], param->ble_security.ble_req.bd_addr[5]);
+      ESP_LOGI(TAG, "BLE security request from device %s - accepting", addr_str);
       // Initiate pairing response
       esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
       break;
+    }
       
-    case ESP_GAP_BLE_PASSKEY_NOTIF_EVT:
-      ESP_LOGI(TAG, "BLE passkey notification: %d", param->ble_security.key_notif.passkey);
+    case ESP_GAP_BLE_PASSKEY_NOTIF_EVT: {
+      char addr_str[18];
+      sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+              param->ble_security.key_notif.bd_addr[0], param->ble_security.key_notif.bd_addr[1],
+              param->ble_security.key_notif.bd_addr[2], param->ble_security.key_notif.bd_addr[3],
+              param->ble_security.key_notif.bd_addr[4], param->ble_security.key_notif.bd_addr[5]);
+      ESP_LOGI(TAG, "BLE passkey notification from %s: %06d", addr_str, param->ble_security.key_notif.passkey);
+      ESP_LOGI(TAG, "  Note: Using 'Just Works' pairing - passkey is for display only");
       break;
+    }
       
     case ESP_GAP_BLE_KEY_EVT:
-      ESP_LOGI(TAG, "BLE key event (key exchange)");
+      ESP_LOGD(TAG, "BLE key event (key exchange in progress)");
+      ESP_LOGD(TAG, "  Key type: 0x%02x", param->ble_security.ble_key.key_type);
       break;
+      
+    case ESP_GAP_BLE_REMOVE_BOND_DEV_COMPLETE_EVT:
+      if (param->remove_bond_dev_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+        ESP_LOGI(TAG, "BLE bond removed successfully");
+      } else {
+        ESP_LOGW(TAG, "BLE bond removal failed: status=%d", param->remove_bond_dev_cmpl.status);
+      }
+      break;
+      
+    case ESP_GAP_BLE_NC_REQ_EVT: {
+      // Numeric Comparison request (for Numeric Comparison pairing method)
+      char addr_str[18];
+      sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+              param->ble_security.ble_req.bd_addr[0], param->ble_security.ble_req.bd_addr[1],
+              param->ble_security.ble_req.bd_addr[2], param->ble_security.ble_req.bd_addr[3],
+              param->ble_security.ble_req.bd_addr[4], param->ble_security.ble_req.bd_addr[5]);
+      ESP_LOGI(TAG, "BLE numeric comparison request from %s", addr_str);
+      ESP_LOGI(TAG, "  Auto-accepting (Just Works mode)");
+      esp_ble_confirm_reply(param->ble_security.ble_req.bd_addr, true);
+      break;
+    }
+      
+    case ESP_GAP_BLE_PASSKEY_REQ_EVT: {
+      // Passkey Entry request - should not happen with Just Works
+      char addr_str[18];
+      sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+              param->ble_security.ble_req.bd_addr[0], param->ble_security.ble_req.bd_addr[1],
+              param->ble_security.ble_req.bd_addr[2], param->ble_security.ble_req.bd_addr[3],
+              param->ble_security.ble_req.bd_addr[4], param->ble_security.ble_req.bd_addr[5]);
+      ESP_LOGW(TAG, "BLE passkey entry request from %s - unexpected in Just Works mode!", addr_str);
+      break;
+    }
       
     default:
       // Don't log all GAP events to reduce noise
@@ -519,76 +560,43 @@ void AlphaHwrComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_
 void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                                              esp_ble_gattc_cb_param_t *param) {
   switch (event) {
-    case ESP_GATTC_OPEN_EVT:
-      ESP_LOGI(TAG, "BLE connection opened");
+    case ESP_GATTC_OPEN_EVT: {
+      ESP_LOGI(TAG, "BLE connection opened. Pairing enabled: %s", pairing_enabled_ ? "YES" : "NO");
       
-      // Reset discovery and authentication state on new connection
+      // Reset discovery and authentication state
       geni_service_found_ = false;
       discovery_retry_count_ = 0;
-      auth_started_ = false;  // Reset auth flag for new connection
+      auth_started_ = false;
       
-      // EXPERIMENT 4: Request BLE encryption/pairing BEFORE service discovery
-      // This is the key difference - Python/Bleak likely does this transparently
-      {
-        ESP_LOGI(TAG, "==================================================");
-        ESP_LOGI(TAG, "EXPERIMENT 4: Requesting BLE Encryption/Pairing");
-        ESP_LOGI(TAG, "Pump may require encryption BEFORE service discovery");
-        ESP_LOGI(TAG, "==================================================");
-        
-        // Set encryption requirement
-        esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_BOND;
-        esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;
-        uint8_t key_size = 16;
-        uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-        uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-        uint32_t passkey = 0;
-        uint8_t auth_option = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_DISABLE;
-        uint8_t oob_support = ESP_BLE_OOB_DISABLE;
-        
-        // Request encryption on this connection
+      // Only request encryption/pairing if explicitly enabled
+      if (pairing_enabled_) {
+        ESP_LOGI(TAG, "Requesting encryption/pairing...");
+        // Request encryption on this connection (triggers pairing if not already bonded)
         esp_err_t ret = esp_ble_set_encryption(parent_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
-        if (ret == ESP_OK) {
-          ESP_LOGI(TAG, "✓ Encryption request sent to pump");
-        } else {
+        if (ret != ESP_OK) {
           ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
         }
+      } else {
+        ESP_LOGI(TAG, "Skipping encryption request - pairing disabled");
       }
       
-      // EXPERIMENT 3: Set BLE connection parameters that the pump expects
-      // The pump may be rejecting default ESP32 connection parameters
+      // Update connection parameters for better stability
       {
-        ESP_LOGI(TAG, "Setting BLE connection parameters...");
-        
         esp_ble_conn_update_params_t conn_params;
         memcpy(conn_params.bda, parent_->get_remote_bda(), 6);
-        
-        // Try more relaxed connection parameters (similar to what BLE Central typically negotiates)
-        // These values are in units of 1.25ms for intervals
-        conn_params.min_int = 24;      // 24 * 1.25ms = 30ms (was 6 = 7.5ms)
-        conn_params.max_int = 40;      // 40 * 1.25ms = 50ms (was 12 = 15ms) 
-        conn_params.latency = 0;       // No latency
-        conn_params.timeout = 400;     // 400 * 10ms = 4000ms = 4s supervision timeout
-        
-        ESP_LOGI(TAG, "  Interval: %.1f-%.1fms, Timeout: %dms", 
-                 conn_params.min_int * 1.25, conn_params.max_int * 1.25, conn_params.timeout * 10);
-        
-        esp_err_t ret = esp_ble_gap_update_conn_params(&conn_params);
-        if (ret == ESP_OK) {
-          ESP_LOGI(TAG, "✓ Connection parameter update requested");
-        } else {
-          ESP_LOGW(TAG, "✗ Failed to request connection parameter update: 0x%x", ret);
-        }
+        conn_params.min_int = 24;      // 30ms
+        conn_params.max_int = 40;      // 50ms 
+        conn_params.latency = 0;
+        conn_params.timeout = 400;     // 4s
+        esp_ble_gap_update_conn_params(&conn_params);
       }
       
-      // CRITICAL FIX: Add delay after connection before starting service discovery
-      // Wait for encryption to complete if requested
-      ESP_LOGI(TAG, "Waiting %dms for encryption/params before service discovery...", POST_CONNECT_DELAY_MS);
+      // Wait for encryption/pairing to stabilize before discovery
       this->set_timeout(POST_CONNECT_DELAY_MS, [this]() {
-        ESP_LOGI(TAG, "Starting initial service discovery...");
-        // Service discovery is automatically triggered by BLE client
-        // We just need to wait for ESP_GATTC_SEARCH_CMPL_EVT
+        ESP_LOGI(TAG, "Starting service discovery...");
       });
       break;
+    }
       
     case ESP_GATTC_SEARCH_RES_EVT: {
       // Log ALL services as they are discovered
@@ -634,29 +642,19 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
           
           // Check for GENI characteristic
           auto *chr = parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-          if (chr) {
-            ESP_LOGI(TAG, "✓ GENI characteristic found!");
-            ESP_LOGI(TAG, "  UUID: %s", chr->uuid.to_string().c_str());
-            ESP_LOGI(TAG, "  Handle: 0x%04x, Properties: 0x%02x", chr->handle, chr->properties);
-            
-            // EXPERIMENT 2: Enable notifications and WAIT before doing anything else
-            ESP_LOGI(TAG, "==================================================");
-            ESP_LOGI(TAG, "EXPERIMENT 2: Enable notifications and WAIT");
-            ESP_LOGI(TAG, "Mimicking Python: enable notify, wait 2s, then auth");
-            ESP_LOGI(TAG, "==================================================");
-            
-            // Step 1: Enable notifications (subscribe to characteristic)
-            ESP_LOGI(TAG, "Step 1: Enabling notifications on GENI characteristic...");
-            subscribe_to_notifications();
-            
-            // Step 2: Wait 2 seconds for pump to stabilize after notification enable
-            // Python does this implicitly - we need to do it explicitly
-            ESP_LOGI(TAG, "Step 2: Waiting 2000ms for pump to stabilize after notification enable...");
-            this->set_timeout(2000, [this]() {
-              ESP_LOGI(TAG, "Step 3: Pump should be stable now. Sending authentication...");
-              authenticate();
-            });
-          } else {
+                    if (chr) {
+                      ESP_LOGI(TAG, "✓ GENI characteristic found. Enabling notifications...");
+                      
+                      // Step 1: Enable notifications (subscribe)
+                      subscribe_to_notifications();
+                      
+                      // Step 2: Wait for pump to stabilize, then authenticate
+                      this->set_timeout(2000, [this]() {
+                        ESP_LOGI(TAG, "Pump stabilized. Starting authentication...");
+                        authenticate();
+                      });
+                    }
+           else {
             ESP_LOGW(TAG, "✗ GENI characteristic NOT found!");
             ESP_LOGW(TAG, "Expected UUID: %s", GENI_CHAR_UUID.to_string().c_str());
           }
@@ -701,18 +699,6 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
       auto *reg_notify = &param->reg_for_notify;
       if (reg_notify->status == ESP_GATT_OK) {
         ESP_LOGI(TAG, "✓ Notification registration confirmed (handle 0x%04x)", reg_notify->handle);
-        
-        // EXPERIMENT: Disable authentication completely to see if pump sends telemetry anyway
-        // Some devices send basic telemetry without auth, auth only needed for control operations
-        if (!auth_started_) {
-          auth_started_ = true;
-          ESP_LOGI(TAG, "==================================================");
-          ESP_LOGI(TAG, "EXPERIMENT: Authentication DISABLED");
-          ESP_LOGI(TAG, "Waiting for telemetry notifications from pump...");
-          ESP_LOGI(TAG, "If we receive telemetry, auth is only needed for control");
-          ESP_LOGI(TAG, "==================================================");
-          authenticated_ = false;  // Mark as not authenticated
-        }
       } else {
         ESP_LOGW(TAG, "✗ Notification registration failed: status=%d", reg_notify->status);
       }
@@ -824,20 +810,26 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
   ESP_LOGD(TAG, "  Class 10 packet, OpSpec: 0x%02X", opspec);
 
   // Register READ responses (OpSpec 0x30 = motor, 0x2B = flow, 0x14 = temp)
-  if (opspec == 0x30 && len >= 37) {
+  if (opspec == 0x30 && len >= 41) {
     // Motor state response: floats start at offset 13
-    // [0]=AC voltage, [1]=DC voltage, [2]=current, [3]=power, [5]=RPM
+    // [0]=AC voltage, [1]=DC voltage, [2]=current, [3]=power, [5]=RPM, [6]=converter temp
     ESP_LOGI(TAG, "  Motor state response (OpSpec 0x30)");
     
-    float power = read_float_be(data, 25);  // Float[3] at offset 13 + 12 = 25
-    float rpm = read_float_be(data, 33);    // Float[5] at offset 13 + 20 = 33
+    float voltage = read_float_be(data, 13); // Float[0] at offset 13
+    float current = read_float_be(data, 21); // Float[2] at offset 21
+    float power = read_float_be(data, 25);   // Float[3] at offset 25
+    float rpm = read_float_be(data, 33);     // Float[5] at offset 33
+    float converter_temp = read_float_be(data, 37); // Float[6] at offset 37
     
     if (power >= 0 && power <= 1000 && rpm >= 0 && rpm <= 10000) {
-      ESP_LOGI(TAG, "✓ Motor: Power=%.1f W, RPM=%.0f", power, rpm);
+      ESP_LOGI(TAG, "✓ Motor: %.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", voltage, current, power, rpm, converter_temp);
+      if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage);
+      if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
       if (power_sensor_ != nullptr) power_sensor_->publish_state(power);
       if (rpm_sensor_ != nullptr) rpm_sensor_->publish_state(rpm);
-    } else {
-      ESP_LOGW(TAG, "  Invalid motor values (power=%.1f, rpm=%.0f)", power, rpm);
+      if (converter_temp >= -20 && converter_temp <= 120 && temp_converter_sensor_ != nullptr) {
+        temp_converter_sensor_->publish_state(converter_temp);
+      }
     }
   }
   else if (opspec == 0x2B && len >= 45) {
@@ -856,17 +848,25 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
       ESP_LOGW(TAG, "  Invalid flow/head values (flow=%.3f, head=%.2f)", flow, head);
     }
   }
-  else if (opspec == 0x14 && len >= 21) {
-    // Temperature response: single float at offset 13
+  else if (opspec == 0x14 && len >= 25) {
+    // Temperature response: floats start at offset 13
+    // [0]=media temp, [1]=PCB temp, [2]=control box temp
     ESP_LOGI(TAG, "  Temperature response (OpSpec 0x14)");
     
-    float temp = read_float_be(data, 13);
+    float media_temp = read_float_be(data, 13);     // Float[0] at offset 13
+    float pcb_temp = read_float_be(data, 17);       // Float[1] at offset 17
+    float control_box_temp = read_float_be(data, 21); // Float[2] at offset 21
     
-    if (temp >= -50 && temp <= 150) {
-      ESP_LOGI(TAG, "✓ Temp: %.1f°C", temp);
-      if (temp_media_sensor_ != nullptr) temp_media_sensor_->publish_state(temp);
-    } else {
-      ESP_LOGW(TAG, "  Invalid temperature value (temp=%.1f)", temp);
+    ESP_LOGI(TAG, "✓ Temps: Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C", media_temp, pcb_temp, control_box_temp);
+    
+    if (media_temp >= -20 && media_temp <= 100 && temp_media_sensor_ != nullptr) {
+      temp_media_sensor_->publish_state(media_temp);
+    }
+    if (pcb_temp >= -20 && pcb_temp <= 150 && temp_pcb_sensor_ != nullptr) {
+      temp_pcb_sensor_->publish_state(pcb_temp);
+    }
+    if (control_box_temp >= -20 && control_box_temp <= 150 && temp_control_box_sensor_ != nullptr) {
+      temp_control_box_sensor_->publish_state(control_box_temp);
     }
   }
   // OpSpec 0x0E = Passive Notifications (streaming telemetry - legacy format)
@@ -876,13 +876,21 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     
     ESP_LOGD(TAG, "  Passive telemetry notification: Sub=0x%04X, Obj=0x%04X", sub_id, obj_id);
     
-    // Standard Motor State (Sub 0x0045, Obj 0x0057 = Decimal Sub 69, Obj 87)
-    if (sub_id == 0x0045 && obj_id == 0x0057 && len >= 34) {
-      float power = read_float_be(data, 26);
-      float rpm = read_float_be(data, 30);
-      ESP_LOGI(TAG, "✓ Motor (passive): Power=%.1f W, RPM=%.0f", power, rpm);
+    // Standard Motor State (Sub 0x0045, Obj 0x0057)
+    if (sub_id == 0x0045 && obj_id == 0x0057 && len >= 38) {
+      float voltage = read_float_be(data, 10);     // Offset 10 (Float[0])
+      float current = read_float_be(data, 18);     // Offset 18 (Float[2])
+      float power = read_float_be(data, 26);       // Offset 26 (Float[4])
+      float rpm = read_float_be(data, 30);         // Offset 30 (Float[5])
+      float converter_temp = read_float_be(data, 34); // Offset 34 (Float[6])
+      ESP_LOGI(TAG, "✓ Motor (passive): %.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", voltage, current, power, rpm, converter_temp);
+      if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage);
+      if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
       if (power_sensor_ != nullptr) power_sensor_->publish_state(power);
       if (rpm_sensor_ != nullptr) rpm_sensor_->publish_state(rpm);
+      if (converter_temp >= -20 && converter_temp <= 120 && temp_converter_sensor_ != nullptr) {
+        temp_converter_sensor_->publish_state(converter_temp);
+      }
     }
     // Standard Flow/Head (Sub 0x0122, Obj 0x005D = Decimal Sub 290, Obj 93)
     else if (sub_id == 0x0122 && obj_id == 0x005D && len >= 18) {
@@ -893,10 +901,20 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
       if (head_sensor_ != nullptr) head_sensor_->publish_state(head);
     }
     // Standard Temperature (Sub 0x012C, Obj 0x005D = Decimal Sub 300, Obj 93)
-    else if (sub_id == 0x012C && obj_id == 0x005D && len >= 14) {
-      float temp = read_float_be(data, 10);
-      ESP_LOGI(TAG, "✓ Temp (passive): %.1f°C", temp);
-      if (temp_media_sensor_ != nullptr) temp_media_sensor_->publish_state(temp);
+    else if (sub_id == 0x012C && obj_id == 0x005D && len >= 22) {
+      float media_temp = read_float_be(data, 10);      // Offset 10 (Float[0])
+      float pcb_temp = read_float_be(data, 14);        // Offset 14 (Float[1])
+      float control_box_temp = read_float_be(data, 18); // Offset 18 (Float[2])
+      ESP_LOGI(TAG, "✓ Temps (passive): Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C", media_temp, pcb_temp, control_box_temp);
+      if (media_temp >= -20 && media_temp <= 100 && temp_media_sensor_ != nullptr) {
+        temp_media_sensor_->publish_state(media_temp);
+      }
+      if (pcb_temp >= -20 && pcb_temp <= 150 && temp_pcb_sensor_ != nullptr) {
+        temp_pcb_sensor_->publish_state(pcb_temp);
+      }
+      if (control_box_temp >= -20 && control_box_temp <= 150 && temp_control_box_sensor_ != nullptr) {
+        temp_control_box_sensor_->publish_state(control_box_temp);
+      }
     }
     else {
       ESP_LOGD(TAG, "  Unknown passive notification (Sub=0x%04X, Obj=0x%04X)", sub_id, obj_id);

@@ -3,6 +3,7 @@
 #include "esphome/core/component.h"
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/core/log.h"
 #include <esp_gattc_api.h>
 #include <esp_gap_ble_api.h>
@@ -114,6 +115,13 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   void set_power_sensor(sensor::Sensor *sensor) { power_sensor_ = sensor; }
   void set_rpm_sensor(sensor::Sensor *sensor) { rpm_sensor_ = sensor; }
   void set_temp_media_sensor(sensor::Sensor *sensor) { temp_media_sensor_ = sensor; }
+  void set_temp_converter_sensor(sensor::Sensor *sensor) { temp_converter_sensor_ = sensor; }
+  void set_temp_pcb_sensor(sensor::Sensor *sensor) { temp_pcb_sensor_ = sensor; }
+  void set_temp_control_box_sensor(sensor::Sensor *sensor) { temp_control_box_sensor_ = sensor; }
+  void set_voltage_sensor(sensor::Sensor *sensor) { voltage_sensor_ = sensor; }
+  void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
+  void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
+  void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
   void setup() override;
   void loop() override;
@@ -136,12 +144,21 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   sensor::Sensor *power_sensor_{nullptr};
   sensor::Sensor *rpm_sensor_{nullptr};
   sensor::Sensor *temp_media_sensor_{nullptr};
+  sensor::Sensor *temp_converter_sensor_{nullptr};
+  sensor::Sensor *temp_pcb_sensor_{nullptr};
+  sensor::Sensor *temp_control_box_sensor_{nullptr};
+  sensor::Sensor *voltage_sensor_{nullptr};
+  sensor::Sensor *current_sensor_{nullptr};
+  binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+  
+  bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding
   
   float read_float_be(uint8_t *data, size_t offset);
   void decode_packet(uint8_t *data, size_t len);
   void authenticate();
   void send_auth_packet(const uint8_t *data, size_t len);
   void subscribe_to_notifications();
+  void init_security();
   
   // Telemetry polling functions
   void poll_telemetry();

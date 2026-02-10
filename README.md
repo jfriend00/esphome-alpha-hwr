@@ -9,9 +9,73 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. This com
   - Head pressure (m)
   - Power consumption (W)
   - Motor RPM
-  - Media temperature (°C)
+  - Water/media temperature (°C)
+  - **Grid Voltage (V)** (Enhanced)
+  - **Motor Current (A)** (Enhanced)
+  - **Converter Temperature (°C)** (Enhanced)
+  - **PCB Temperature (°C)** (Enhanced)
+  - **Control Box Temperature (°C)** (Enhanced)
 - **Automatic Connection**: Manages the BLE handshake and authentication.
+- **Secure Pairing**: Supports BLE Bonding for encrypted communication.
 - **Reliable Discovery**: Identifies pumps via Grundfos Company ID.
+
+---
+
+## Bluetooth Pairing
+
+The Grundfos ALPHA HWR pump supports **two modes of operation**:
+
+### Basic Mode (Default - No Pairing Required)
+The pump streams basic telemetry via **passive BLE notifications** without requiring pairing:
+- Flow rate, head pressure, power, RPM, water temperature
+
+This mode works out-of-the-box with the `hwr-pump-example.yaml` configuration.
+
+### Enhanced Mode (Requires Pairing)
+By enabling BLE bonding (pairing), you gain access to **additional telemetry**:
+- Grid voltage, motor current, converter/PCB/control box temperatures
+
+**To enable pairing**, add `enable_pairing: true` to your configuration:
+
+```yaml
+alpha_hwr:
+  ble_client_id: hwr_pump_client
+  enable_pairing: true  # Enable BLE pairing for enhanced telemetry
+  voltage:
+    name: "Grid Voltage"
+  current:
+    name: "Motor Current"
+  # ... other enhanced sensors
+```
+
+### Pairing Procedure
+1.  **Configure ESP32**: Use the `hwr-pairing-example.yaml` configuration with your pump's MAC address and `enable_pairing: true`.
+2.  **Enter Pairing Mode**: On the pump, press and hold the **Bluetooth button** until the Bluetooth icon on the display starts flashing.
+3.  **ESP32 Connection**: Ensure the ESP32 is powered on and within range. It will automatically detect the pump and attempt to bond.
+4.  **Verify**: Check the ESPHome logs. You should see `✓ BLE authentication complete (Pairing/Bonding successful)!`.
+5.  **Status Sensor**: If you configured the `pairing_status` binary sensor, it will show as `Connected` in Home Assistant once bonding is established.
+
+> **Note**: Once paired, the ESP32 stores the encryption keys. You don't need to put the pump in pairing mode again unless you factory reset the ESP32 or the pump.
+
+---
+
+## Enhanced Telemetry
+By default, the pump streams basic telemetry. By establishing a secure paired connection, this component can access additional telemetry data:
+
+### Motor State Object (High Frequency - ~10 Hz)
+- **Grid Voltage (V)** - AC input voltage
+- **Motor Current (A)** - Current draw
+- **Converter Temperature (°C)** - Motor electronics temperature
+
+### Temperature Object (Environmental Data - ~1 Hz)
+- **Water/Media Temperature (°C)** - Fluid being pumped
+- **PCB Temperature (°C)** - Circuit board temperature
+- **Control Box Temperature (°C)** - Enclosure ambient temperature
+
+These enhanced metrics enable:
+- **Electrical Health Monitoring**: Track voltage stability and current draw
+- **Thermal Management**: Monitor all system temperatures
+- **Bi-directional Communication**: Enables future features like remote start/stop and schedule management
 
 ## Hardware Requirements
 
@@ -163,6 +227,40 @@ To add more sensors:
 ### No Telemetry
 - **Wait**: It can take 5-10 seconds after connection for data to flow.
 - **Activity**: Some pumps only report data when the motor is running.
+
+### Pairing/Bonding Issues
+
+The component provides detailed pairing logs to help debug authentication problems. When pairing is in progress, you'll see log messages like:
+
+**Successful Pairing:**
+```
+[I][alpha_hwr:446] BLE security request from device AA:BB:CC:DD:EE:FF - accepting
+[I][alpha_hwr:438] ✓ BLE authentication complete (Pairing/Bonding successful)!
+[I][alpha_hwr:439]   Device: AA:BB:CC:DD:EE:FF
+[I][alpha_hwr:440]   Auth mode: 0x01
+[I][alpha_hwr:520] BLE bonding complete - device credentials stored
+```
+
+**Failed Pairing:**
+```
+[W][alpha_hwr:466] ✗ BLE authentication failed!
+[W][alpha_hwr:467]   Device: AA:BB:CC:DD:EE:FF
+[W][alpha_hwr:468]   Failure reason: Timeout (0x07)
+[W][alpha_hwr:469]   Auth mode: 0x00
+```
+
+**Common Failure Reasons:**
+- **"Confirm Value Mismatch"** (0x04): The pump rejected pairing - ensure pump is in pairing mode (Bluetooth icon flashing)
+- **"Timeout"** (0x07): Pairing took too long - check BLE signal strength, move ESP32 closer
+- **"Encryption Key Missing"** (0x05): Bonding information was lost - factory reset ESP32 or clear bonds
+- **"Bond Creation Failed"** (0x08): Storage issue - check ESP32 NVS partition
+
+**Troubleshooting Steps:**
+1. **Put pump in pairing mode**: Hold Bluetooth button until icon flashes
+2. **Clear existing bonds**: If you see "Encryption Key Missing", reflash ESP32 or use `esp_ble_remove_bond_device()`
+3. **Check signal strength**: Keep ESP32 within 0.5-2m during pairing
+4. **Verify configuration**: Ensure `esp32.framework.type: esp-idf` is set (Arduino framework has pairing limitations)
+5. **Check logs**: Enable DEBUG level logging for detailed GAP event information
 
 ---
 

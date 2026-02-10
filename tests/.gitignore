@@ -1,0 +1,14 @@
+# Compiled binaries (test executables)
+test_protocol
+calc_test_crcs
+verify_crc
+
+# Object files
+*.o
+*.obj
+
+# Dependency files
+*.d
+
+# OS files
+.DS_Store
