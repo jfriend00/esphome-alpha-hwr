@@ -1,0 +1,56 @@
+# ==============================================================================
+# ALPHA HWR Base Package
+# ==============================================================================
+# 
+# This package provides basic telemetry from the Grundfos ALPHA HWR pump
+# without BLE pairing/bonding. Use this for simple monitoring scenarios.
+#
+# Telemetry Included:
+# - Flow Rate (m³/h)
+# - Head Pressure (m)
+# - Water Temperature (°C)
+# - Motor Speed (RPM)
+# - Power Consumption (W)
+#
+# Requirements:
+# - ESP32 with BLE support
+# - Substitutions: ${mac_address} must be defined
+#
+# Usage:
+#   substitutions:
+#     mac_address: "AA:BB:CC:DD:EE:FF"
+#   
+#   packages:
+#     alpha_hwr: !include packages/alpha_hwr_base.yaml
+#
+# For enhanced telemetry (voltage, current, all temperatures), 
+# use alpha_hwr_pairing.yaml instead.
+# ==============================================================================
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha_hwr]
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1.1s
+    window: 1.1s
+
+ble_client:
+  - mac_address: ${mac_address}
+    id: hwr_pump_client
+
+alpha_hwr:
+  ble_client_id: hwr_pump_client
+  flow:
+    name: "Flow Rate"
+  head:
+    name: "Head Pressure"
+  temp_media:
+    name: "Water Temperature"
+  rpm:
+    name: "Motor Speed"
+  power:
+    name: "Power Consumption"

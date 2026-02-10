@@ -2,14 +2,36 @@ esphome:
   name: hwr-pairing-example
   friendly_name: "HWR Pump (Enhanced)"
 
-# This configuration demonstrates BLE pairing/bonding and enhanced telemetry
-# (Voltage, Current, Pairing Status).
+# ==============================================================================
+# Enhanced ALPHA HWR Example Configuration (with BLE Pairing)
+# ==============================================================================
+# 
+# This example demonstrates FULL telemetry monitoring with BLE pairing/bonding.
+# Use this when you need complete pump diagnostics including voltage and current.
+#
+# Enhanced Telemetry Available:
+# - Grid Voltage (AC), Motor Current
+# - All temperatures (Water, Converter, PCB, Control Box)
+# - Flow Rate, Head Pressure, Motor Speed, Power
+# - Pairing Status indicator
+#
+# Setup Instructions:
+# 1. Replace the MAC address below with your pump's BLE MAC address
+# 2. Update WiFi credentials
+# 3. Flash to your ESP32
+# 4. On first connection, the pump will pair/bond automatically
+#    - Bonding keys are stored in NVS flash
+#    - Subsequent connections will use stored keys (no re-pairing needed)
+#
+# Note: BLE pairing is required to access voltage and current sensors.
+# The component handles this automatically when enable_pairing: true.
+# ==============================================================================
 
-external_components:
-  - source:
-      type: local
-      path: components
-    components: [alpha_hwr]
+substitutions:
+  mac_address: "00:00:00:00:00:00"  # ← CHANGE THIS to your pump's MAC
+
+packages:
+  alpha_hwr: !include packages/alpha_hwr_pairing.yaml
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -20,6 +42,7 @@ esp32:
 wifi:
   ssid: "test-wifi"
   password: "test-password"
+  fast_connect: true
 
 logger:
   level: DEBUG
@@ -28,41 +51,11 @@ api:
   encryption:
     key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-esp32_ble_tracker:
-  scan_parameters:
-    interval: 1.1s
-    window: 1.1s
+ota:
+  - platform: esphome
+    password: "test-ota"
 
-ble_client:
-  - mac_address: "00:00:00:00:00:00" # Replace with your pump's MAC
-    id: hwr_pump_client
-
-alpha_hwr:
-  ble_client_id: hwr_pump_client
-  enable_pairing: true  # Enable BLE pairing for enhanced telemetry
-  pairing_status:
-    name: "Pairing Status"
-  voltage:
-    name: "Grid Voltage"
-  current:
-    name: "Motor Current"
-  power:
-    name: "Power Consumption"
-  rpm:
-    name: "Motor Speed"
-  flow:
-    name: "Flow Rate"
-  head:
-    name: "Head Pressure"
-  temp_media:
-    name: "Water Temperature"
-  temp_converter:
-    name: "Converter Temperature"
-  temp_pcb:
-    name: "PCB Temperature"
-  temp_control_box:
-    name: "Control Box Temperature"
-
+# Additional Sensors (optional)
 sensor:
   - platform: uptime
     name: "Uptime"
@@ -70,3 +63,7 @@ sensor:
 binary_sensor:
   - platform: status
     name: "Online Status"
+
+button:
+  - platform: restart
+    name: "Restart Device"

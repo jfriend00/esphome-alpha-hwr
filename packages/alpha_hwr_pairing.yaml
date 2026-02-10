@@ -1,0 +1,79 @@
+# ==============================================================================
+# ALPHA HWR Enhanced Package (with BLE Pairing)
+# ==============================================================================
+# 
+# This package provides FULL telemetry from the Grundfos ALPHA HWR pump
+# with BLE pairing/bonding enabled for authenticated access.
+#
+# Enhanced Telemetry Included:
+# - All sensors from alpha_hwr_base.yaml PLUS:
+# - Grid Voltage (V) - Requires pairing
+# - Motor Current (A) - Requires pairing
+# - Converter Temperature (°C)
+# - PCB Temperature (°C)
+# - Control Box Temperature (°C)
+# - Pairing Status (binary sensor)
+#
+# Requirements:
+# - ESP32 with BLE support
+# - Substitutions: ${mac_address} must be defined
+#
+# Usage:
+#   substitutions:
+#     mac_address: "AA:BB:CC:DD:EE:FF"
+#   
+#   packages:
+#     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+#
+# Note: On first connection, the pump will pair/bond with the ESP32.
+# Bonding keys are stored in NVS flash for automatic reconnection.
+# ==============================================================================
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha_hwr]
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1.1s
+    window: 1.1s
+
+ble_client:
+  - mac_address: ${mac_address}
+    id: hwr_pump_client
+
+alpha_hwr:
+  ble_client_id: hwr_pump_client
+  enable_pairing: true  # Enable BLE pairing for enhanced telemetry
+  
+  # Pairing Status
+  pairing_status:
+    name: "Pairing Status"
+  
+  # Enhanced Electrical (requires pairing)
+  voltage:
+    name: "Grid Voltage"
+  current:
+    name: "Motor Current"
+  
+  # Basic Telemetry
+  power:
+    name: "Power Consumption"
+  rpm:
+    name: "Motor Speed"
+  flow:
+    name: "Flow Rate"
+  head:
+    name: "Head Pressure"
+  
+  # Temperature Sensors (all)
+  temp_media:
+    name: "Water Temperature"
+  temp_converter:
+    name: "Converter Temperature"
+  temp_pcb:
+    name: "PCB Temperature"
+  temp_control_box:
+    name: "Control Box Temperature"
