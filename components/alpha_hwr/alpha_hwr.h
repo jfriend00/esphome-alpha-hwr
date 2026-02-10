@@ -119,7 +119,10 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   void set_temp_pcb_sensor(sensor::Sensor *sensor) { temp_pcb_sensor_ = sensor; }
   void set_temp_control_box_sensor(sensor::Sensor *sensor) { temp_control_box_sensor_ = sensor; }
   void set_voltage_sensor(sensor::Sensor *sensor) { voltage_sensor_ = sensor; }
+  void set_voltage_dc_sensor(sensor::Sensor *sensor) { voltage_dc_sensor_ = sensor; }
   void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
+  void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
+  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { outlet_pressure_sensor_ = sensor; }
   void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
@@ -148,7 +151,10 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   sensor::Sensor *temp_pcb_sensor_{nullptr};
   sensor::Sensor *temp_control_box_sensor_{nullptr};
   sensor::Sensor *voltage_sensor_{nullptr};
+  sensor::Sensor *voltage_dc_sensor_{nullptr};
   sensor::Sensor *current_sensor_{nullptr};
+  sensor::Sensor *inlet_pressure_sensor_{nullptr};
+  sensor::Sensor *outlet_pressure_sensor_{nullptr};
   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
   
   bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding

@@ -11,7 +11,10 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. This com
   - Motor RPM
   - Water/media temperature (°C)
   - **Grid Voltage (V)** (Enhanced)
+  - **DC Voltage (V)** (Enhanced)
   - **Motor Current (A)** (Enhanced)
+  - **Inlet Pressure (bar)** (Enhanced)
+  - **Outlet Pressure (bar)** (Enhanced)
   - **Converter Temperature (°C)** (Enhanced)
   - **PCB Temperature (°C)** (Enhanced)
   - **Control Box Temperature (°C)** (Enhanced)
@@ -33,7 +36,9 @@ This mode works out-of-the-box with the `hwr-pump-example.yaml` configuration.
 
 ### Enhanced Mode (Requires Pairing)
 By enabling BLE bonding (pairing), you gain access to **additional telemetry**:
-- Grid voltage, motor current, converter/PCB/control box temperatures
+- Grid voltage, DC voltage, motor current
+- Inlet/outlet pressure sensors
+- Converter/PCB/control box temperatures
 
 **To enable pairing**, add `enable_pairing: true` to your configuration:
 
@@ -43,8 +48,14 @@ alpha_hwr:
   enable_pairing: true  # Enable BLE pairing for enhanced telemetry
   voltage:
     name: "Grid Voltage"
+  voltage_dc:
+    name: "DC Voltage"
   current:
     name: "Motor Current"
+  inlet_pressure:
+    name: "Inlet Pressure"
+  outlet_pressure:
+    name: "Outlet Pressure"
   # ... other enhanced sensors
 ```
 
@@ -64,8 +75,15 @@ By default, the pump streams basic telemetry. By establishing a secure paired co
 
 ### Motor State Object (High Frequency - ~10 Hz)
 - **Grid Voltage (V)** - AC input voltage
+- **DC Voltage (V)** - DC bus voltage (motor power supply)
 - **Motor Current (A)** - Current draw
 - **Converter Temperature (°C)** - Motor electronics temperature
+
+### Flow & Pressure Object (Hydraulic Data - ~1 Hz)
+- **Flow Rate (m³/h)** - Water flow through pump
+- **Head Pressure (m)** - Differential pressure generated
+- **Inlet Pressure (bar)** - Water inlet pressure
+- **Outlet Pressure (bar)** - Water outlet pressure
 
 ### Temperature Object (Environmental Data - ~1 Hz)
 - **Water/Media Temperature (°C)** - Fluid being pumped
@@ -73,7 +91,8 @@ By default, the pump streams basic telemetry. By establishing a secure paired co
 - **Control Box Temperature (°C)** - Enclosure ambient temperature
 
 These enhanced metrics enable:
-- **Electrical Health Monitoring**: Track voltage stability and current draw
+- **Electrical Health Monitoring**: Track voltage stability (AC/DC) and current draw
+- **Hydraulic Analysis**: Monitor inlet/outlet pressures for system diagnostics
 - **Thermal Management**: Monitor all system temperatures
 - **Bi-directional Communication**: Enables future features like remote start/stop and schedule management
 

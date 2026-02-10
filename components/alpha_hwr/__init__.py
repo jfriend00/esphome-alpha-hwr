@@ -30,7 +30,10 @@ CONF_TEMP_CONVERTER = "temp_converter"
 CONF_TEMP_PCB = "temp_pcb"
 CONF_TEMP_CONTROL_BOX = "temp_control_box"
 CONF_VOLTAGE = "voltage"
+CONF_VOLTAGE_DC = "voltage_dc"
 CONF_CURRENT = "current"
+CONF_INLET_PRESSURE = "inlet_pressure"
+CONF_OUTLET_PRESSURE = "outlet_pressure"
 CONF_PAIRING_STATUS = "pairing_status"
 CONF_ENABLE_PAIRING = "enable_pairing"
 
@@ -90,10 +93,26 @@ CONFIG_SCHEMA = cv.Schema(
             device_class=DEVICE_CLASS_VOLTAGE,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
+        cv.Optional(CONF_VOLTAGE_DC): sensor.sensor_schema(
+            unit_of_measurement="V",
+            accuracy_decimals=1,
+            device_class=DEVICE_CLASS_VOLTAGE,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
         cv.Optional(CONF_CURRENT): sensor.sensor_schema(
             unit_of_measurement="A",
             accuracy_decimals=2,
             device_class=DEVICE_CLASS_CURRENT,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_INLET_PRESSURE): sensor.sensor_schema(
+            unit_of_measurement="bar",
+            accuracy_decimals=2,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_OUTLET_PRESSURE): sensor.sensor_schema(
+            unit_of_measurement="bar",
+            accuracy_decimals=2,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
         cv.Optional(CONF_PAIRING_STATUS): binary_sensor.binary_sensor_schema(
@@ -147,9 +166,21 @@ async def to_code(config):
         sens = await sensor.new_sensor(config[CONF_VOLTAGE])
         cg.add(var.set_voltage_sensor(sens))
 
+    if CONF_VOLTAGE_DC in config:
+        sens = await sensor.new_sensor(config[CONF_VOLTAGE_DC])
+        cg.add(var.set_voltage_dc_sensor(sens))
+
     if CONF_CURRENT in config:
         sens = await sensor.new_sensor(config[CONF_CURRENT])
         cg.add(var.set_current_sensor(sens))
+
+    if CONF_INLET_PRESSURE in config:
+        sens = await sensor.new_sensor(config[CONF_INLET_PRESSURE])
+        cg.add(var.set_inlet_pressure_sensor(sens))
+
+    if CONF_OUTLET_PRESSURE in config:
+        sens = await sensor.new_sensor(config[CONF_OUTLET_PRESSURE])
+        cg.add(var.set_outlet_pressure_sensor(sens))
 
     if CONF_PAIRING_STATUS in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_PAIRING_STATUS])

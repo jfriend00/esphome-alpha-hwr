@@ -815,15 +815,20 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     // [0]=AC voltage, [1]=DC voltage, [2]=current, [3]=power, [5]=RPM, [6]=converter temp
     ESP_LOGI(TAG, "  Motor state response (OpSpec 0x30)");
     
-    float voltage = read_float_be(data, 13); // Float[0] at offset 13
-    float current = read_float_be(data, 21); // Float[2] at offset 21
-    float power = read_float_be(data, 25);   // Float[3] at offset 25
-    float rpm = read_float_be(data, 33);     // Float[5] at offset 33
+    float voltage_ac = read_float_be(data, 13); // Float[0] at offset 13
+    float voltage_dc = read_float_be(data, 17); // Float[1] at offset 17
+    float current = read_float_be(data, 21);    // Float[2] at offset 21
+    float power = read_float_be(data, 25);      // Float[3] at offset 25
+    float rpm = read_float_be(data, 33);        // Float[5] at offset 33
     float converter_temp = read_float_be(data, 37); // Float[6] at offset 37
     
     if (power >= 0 && power <= 1000 && rpm >= 0 && rpm <= 10000) {
-      ESP_LOGI(TAG, "✓ Motor: %.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", voltage, current, power, rpm, converter_temp);
-      if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage);
+      ESP_LOGI(TAG, "✓ Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", 
+               voltage_ac, voltage_dc, current, power, rpm, converter_temp);
+      if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage_ac);
+      if (voltage_dc_sensor_ != nullptr && voltage_dc >= 0 && voltage_dc <= 500) {
+        voltage_dc_sensor_->publish_state(voltage_dc);
+      }
       if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
       if (power_sensor_ != nullptr) power_sensor_->publish_state(power);
       if (rpm_sensor_ != nullptr) rpm_sensor_->publish_state(rpm);
@@ -834,16 +839,35 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
   }
   else if (opspec == 0x2B && len >= 45) {
     // Flow/pressure response: floats start at offset 13
-    // [6]=flow at offset 13+24=37, [7]=head at offset 13+28=41
+    // [6]=flow at offset 37, [7]=head at offset 41, [8]=inlet_pressure at offset 45, [9]=outlet_pressure at offset 49
     ESP_LOGI(TAG, "  Flow/pressure response (OpSpec 0x2B)");
     
     float flow = read_float_be(data, 37);
     float head = read_float_be(data, 41);
     
+    // Inlet and outlet pressure may not always be present
+    float inlet_pressure = NAN;
+    float outlet_pressure = NAN;
+    if (len >= 49) {
+      inlet_pressure = read_float_be(data, 45);
+    }
+    if (len >= 53) {
+      outlet_pressure = read_float_be(data, 49);
+    }
+    
     if (flow >= 0 && flow <= 100 && head >= 0 && head <= 50) {
-      ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m", flow, head);
+      ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar, P_out=%.2f bar", 
+               flow, head, inlet_pressure, outlet_pressure);
       if (flow_sensor_ != nullptr) flow_sensor_->publish_state(flow);
       if (head_sensor_ != nullptr) head_sensor_->publish_state(head);
+      
+      // Publish pressure sensors if values are valid
+      if (inlet_pressure_sensor_ != nullptr && inlet_pressure >= 0 && inlet_pressure <= 20) {
+        inlet_pressure_sensor_->publish_state(inlet_pressure);
+      }
+      if (outlet_pressure_sensor_ != nullptr && outlet_pressure >= 0 && outlet_pressure <= 20) {
+        outlet_pressure_sensor_->publish_state(outlet_pressure);
+      }
     } else {
       ESP_LOGW(TAG, "  Invalid flow/head values (flow=%.3f, head=%.2f)", flow, head);
     }

@@ -8,7 +8,10 @@
 # Enhanced Telemetry Included:
 # - All sensors from alpha_hwr_base.yaml PLUS:
 # - Grid Voltage (V) - Requires pairing
+# - DC Voltage (V) - Requires pairing
 # - Motor Current (A) - Requires pairing
+# - Inlet Pressure (bar) - Requires pairing
+# - Outlet Pressure (bar) - Requires pairing
 # - Converter Temperature (°C)
 # - PCB Temperature (°C)
 # - Control Box Temperature (°C)
@@ -55,6 +58,8 @@ alpha_hwr:
   # Enhanced Electrical (requires pairing)
   voltage:
     name: "Grid Voltage"
+  voltage_dc:
+    name: "DC Voltage"
   current:
     name: "Motor Current"
   
@@ -67,6 +72,12 @@ alpha_hwr:
     name: "Flow Rate"
   head:
     name: "Head Pressure"
+  
+  # Pressure Sensors (requires pairing)
+  inlet_pressure:
+    name: "Inlet Pressure"
+  outlet_pressure:
+    name: "Outlet Pressure"
   
   # Temperature Sensors (all)
   temp_media:
