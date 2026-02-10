@@ -253,6 +253,16 @@ void AlphaHwrComponent::poll_telemetry() {
     // Request temperature (0x5D012C)
     send_read_request(0x5D012C);
   });
+  
+  // Request alarms (Obj 88, Sub 0 → 0x580000)
+  this->set_timeout(300, [this]() {
+    send_read_request(0x580000);
+  });
+  
+  // Request warnings (Obj 88, Sub 11 → 0x58000B)
+  this->set_timeout(400, [this]() {
+    send_read_request(0x58000B);
+  });
 }
 
 // Called every 10 seconds by PollingComponent
@@ -832,8 +842,11 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
       if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
       if (power_sensor_ != nullptr) power_sensor_->publish_state(power);
       if (rpm_sensor_ != nullptr) rpm_sensor_->publish_state(rpm);
-      if (converter_temp >= -20 && converter_temp <= 120 && temp_converter_sensor_ != nullptr) {
-        temp_converter_sensor_->publish_state(converter_temp);
+      // Publish converter temperature - even if NaN (shows as "Unavailable" in HA)
+      if (temp_converter_sensor_ != nullptr) {
+        if (std::isnan(converter_temp) || (converter_temp >= -20 && converter_temp <= 120)) {
+          temp_converter_sensor_->publish_state(converter_temp);
+        }
       }
     }
   }
@@ -861,12 +874,16 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
       if (flow_sensor_ != nullptr) flow_sensor_->publish_state(flow);
       if (head_sensor_ != nullptr) head_sensor_->publish_state(head);
       
-      // Publish pressure sensors if values are valid
-      if (inlet_pressure_sensor_ != nullptr && inlet_pressure >= 0 && inlet_pressure <= 20) {
-        inlet_pressure_sensor_->publish_state(inlet_pressure);
+      // Publish pressure sensors - even if NaN (shows as "Unavailable" in HA)
+      if (inlet_pressure_sensor_ != nullptr) {
+        if (std::isnan(inlet_pressure) || (inlet_pressure >= 0 && inlet_pressure <= 20)) {
+          inlet_pressure_sensor_->publish_state(inlet_pressure);
+        }
       }
-      if (outlet_pressure_sensor_ != nullptr && outlet_pressure >= 0 && outlet_pressure <= 20) {
-        outlet_pressure_sensor_->publish_state(outlet_pressure);
+      if (outlet_pressure_sensor_ != nullptr) {
+        if (std::isnan(outlet_pressure) || (outlet_pressure >= 0 && outlet_pressure <= 20)) {
+          outlet_pressure_sensor_->publish_state(outlet_pressure);
+        }
       }
     } else {
       ESP_LOGW(TAG, "  Invalid flow/head values (flow=%.3f, head=%.2f)", flow, head);
@@ -891,6 +908,63 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     }
     if (control_box_temp >= -20 && control_box_temp <= 150 && temp_control_box_sensor_ != nullptr) {
       temp_control_box_sensor_->publish_state(control_box_temp);
+    }
+  }
+  // OpSpec 0x13 = Alarms/Warnings response
+  else if (opspec == 0x13 && len >= 10) {
+    // Frame format: [STX][LEN][DST][SRC][Class=0x0A][OpSpec=0x13][Sub_H][Sub_L][Obj_H][Obj_L][...DATA...][CRC]
+    // Extract Sub ID and Obj ID to determine if this is alarms or warnings
+    uint16_t sub_id = (data[6] << 8) | data[7];
+    uint16_t obj_id = (data[8] << 8) | data[9];
+    
+    // Obj 88 (0x0058), Sub 0 = Alarms
+    // Obj 88 (0x0058), Sub 11 (0x000B) = Warnings
+    if (obj_id == 0x0058) {
+      bool is_alarms = (sub_id == 0x0000);
+      bool is_warnings = (sub_id == 0x000B);
+      
+      if (is_alarms || is_warnings) {
+        const char* type_str = is_alarms ? "Alarms" : "Warnings";
+        ESP_LOGI(TAG, "  %s response (OpSpec 0x13, Obj 88, Sub %d)", type_str, sub_id);
+        
+        // Parse uint16 array starting at offset 10
+        std::vector<uint16_t> codes;
+        for (size_t i = 10; i + 1 < len - 2; i += 2) {  // -2 for CRC at end
+          uint16_t code = (data[i] << 8) | data[i + 1];
+          if (code != 0) {  // Filter out zero codes
+            codes.push_back(code);
+          }
+        }
+        
+        // Build comma-separated string of codes
+        std::string codes_str;
+        if (codes.empty()) {
+          codes_str = "None";
+        } else {
+          for (size_t i = 0; i < codes.size(); i++) {
+            if (i > 0) codes_str += ", ";
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%u", codes[i]);
+            codes_str += buf;
+          }
+        }
+        
+        ESP_LOGI(TAG, "✓ %s: %s", type_str, codes_str.c_str());
+        
+        // Publish to appropriate text sensor
+#ifdef USE_TEXT_SENSOR
+        if (is_alarms && alarms_sensor_ != nullptr) {
+          alarms_sensor_->publish_state(codes_str);
+        }
+        if (is_warnings && warnings_sensor_ != nullptr) {
+          warnings_sensor_->publish_state(codes_str);
+        }
+#endif
+      } else {
+        ESP_LOGD(TAG, "  Unknown Obj 88 Sub ID: 0x%04X", sub_id);
+      }
+    } else {
+      ESP_LOGD(TAG, "  OpSpec 0x13 with unexpected Obj ID: 0x%04X (expected 0x0058)", obj_id);
     }
   }
   // OpSpec 0x0E = Passive Notifications (streaming telemetry - legacy format)
@@ -944,8 +1018,76 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
       ESP_LOGD(TAG, "  Unknown passive notification (Sub=0x%04X, Obj=0x%04X)", sub_id, obj_id);
     }
   }
+  // OpSpec 0x09 = Alarm/Warning response (Active Query Response format)
+  // This uses the same format as other active query responses (0x30, 0x2B, 0x14)
+  // Structure: [OpSpec][Seq (2B)][ID (2B)][Res (2B)][DataLen (1B)][Data (uint16 array)]
+  else if (opspec == 0x09) {
+    ESP_LOGD(TAG, "  Alarm/Warning response (OpSpec 0x09)");
+    
+    if (len >= 13) {  // Minimum: OpSpec + Seq + ID + Res + DataLen = 7 bytes + 4-byte header + 2-byte CRC
+      uint8_t data_len = data[12];  // DataLen byte at offset 12
+      
+      // Parse alarm codes from uint16 array (big-endian)
+      std::vector<uint16_t> codes;
+      for (size_t i = 13; i + 1 < len - 2 && i < 13 + data_len; i += 2) {
+        uint16_t code = (data[i] << 8) | data[i + 1];
+        if (code != 0) {  // Filter out zero codes (mean "no alarm/warning")
+          codes.push_back(code);
+        }
+      }
+      
+      if (codes.empty()) {
+        ESP_LOGI(TAG, "  ✓ No active alarms/warnings");
+        // Update text sensors with empty string
+        #ifdef USE_TEXT_SENSOR
+        if (this->alarms_sensor_ != nullptr) {
+          this->alarms_sensor_->publish_state("");
+        }
+        if (this->warnings_sensor_ != nullptr) {
+          this->warnings_sensor_->publish_state("");
+        }
+        #endif
+      } else {
+        // Format codes as comma-separated string
+        std::string codes_str;
+        for (size_t i = 0; i < codes.size(); i++) {
+          if (i > 0) codes_str += ",";
+          codes_str += std::to_string(codes[i]);
+        }
+        ESP_LOGW(TAG, "  ⚠️ Active alarm/warning codes: %s", codes_str.c_str());
+        
+        // Update appropriate text sensor based on which register was queried
+        // Note: We'd need to track which query this is responding to in production
+        // For now, just log - full implementation would require request tracking
+        #ifdef USE_TEXT_SENSOR
+        // TODO: Differentiate between alarm (0x580000) and warning (0x58000B) responses
+        #endif
+      }
+    }
+  }
   else {
-    ESP_LOGD(TAG, "  Unhandled packet type (OpSpec=0x%02X, len=%d)", opspec, len);
+    // Log unhandled packets prominently for reverse engineering
+    ESP_LOGW(TAG, "  ⚠️ UNHANDLED PACKET: OpSpec=0x%02X, len=%d", opspec, len);
+    
+    // Log full hex for analysis
+    if (len <= 50) {
+      char hex_str[150];
+      int pos = 0;
+      for (size_t i = 0; i < len && i < 50; i++) {
+        pos += sprintf(hex_str + pos, "%02X ", data[i]);
+      }
+      ESP_LOGW(TAG, "  Full Hex: %s", hex_str);
+    }
+    
+    // If longer, log first 50 bytes
+    if (len > 50) {
+      char hex_str[150];
+      int pos = 0;
+      for (size_t i = 0; i < 50; i++) {
+        pos += sprintf(hex_str + pos, "%02X ", data[i]);
+      }
+      ESP_LOGW(TAG, "  First 50 bytes: %s... (%d total)", hex_str, len);
+    }
   }
 }
 

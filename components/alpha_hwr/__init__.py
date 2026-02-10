@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import ble_client, sensor, binary_sensor
+from esphome.components import ble_client, sensor, binary_sensor, text_sensor
 from esphome.const import (
     CONF_ID,
     DEVICE_CLASS_CONNECTIVITY,
@@ -14,7 +14,7 @@ from esphome.const import (
 )
 
 CODEOWNERS = ["@eman"]
-DEPENDENCIES = ["ble_client"]
+DEPENDENCIES = ["ble_client", "text_sensor"]
 
 alpha_hwr_ns = cg.esphome_ns.namespace("alpha_hwr")
 AlphaHwrComponent = alpha_hwr_ns.class_(
@@ -36,6 +36,8 @@ CONF_INLET_PRESSURE = "inlet_pressure"
 CONF_OUTLET_PRESSURE = "outlet_pressure"
 CONF_PAIRING_STATUS = "pairing_status"
 CONF_ENABLE_PAIRING = "enable_pairing"
+CONF_ALARMS = "alarms"
+CONF_WARNINGS = "warnings"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -118,6 +120,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_PAIRING_STATUS): binary_sensor.binary_sensor_schema(
             device_class=DEVICE_CLASS_CONNECTIVITY,
         ),
+        cv.Optional(CONF_ALARMS): text_sensor.text_sensor_schema(
+            icon="mdi:alert-circle",
+        ),
+        cv.Optional(CONF_WARNINGS): text_sensor.text_sensor_schema(
+            icon="mdi:alert",
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -185,3 +193,11 @@ async def to_code(config):
     if CONF_PAIRING_STATUS in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_PAIRING_STATUS])
         cg.add(var.set_pairing_status_binary_sensor(sens))
+
+    if CONF_ALARMS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_ALARMS])
+        cg.add(var.set_alarms_text_sensor(sens))
+
+    if CONF_WARNINGS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_WARNINGS])
+        cg.add(var.set_warnings_text_sensor(sens))

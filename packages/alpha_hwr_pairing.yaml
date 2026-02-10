@@ -15,6 +15,8 @@
 # - Converter Temperature (°C)
 # - PCB Temperature (°C)
 # - Control Box Temperature (°C)
+# - Active Alarms (text sensor) - Requires pairing
+# - Active Warnings (text sensor) - Requires pairing
 # - Pairing Status (binary sensor)
 #
 # Requirements:
@@ -46,6 +48,9 @@ esp32_ble_tracker:
 ble_client:
   - mac_address: ${mac_address}
     id: hwr_pump_client
+
+# Ensure text_sensor component is included in build
+text_sensor:
 
 alpha_hwr:
   ble_client_id: hwr_pump_client
@@ -88,3 +93,9 @@ alpha_hwr:
     name: "PCB Temperature"
   temp_control_box:
     name: "Control Box Temperature"
+  
+  # Alarms & Warnings
+  alarms:
+    name: "Active Alarms"
+  warnings:
+    name: "Active Warnings"

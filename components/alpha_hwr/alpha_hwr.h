@@ -4,6 +4,9 @@
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#ifdef USE_TEXT_SENSOR
+#include "esphome/components/text_sensor/text_sensor.h"
+#endif
 #include "esphome/core/log.h"
 #include <esp_gattc_api.h>
 #include <esp_gap_ble_api.h>
@@ -124,6 +127,10 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
   void set_outlet_pressure_sensor(sensor::Sensor *sensor) { outlet_pressure_sensor_ = sensor; }
   void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
+#ifdef USE_TEXT_SENSOR
+  void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { alarms_sensor_ = sensor; }
+  void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { warnings_sensor_ = sensor; }
+#endif
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
   void setup() override;
@@ -156,6 +163,10 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   sensor::Sensor *inlet_pressure_sensor_{nullptr};
   sensor::Sensor *outlet_pressure_sensor_{nullptr};
   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+#ifdef USE_TEXT_SENSOR
+  text_sensor::TextSensor *alarms_sensor_{nullptr};
+  text_sensor::TextSensor *warnings_sensor_{nullptr};
+#endif
   
   bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding
   
