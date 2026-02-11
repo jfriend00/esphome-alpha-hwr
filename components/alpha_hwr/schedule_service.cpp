@@ -36,7 +36,10 @@ ScheduleService::ScheduleService(core::Transport &transport, core::Session &sess
       write_callback_(nullptr),
       schedule_state_cached_(false),
       schedule_enabled_(false),
-      last_state_poll_ms_(0) {
+      last_state_poll_ms_(0),
+      overview_cached_(false) {
+  // Initialize overview_structure_ to zeros
+  memset(overview_structure_, 0, sizeof(overview_structure_));
   ESP_LOGD(TAG, "ScheduleService initialized");
 }
 
@@ -87,31 +90,43 @@ bool ScheduleService::poll_state() {
   // Capture 'this' pointer to access member variables in callback
   this->transport_.register_response_handler(0xDA01, 0,  // Type 218 (ClockProgramOverview), SubID 0 
     [this](const uint8_t* payload, size_t payload_len) {
-      // ClockProgramOverview structure (10 bytes total):
+      // ClockProgramOverview response structure:
       // Response frame: [STX][LEN][DST][SRC][Class][OpSpec][ObjID][SubID_H][SubID_L][...DATA...][CRC_H][CRC_L]
-      // Payload starts at byte 9 (after [STX][LEN][DST][SRC][Class][OpSpec][ObjID][SubID_H][SubID_L])
+      // Payload starts at byte 10 (after frame header)
       // 
-      // Payload structure (matches Python reference):
-      // Byte 0: max_nof_actions
-      // Byte 1: max_nof_single_events
-      // Byte 2: max_nof_alternative_events_per_day
-      // Byte 3: max_nof_events_per_day
-      // Byte 4: unknown (reserved?)
-      // Byte 5: unknown (reserved?)
-      // Byte 6: unknown (reserved?)
-      // Byte 7: clock_program_enabled ← THIS IS WHAT WE WANT (matches Python line 147)
-      // Byte 8: default_action
-      // Bytes 9-12: base_set_point (float32, big-endian)
+      // Payload structure (matches Python reference schedule.py:732-740):
+      // Bytes 0-2: 3-byte header (varies by response)
+      // Bytes 3-12: ClockProgramOverview structure (10 bytes):
+      //   Byte 3: max_nof_actions
+      //   Byte 4: max_nof_single_events
+      //   Byte 5: max_nof_alternative_events_per_day
+      //   Byte 6: max_nof_events_per_day
+      //   Byte 7: clock_program_enabled ← Key field for enable/disable
+      //   Byte 8: default_action (SchedulingActionType)
+      //   Bytes 9-12: base_set_point (float32, big-endian)
       
       ESP_LOGV(TAG, "Schedule state response received (%zu bytes)", payload_len);
       
-      if (payload_len >= 8) {
-        this->schedule_enabled_ = (payload[7] != 0);  // Changed from payload[4] to payload[7]
+      if (payload_len >= 13) {
+        // Extract the enabled flag (byte 7 of payload)
+        this->schedule_enabled_ = (payload[7] != 0);
         this->schedule_state_cached_ = true;
+        
+        // Cache the complete 10-byte ClockProgramOverview structure (bytes 3-12)
+        // This is needed for read-modify-write operations in set_state()
+        memcpy(this->overview_structure_, payload + 3, 10);
+        this->overview_cached_ = true;
+        
         ESP_LOGD(TAG, "Schedule state updated: %s (byte 7 = 0x%02X)", 
                  this->schedule_enabled_ ? "enabled" : "disabled", payload[7]);
+        ESP_LOGV(TAG, "ClockProgramOverview cached: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                 this->overview_structure_[0], this->overview_structure_[1],
+                 this->overview_structure_[2], this->overview_structure_[3],
+                 this->overview_structure_[4], this->overview_structure_[5],
+                 this->overview_structure_[6], this->overview_structure_[7],
+                 this->overview_structure_[8], this->overview_structure_[9]);
       } else {
-        ESP_LOGW(TAG, "Schedule state response too short (%zu bytes, need at least 8)", payload_len);
+        ESP_LOGW(TAG, "Schedule state response too short (%zu bytes, need at least 13)", payload_len);
       }
     }
   );
@@ -142,27 +157,32 @@ bool ScheduleService::set_state(bool enable) {
 
   ESP_LOGI(TAG, "%s schedule...", enable ? "Enabling" : "Disabling");
 
-  // NOTE: Simplified implementation without read-modify-write
-  // Uses hardcoded default values from ALPHA HWR pump specification
-  // Full implementation with read-modify-write will be added in Phase 8
+  // Read-modify-write implementation (matches Python reference schedule.py:724-767)
+  // Use cached ClockProgramOverview structure if available, otherwise use defaults
+  uint8_t structure_bytes[10];
   
-  // ClockProgramOverview structure (10 bytes):
-  // Byte 0: max_nof_actions = 140 (0x8C)
-  // Byte 1: max_nof_single_events = 35 (0x23)
-  // Byte 2: max_nof_alternative_events_per_day = 5 (0x05)
-  // Byte 3: max_nof_events_per_day = 5 (0x05)
-  // Byte 4: clock_program_enabled = enable ? 0x01 : 0x00
-  // Byte 5: default_action = 1 (START)
-  // Bytes 6-9: base_set_point = 0.0 (0x00000000)
-  uint8_t structure_bytes[10] = {
-    0x8C,                     // max_nof_actions
-    0x23,                     // max_nof_single_events
-    0x05,                     // max_nof_alternative_events_per_day
-    0x05,                     // max_nof_events_per_day
-    enable ? (uint8_t)0x01 : (uint8_t)0x00,  // clock_program_enabled
-    0x01,                     // default_action
-    0x00, 0x00, 0x00, 0x00    // base_set_point
-  };
+  if (this->overview_cached_) {
+    // Use cached structure from last poll (preserves all pump settings)
+    memcpy(structure_bytes, this->overview_structure_, 10);
+    ESP_LOGD(TAG, "Using cached ClockProgramOverview structure");
+  } else {
+    // Fallback to default values (for first-time use before any poll)
+    // These are typical ALPHA HWR default values
+    ESP_LOGW(TAG, "No cached overview - using default values (consider calling poll_state() first)");
+    structure_bytes[0] = 0x8C;  // max_nof_actions = 140
+    structure_bytes[1] = 0x23;  // max_nof_single_events = 35
+    structure_bytes[2] = 0x05;  // max_nof_alternative_events_per_day = 5
+    structure_bytes[3] = 0x05;  // max_nof_events_per_day = 5
+    structure_bytes[4] = 0x00;  // clock_program_enabled (will be set below)
+    structure_bytes[5] = 0x01;  // default_action = START
+    structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
+    structure_bytes[7] = 0x00;
+    structure_bytes[8] = 0x00;
+    structure_bytes[9] = 0x00;
+  }
+  
+  // Modify only the enable flag (byte 4)
+  structure_bytes[4] = enable ? 0x01 : 0x00;
 
   // Build APDU: Class 10 SET command for Object 84, SubID 1
   // OpSpec 0x93 = OpSpec 4 (SET), Length 19
@@ -187,6 +207,73 @@ bool ScheduleService::set_state(bool enable) {
   }
 
   ESP_LOGI(TAG, "Schedule %s command sent", enable ? "enable" : "disable");
+  
+  // Update cached state optimistically (will be verified on next poll)
+  this->schedule_enabled_ = enable;
+  this->schedule_state_cached_ = true;
+  
+  return true;
+}
+
+bool ScheduleService::send_configuration_commit() {
+  // Send configuration commit packet to persist schedule changes
+  // This MUST be called after any schedule write operation (OpSpec 0xB3)
+  // 
+  // Protocol: Class 10, OpSpec 0x93 (SET, Length 19), Object 84, SubID 1
+  // Payload: 10-byte ClockProgramOverview structure
+  //
+  // Reference: reference/alpha-hwr/src/alpha_hwr/services/control.py:1038
+  // Hex: 0A9354000100DA0100000A[10 bytes structure]
+
+  ESP_LOGD(TAG, "Sending configuration commit...");
+
+  // Use cached ClockProgramOverview if available, otherwise use defaults
+  uint8_t structure_bytes[10];
+  
+  if (this->overview_cached_) {
+    // Use cached structure from last poll
+    memcpy(structure_bytes, this->overview_structure_, 10);
+    ESP_LOGV(TAG, "Using cached ClockProgramOverview for commit");
+  } else {
+    // Fallback to reasonable defaults (from Python reference)
+    // Note: Python uses hardcoded values, we use cached or defaults
+    ESP_LOGD(TAG, "No cached overview, using default values for commit");
+    structure_bytes[0] = 0x02;  // max_nof_actions (Python uses 2, we normally see 140)
+    structure_bytes[1] = 0x05;  // max_nof_single_events
+    structure_bytes[2] = 0x00;  
+    structure_bytes[3] = 0x05;  // max_nof_events_per_day
+    structure_bytes[4] = 0x00;  // clock_program_enabled (current state)
+    structure_bytes[5] = 0x01;  // default_action = START
+    structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
+    structure_bytes[7] = 0x00;
+    structure_bytes[8] = 0x00;
+    structure_bytes[9] = 0x00;
+  }
+
+  // Build APDU: Class 10 SET command for Object 84, SubID 1
+  uint8_t apdu[21];
+  apdu[0] = 0x0A;    // Class 10
+  apdu[1] = 0x93;    // OpSpec 0x93 (SET, Length 19)
+  apdu[2] = 84;      // Object 84 (schedule object)
+  apdu[3] = 0x00;    // SubID high byte
+  apdu[4] = 0x01;    // SubID low byte (SubID = 1)
+  apdu[5] = 0x00;    // Reserved
+  apdu[6] = 0xDA;    // Type 218 (0xDA01 = ClockProgramOverview)
+  apdu[7] = 0x01;
+  apdu[8] = 0x00;
+  apdu[9] = 0x00;    // Size high byte
+  apdu[10] = 0x0A;   // Size low byte (10 bytes)
+  
+  // Append the 10-byte structure
+  memcpy(apdu + 11, structure_bytes, 10);
+
+  // Send configuration commit (fire-and-forget, no response expected)
+  if (!this->write_class10_command(apdu, 21)) {
+    ESP_LOGE(TAG, "Failed to send configuration commit");
+    return false;
+  }
+
+  ESP_LOGD(TAG, "Configuration commit sent successfully");
   return true;
 }
 
@@ -195,11 +282,114 @@ bool ScheduleService::set_state(bool enable) {
 // -------------------------------------------------------------------------
 
 bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int layer) {
-  // TODO: Implement async read operation
-  // For now, return false to indicate not implemented
-  ESP_LOGW(TAG, "read_entries() not yet implemented - requires async read support");
-  entries->clear();
-  return false;
+  ESP_LOGI(TAG, "=== READ_ENTRIES CALLED === layer=%d", layer);
+  
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot read schedule entries: session not ready");
+    return false;
+  }
+
+  if (layer < 0 || layer > 4) {
+    ESP_LOGE(TAG, "Invalid layer %d (must be 0-4)", layer);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Reading schedule entries for layer %d...", layer);
+
+  // Calculate SubID: 1000 + layer (matches Python reference schedule.py:312)
+  uint16_t sub_id = 1000 + layer;
+
+  // Register response handler for schedule entries
+  // Response will have Type 0xDE01 (222 - schedule data), SubID 0
+  // Note: The pump responds with a fixed type code, not the request object ID
+  this->transport_.register_response_handler(0xDE01, 0,  // Type 222 (schedule entries), SubID 0
+    [this, entries, layer](const uint8_t* payload, size_t payload_len) {
+      // Schedule entries response structure (matches Python schedule.py:317-337):
+      // Response frame: [STX][LEN][DST][SRC][Class][OpSpec][ObjID][SubID_H][SubID_L][...DATA...][CRC_H][CRC_L]
+      // Payload starts at byte 10 (after frame header)
+      // 
+      // Payload structure:
+      // Bytes 0-2: 3-byte header (varies by response)
+      // Bytes 3-44: Schedule entries (7 days × 6 bytes = 42 bytes)
+      // Total: 45 bytes
+      //
+      // Each 6-byte entry:
+      //   Byte 0: Enabled flag (0x01=enabled, 0x00=disabled)
+      //   Byte 1: Action code (0x02=run pump)
+      //   Byte 2: Start hour (0-23)
+      //   Byte 3: Start minute (0-59)
+      //   Byte 4: End hour (0-23)
+      //   Byte 5: End minute (0-59)
+      //
+      // Days: Monday=0, Tuesday=1, ..., Sunday=6
+
+      ESP_LOGV(TAG, "Schedule entries response received (%zu bytes)", payload_len);
+
+      if (payload_len < 45) {
+        ESP_LOGW(TAG, "Schedule entries response too short (%zu bytes, need 45)", payload_len);
+        entries->clear();
+        return;
+      }
+
+      // Skip 3-byte header to get to entry data
+      const uint8_t* entry_data = payload + 3;
+
+      // Day names in order (Monday=0 through Sunday=6)
+      static const char* day_names[7] = {
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+      };
+
+      entries->clear();
+      int enabled_count = 0;
+
+      // Parse 7 days × 6 bytes
+      for (int day_idx = 0; day_idx < 7; day_idx++) {
+        size_t offset = day_idx * 6;
+        const uint8_t* entry_bytes = entry_data + offset;
+
+        // Only include enabled entries (byte 0 != 0)
+        if (entry_bytes[0] != 0) {
+          ScheduleEntry entry = ScheduleEntry::from_bytes(entry_bytes, day_names[day_idx], layer);
+          entries->push_back(entry);
+          enabled_count++;
+
+          ESP_LOGD(TAG, "  %s: %02d:%02d-%02d:%02d (action=0x%02X)", 
+                   day_names[day_idx],
+                   entry_bytes[2], entry_bytes[3],  // begin_hour, begin_minute
+                   entry_bytes[4], entry_bytes[5],  // end_hour, end_minute
+                   entry_bytes[1]);                  // action
+        }
+      }
+
+      ESP_LOGI(TAG, "Read %d enabled entries from layer %d", enabled_count, layer);
+    }
+  );
+
+  // Build APDU: Class 10 INFO command for Object 84 at SubID (1000 + layer)
+  // OpSpec 0x03 = INFO (read operation)
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;    // Class 10
+  apdu[1] = 0x03;    // OpSpec INFO (read)
+  apdu[2] = 84;      // Object 84 (decimal)
+  apdu[3] = (sub_id >> 8) & 0xFF;  // SubID high byte
+  apdu[4] = sub_id & 0xFF;         // SubID low byte
+
+  // Build frame with proper framing
+  uint8_t frame[64];
+  size_t frame_len;
+  this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+
+  // Send request via transport
+  if (!this->transport_.write_packet(frame, frame_len,
+      [this](const uint8_t* data, size_t len) -> bool {
+        return this->write_callback_(0x00, data, len);
+      })) {
+    ESP_LOGE(TAG, "Failed to send schedule entries read request");
+    return false;
+  }
+
+  ESP_LOGD(TAG, "Schedule entries read request sent for layer %d (SubID %d)", layer, sub_id);
+  return true;
 }
 
 bool ScheduleService::write_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer) {
@@ -280,6 +470,16 @@ bool ScheduleService::write_entries(const std::vector<ScheduleEntry> &entries, u
   if (!this->write_class10_command(apdu, 53)) {
     ESP_LOGE(TAG, "Failed to write schedule to layer %d", layer);
     return false;
+  }
+
+  ESP_LOGD(TAG, "Schedule entries written to layer %d, sending configuration commit...", layer);
+
+  // CRITICAL: Send configuration commit after writing schedule entries
+  // Without this, the pump will not persist the changes!
+  // See: reference/alpha-hwr/src/alpha_hwr/services/control.py:_send_configuration_commit
+  if (!this->send_configuration_commit()) {
+    ESP_LOGW(TAG, "Configuration commit failed, schedule may not persist");
+    // Don't return false - the write might still work
   }
 
   ESP_LOGI(TAG, "Schedule written successfully to layer %d", layer);

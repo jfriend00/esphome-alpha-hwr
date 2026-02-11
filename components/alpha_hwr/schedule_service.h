@@ -305,6 +305,19 @@ class ScheduleService {
   void build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu, size_t apdu_len, uint8_t *frame,
                         size_t *frame_len);
 
+  /**
+   * Send configuration commit after schedule write operations.
+   *
+   * CRITICAL: This must be called after any schedule write (OpSpec 0xB3) to persist changes.
+   * Sends a Class 10 SET command (OpSpec 0x93) to Object 84, SubID 1 with the current
+   * ClockProgramOverview structure.
+   *
+   * See: reference/alpha-hwr/src/alpha_hwr/services/control.py:_send_configuration_commit
+   *
+   * @return True if commit sent successfully, false otherwise
+   */
+  bool send_configuration_commit();
+
   // -------------------------------------------------------------------------
   // Member Variables
   // -------------------------------------------------------------------------
@@ -319,6 +332,10 @@ class ScheduleService {
   bool schedule_state_cached_;       ///< True if schedule_enabled_ contains valid data
   bool schedule_enabled_;             ///< Cached schedule enabled state
   uint32_t last_state_poll_ms_;       ///< Timestamp of last state poll request
+  
+  // Cached ClockProgramOverview structure (10 bytes) for read-modify-write
+  bool overview_cached_;              ///< True if overview_structure_ contains valid data
+  uint8_t overview_structure_[10];    ///< Complete 10-byte ClockProgramOverview structure
 
   static constexpr const char *TAG = "schedule_service";
 };
