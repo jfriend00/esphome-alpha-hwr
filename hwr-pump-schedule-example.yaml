@@ -1,0 +1,168 @@
+# ==============================================================================
+# ALPHA HWR Advanced Schedule Management Example
+# ==============================================================================
+#
+# This example demonstrates how to implement schedule management UI for the
+# Grundfos ALPHA HWR pump in Home Assistant.
+#
+# Features Shown:
+# - Schedule Enable/Disable switch (toggle pump schedule on/off)
+# - Control Mode selector (set pump operation mode)
+# - Remote Mode buttons (enable/disable remote control)
+# - Example automation for schedule manipulation (advanced users)
+#
+# Note: This is an example configuration overlay that extends the base
+# alpha_hwr package. Users should copy the switch/button/select sections
+# into their own configuration.
+# ==============================================================================
+
+# Don't forget to define the base pump configuration first:
+# substitutions:
+#   mac_address: "AA:BB:CC:DD:EE:FF"
+# packages:
+#   alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+
+switch:
+  # Schedule Enable/Disable Switch
+  # Allows users to toggle the pump's schedule on/off from Home Assistant
+  - platform: template
+    name: "Schedule Enabled"
+    icon: "mdi:calendar-clock"
+    optimistic: false  # Read actual state from pump
+    lambda: |-
+      bool enabled = false;
+      if (id(pump).get_schedule_state(&enabled)) {
+        return enabled;
+      }
+      return {};  // Return unknown if state not cached yet
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Enabling pump schedule...");
+          bool result = id(pump).enable_schedule();
+          ESP_LOGI("switch", "Enable schedule result: %s", result ? "SUCCESS" : "FAILED");
+    turn_off_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Disabling pump schedule...");
+          bool result = id(pump).disable_schedule();
+          ESP_LOGI("switch", "Disable schedule result: %s", result ? "SUCCESS" : "FAILED");
+
+button:
+  # Control Mode Buttons
+  # These enable/disable remote control mode on the pump
+  - platform: template
+    name: "Enable Remote Mode"
+    icon: "mdi:remote"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Enabling remote mode...");
+          bool result = id(pump).enable_remote();
+          ESP_LOGI("button", "Enable remote result: %s", result ? "SUCCESS" : "FAILED");
+  
+  - platform: template
+    name: "Disable Remote Mode (Auto)"
+    icon: "mdi:remote-off"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Disabling remote mode (returning to Auto)...");
+          bool result = id(pump).disable_remote();
+          ESP_LOGI("button", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
+
+select:
+  # Pump Control Mode Selector
+  # Allows users to select between different pump operation modes
+  - platform: template
+    name: "Pump Control Mode"
+    id: pump_mode_select
+    icon: "mdi:tune"
+    optimistic: true
+    options:
+      - "Constant Pressure"
+      - "Proportional Pressure"
+      - "Constant Speed"
+      - "Auto Adapt"
+      - "Constant Flow"
+      - "Auto Adapt Radiator"
+      - "Auto Adapt Underfloor"
+      - "Auto Adapt Combined"
+      - "DHW On/Off"
+      - "Temperature Range"
+    initial_option: "Constant Speed"
+    set_action:
+      - lambda: |-
+          ESP_LOGI("select", "Setting mode to: %s", x.c_str());
+          
+          esphome::alpha_hwr::services::ControlMode mode;
+          
+          if (x == "Constant Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE;
+          } else if (x == "Proportional Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE;
+          } else if (x == "Constant Speed") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED;
+          } else if (x == "Auto Adapt") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT;
+          } else if (x == "Constant Flow") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW;
+          } else if (x == "Auto Adapt Radiator") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_RADIATOR;
+          } else if (x == "Auto Adapt Underfloor") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_UNDERFLOOR;
+          } else if (x == "Auto Adapt Combined") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_COMBINED;
+          } else if (x == "DHW On/Off") {
+            mode = esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF;
+          } else if (x == "Temperature Range") {
+            mode = esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE;
+          } else {
+            ESP_LOGW("select", "Unknown mode: %s", x.c_str());
+            return;
+          }
+          
+          bool result = id(pump).set_control_mode(mode);
+          ESP_LOGI("select", "Set mode result: %s", result ? "SUCCESS" : "FAILED");
+
+# ==============================================================================
+# ADVANCED: Schedule Management via Lambdas
+# ==============================================================================
+#
+# For advanced users who want to programmatically manage schedules,
+# you can use the following APIs:
+#
+# 1. Read schedule entries (sync):
+#    std::vector<esphome::alpha_hwr::ScheduleEntry> entries;
+#    bool result = id(pump).read_schedule_entries(&entries, 0);
+#
+# 2. Read schedule entries (async - recommended for Home Assistant UI):
+#    id(pump).read_schedule_entries_async(0, 
+#      [](bool success, const std::vector<esphome::alpha_hwr::ScheduleEntry>& entries) {
+#        // Handle response
+#      });
+#
+# 3. Write schedule entries:
+#    std::vector<esphome::alpha_hwr::ScheduleEntry> entries;
+#    entries.push_back(esphome::alpha_hwr::ScheduleEntry(
+#      "Monday",      // day (name)
+#      6,             // begin_hour
+#      0,             // begin_minute
+#      8,             // end_hour
+#      0,             // end_minute
+#      0x02,          // action (0x02 = run pump)
+#      0,             // layer (0-4)
+#      true           // enabled
+#    ));
+#    bool result = id(pump).write_schedule_entries(entries, 0);
+#
+# 4. Write schedule entries (async):
+#    id(pump).write_schedule_entries_async(entries, 0,
+#      [](bool success) {
+#        // Handle completion
+#      });
+#
+# Supported days: "Monday", "Tuesday", "Wednesday", "Thursday",
+#                 "Friday", "Saturday", "Sunday"
+#
+# Supported actions: 0x02 (run pump)
+#
+# Schedule layers: 0-4 (pump supports up to 5 independent schedule layers)
+#
+# ==============================================================================

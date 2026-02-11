@@ -88,6 +88,8 @@ button:
     name: "Restart HWR Pump"
 
 # Optional: Add schedule control switch
+# For a complete example with schedule management, control modes, and remote mode,
+# see: hwr-pump-schedule-example.yaml
 # Uncomment to enable schedule management
 # switch:
 #   - platform: template

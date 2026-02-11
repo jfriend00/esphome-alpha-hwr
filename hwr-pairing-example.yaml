@@ -65,5 +65,8 @@ binary_sensor:
     name: "Online Status"
 
 button:
-  - platform: restart
-    name: "Restart Device"
+   - platform: restart
+     name: "Restart Device"
+
+# Optional: For pump control, schedule management, and mode selection,
+# see: hwr-pump-schedule-example.yaml
