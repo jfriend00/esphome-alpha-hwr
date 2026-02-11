@@ -67,28 +67,27 @@ switch:
           bool result = id(pump).disable_schedule();
           ESP_LOGI("switch", "Disable schedule result: %s", result ? "SUCCESS" : "FAILED");
 
+  # Remote Mode Toggle
+  - platform: template
+    name: "Remote Mode"
+    icon: "mdi:remote"
+    optimistic: true  # Assume state changes immediately
+    lambda: |-
+      return false;  // Always return false as initial state
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Enabling remote mode...");
+          bool result = id(pump).enable_remote();
+          ESP_LOGI("switch", "Enable remote result: %s", result ? "SUCCESS" : "FAILED");
+    turn_off_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Disabling remote mode (returning to Auto)...");
+          bool result = id(pump).disable_remote();
+          ESP_LOGI("switch", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
+
 button:
   - platform: restart
     name: "Restart HWR Pump"
-  
-  # Remote Mode Buttons
-  - platform: template
-    name: "Enable Remote Mode"
-    icon: "mdi:remote"
-    on_press:
-      - lambda: |-
-          ESP_LOGI("button", "Enabling remote mode...");
-          bool result = id(pump).enable_remote();
-          ESP_LOGI("button", "Enable remote result: %s", result ? "SUCCESS" : "FAILED");
-  
-  - platform: template
-    name: "Disable Remote Mode (Auto)"
-    icon: "mdi:remote-off"
-    on_press:
-      - lambda: |-
-          ESP_LOGI("button", "Disabling remote mode (returning to Auto)...");
-          bool result = id(pump).disable_remote();
-          ESP_LOGI("button", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
   
   # Schedule Management Button
   - platform: template

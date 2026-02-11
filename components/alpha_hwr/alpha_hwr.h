@@ -198,33 +198,42 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
      *   on_press:
      *     - lambda: id(pump).update_schedule_display();
      */
-    void update_schedule_display() {
-      // Read all schedule layers asynchronously
-      this->read_schedule_entries_async(-1, [this](bool success, const std::vector<ScheduleEntry> &entries) {
-        if (!success) {
-          ESP_LOGW(TAG, "Failed to read schedule for display update");
+     void update_schedule_display() {
+       ESP_LOGI(TAG, "update_schedule_display() called");
+       // For now, just read layer 0 to test if reading works
+       this->read_schedule_entries_async(0, [this](bool success, const std::vector<ScheduleEntry> &entries) {
+         ESP_LOGI(TAG, "Schedule read callback: success=%d, entries=%zu", success, entries.size());
+         if (!success) {
+           ESP_LOGW(TAG, "Failed to read schedule for display update");
 #ifdef USE_TEXT_SENSOR
-          if (this->schedule_text_sensor_) {
-            this->schedule_text_sensor_->publish_state("Error reading schedule");
-          }
+           if (this->schedule_text_sensor_) {
+             this->schedule_text_sensor_->publish_state("Error reading schedule (timeout)");
+           }
 #endif
-          return;
-        }
+           return;
+         }
 
-        // Format and display the schedule
+         // Format and display the schedule
 #ifdef USE_TEXT_SENSOR
-        if (this->schedule_text_sensor_) {
-          std::string display_str;
-          if (this->get_schedule_display_string(entries, &display_str)) {
-            this->schedule_text_sensor_->publish_state(display_str);
-            ESP_LOGI(TAG, "Schedule display updated:\n%s", display_str.c_str());
-          } else {
-            this->schedule_text_sensor_->publish_state("Error formatting schedule");
-          }
-        }
+         if (this->schedule_text_sensor_) {
+           std::string display_str;
+           if (entries.empty()) {
+             display_str = "No schedule configured on layer 0";
+             ESP_LOGI(TAG, "Schedule is empty on layer 0");
+           } else if (this->get_schedule_display_string(entries, &display_str)) {
+             ESP_LOGI(TAG, "Schedule display updated with %zu entries", entries.size());
+           } else {
+             display_str = "Error formatting schedule";
+             ESP_LOGW(TAG, "Failed to format schedule display");
+           }
+           this->schedule_text_sensor_->publish_state(display_str);
+           ESP_LOGI(TAG, "Published to sensor:\n%s", display_str.c_str());
+         } else {
+           ESP_LOGW(TAG, "schedule_text_sensor_ is null!");
+         }
 #endif
-      });
-    }
+       });
+     }
 };
 
 }  // namespace alpha_hwr

@@ -108,14 +108,21 @@ void AlphaHwrComponent::setup() {
     this->set_timeout(delay_ms, std::move(callback));
   });
   
-  // Initialize schedule service callbacks
-  schedule_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
-    this->set_timeout(delay_ms, std::move(callback));
-  });
-  
-  schedule_service_.set_timeout_callback([this](std::function<void()> callback, uint32_t delay_ms) {
-    this->set_timeout(delay_ms, std::move(callback));
-  });
+   // Initialize schedule service callbacks
+   schedule_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
+     this->set_timeout(delay_ms, std::move(callback));
+   });
+   
+   schedule_service_.set_timeout_callback([this](std::function<void()> callback, uint32_t delay_ms) {
+     this->set_timeout(delay_ms, std::move(callback));
+   });
+   
+   // Initialize schedule text sensor with "Loading..." state
+#ifdef USE_TEXT_SENSOR
+   if (this->schedule_text_sensor_) {
+     this->schedule_text_sensor_->publish_state("Loading schedule...");
+   }
+#endif
 }
 
 void AlphaHwrComponent::loop() {

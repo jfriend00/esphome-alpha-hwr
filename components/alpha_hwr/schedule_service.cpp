@@ -295,8 +295,47 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
     return false;
   }
 
+  // Special handling for layer=-1: read all layers
+  if (layer == -1) {
+    ESP_LOGI(TAG, "Reading schedule entries from all layers (async)...");
+    
+    // Create a shared vector to collect entries from all layers
+    auto all_entries = std::make_shared<std::vector<ScheduleEntry>>();
+    int layers_pending = 5;
+    
+    // Read each layer sequentially
+    std::function<void(int)> read_next_layer = [this, all_entries, &layers_pending, on_complete, read_next_layer](int current_layer) {
+      if (current_layer > 4) {
+        // All layers read, return combined results
+        ESP_LOGI(TAG, "Read %zu total schedule entries from all layers", all_entries->size());
+        if (on_complete) on_complete(true, *all_entries);
+        return;
+      }
+      
+      // Read current layer
+      this->read_entries_async(current_layer, [this, all_entries, on_complete, read_next_layer, current_layer](bool success, const std::vector<ScheduleEntry>& entries) {
+        if (success) {
+          // Append entries from this layer to combined list
+          for (const auto& entry : entries) {
+            all_entries->push_back(entry);
+          }
+          ESP_LOGD(TAG, "Layer %d contributed %zu entries", current_layer, entries.size());
+        } else {
+          ESP_LOGW(TAG, "Failed to read layer %d (continuing with other layers)", current_layer);
+        }
+        
+        // Move to next layer
+        read_next_layer(current_layer + 1);
+      });
+    };
+    
+    // Start reading from layer 0
+    read_next_layer(0);
+    return true;
+  }
+
   if (layer < 0 || layer > 4) {
-    ESP_LOGE(TAG, "Invalid layer %d (must be 0-4)", layer);
+    ESP_LOGE(TAG, "Invalid layer %d (must be 0-4 or -1 for all)", layer);
     return false;
   }
 
