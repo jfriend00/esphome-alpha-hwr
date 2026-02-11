@@ -87,19 +87,28 @@ void AlphaHwrComponent::setup() {
     this->set_timeout(delay_ms, std::move(callback));
   });
   
-   auth_.set_completion_callback([this]() {
-     this->session_.on_authenticated();
-     ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
-     
-     // Start telemetry service when authenticated
-     this->telemetry_service_.start();
-     
-     // Refresh schedule display on successful authentication
-     this->set_timeout(3000, [this]() {
-       ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
-       this->update_schedule_display();
-     });
-   });
+    auth_.set_completion_callback([this]() {
+      this->session_.on_authenticated();
+      ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
+      
+      // Start telemetry service when authenticated
+      this->telemetry_service_.start();
+      
+      // Read current control mode from pump
+      this->control_service_.get_mode_async([this](bool success, services::ControlMode mode) {
+        if (success) {
+          ESP_LOGI(TAG, "✓ Control mode synced: %s", services::ControlService::get_mode_name(mode));
+        } else {
+          ESP_LOGW(TAG, "Failed to read control mode from pump");
+        }
+      });
+      
+      // Refresh schedule display on successful authentication
+      this->set_timeout(3000, [this]() {
+        ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
+        this->update_schedule_display();
+      });
+    });
   
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
   

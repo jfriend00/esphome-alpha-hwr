@@ -49,7 +49,97 @@ ControlService::ControlService(core::Transport &transport, core::Session &sessio
 }
 
 void ControlService::set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback) {
-  schedule_callback_ = callback;
+   schedule_callback_ = callback;
+ }
+
+bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_complete) {
+  // Verify session is authenticated
+  if (session_.get_state() != core::SessionState::READY) {
+    ESP_LOGW(TAG, "Cannot get mode: session not ready (state=%d)", static_cast<int>(session_.get_state()));
+    if (on_complete) {
+      on_complete(false, current_mode_);
+    }
+    return false;
+  }
+
+  ESP_LOGD(TAG, "Reading current control mode from pump (Object 86, SubID 6)...");
+
+  // Build Class 10 READ request: [0x0A][0x03][Object][SubID-H][SubID-L]
+  // Object 86 (0x56), SubID 6 (0x0006)
+  // Format: 0x0A = Class 10, 0x03 = OpSpec READ, 86 = Object 86, 0x00 0x06 = SubID 6
+  // Reference: control.py::get_mode() lines 468
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x03;  // OpSpec: READ
+  apdu[2] = 86;    // Object 86 (overall_operation_local_request_obj)
+  apdu[3] = 0x00;  // SubID high byte
+  apdu[4] = 0x06;  // SubID low byte
+
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send with response matching for Object 86
+  // The pump usually responds with SubID 0 or the requested SubID 6
+  // Reference: control.py line 468 shows we use _read_class10_object(86, 6)
+  this->transport_.send_command(
+    packet, 
+    0x5600,  // Expect Object 86 (0x56 high, 0x00 low)
+    0,       // Any SubID (0 = wildcard, handled by transport)
+    [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
+      if (!success) {
+        ESP_LOGW(TAG, "Failed to read control mode (timeout)");
+        if (on_complete) {
+          on_complete(false, current_mode_);
+        }
+        return;
+      }
+
+      if (payload_len >= 10) {
+        // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
+        // Determine offset: check for 3-byte header [00 00 XX]
+        int offset = 0;
+        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+          offset = 3;
+        }
+
+        if (payload_len >= offset + 7) {
+          uint8_t control_source = payload[offset];
+          uint8_t operation_mode = payload[offset + 1];
+          uint8_t control_mode_byte = payload[offset + 2];
+
+          ESP_LOGD(TAG, 
+            "Parsed control mode: mode=%d, op_mode=%d, source=%d (raw payload_len=%zu)", 
+            control_mode_byte, operation_mode, control_source, payload_len);
+
+          // Validate control mode value
+          if (control_mode_byte <= static_cast<uint8_t>(ControlMode::NONE)) {
+            current_mode_ = static_cast<ControlMode>(control_mode_byte);
+            ESP_LOGI(TAG, "Control mode updated to %d (%s)", 
+              control_mode_byte, get_mode_name(current_mode_));
+            
+            if (on_complete) {
+              on_complete(true, current_mode_);
+            }
+            return;
+          } else {
+            ESP_LOGW(TAG, "Invalid control mode value: %d", control_mode_byte);
+          }
+        } else {
+          ESP_LOGW(TAG, "Response too short: expected >= %d bytes, got %zu", offset + 7, payload_len);
+        }
+      } else {
+        ESP_LOGW(TAG, "Response payload too short: expected >= 10 bytes, got %zu", payload_len);
+      }
+
+      if (on_complete) {
+        on_complete(false, current_mode_);
+      }
+    }
+  );
+
+  return true;
 }
 
 bool ControlService::start(uint8_t mode) {

@@ -99,15 +99,33 @@ class ControlService {
    */
   ControlService(core::Transport &transport, core::Session &session);
   
-  /**
-   * Set callback for scheduling delayed operations.
-   * 
-   * The service needs to schedule configuration commits and retries.
-   * The main component provides this callback to delegate scheduling.
-   * 
-   * @param callback Function to call set_timeout on the component
-   */
-  void set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback);
+   /**
+    * Get the current control mode from the pump.
+    * 
+    * Reads Class 10 Object 86, Sub-ID 6 to get the pump's current control mode,
+    * operation mode, and setpoint. Updates internal state with the control mode.
+    * 
+    * @param on_complete Callback function(bool success, ControlMode mode)
+    * @return True if read request was sent successfully
+    * 
+    * Protocol Notes:
+    * - Uses Class 10 Object 86, Sub-ID 6 (overall_operation_local_request_obj)
+    * - Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
+    * - Control mode is at offset 2 (byte 5 in response)
+    * 
+    * Reference: control.py::get_mode() lines 224-294
+    */
+   bool get_mode_async(std::function<void(bool, ControlMode)> on_complete);
+   
+   /**
+    * Set callback for scheduling delayed operations.
+    * 
+    * The service needs to schedule configuration commits and retries.
+    * The main component provides this callback to delegate scheduling.
+    * 
+    * @param callback Function to call set_timeout on the component
+    */
+   void set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback);
   
   /**
    * Start the pump.
