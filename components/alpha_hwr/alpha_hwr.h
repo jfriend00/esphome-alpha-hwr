@@ -13,6 +13,7 @@
 #include <esp_bt_defs.h>
 #include "codec.h"
 #include "frame_builder.h"
+#include "transport.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -167,10 +168,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   static const uint32_t DISCOVERY_RETRY_DELAY_MS = 1000;
   static const uint32_t POST_CONNECT_DELAY_MS = 500;
   
-  // Packet reassembly for multi-packet BLE responses
-  std::vector<uint8_t> reassembly_buffer_;
-  uint8_t expected_packet_length_ = 0;
-  bool reassembling_ = false;
+  // BLE transport layer (handles packet reassembly)
+  core::Transport transport_;
 };
 
 }  // namespace alpha_hwr

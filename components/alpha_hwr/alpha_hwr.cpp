@@ -147,6 +147,11 @@ void AlphaHwrComponent::init_security() {
 void AlphaHwrComponent::setup() {
   ESP_LOGI(TAG, "Alpha HWR Component setup");
   init_security();
+  
+  // Initialize transport callback for complete packets
+  transport_.set_packet_callback([this](const uint8_t* data, size_t len) {
+    this->decode_packet(const_cast<uint8_t*>(data), len);
+  });
 }
 
 void AlphaHwrComponent::loop() {
@@ -189,18 +194,22 @@ void AlphaHwrComponent::send_read_request(uint32_t register_addr) {
           packet[5], packet[6], packet[7], packet[8], packet[9], packet[10]);
   ESP_LOGD(TAG, "Sending READ request for register 0x%06X: %s", register_addr, hex_str);
   
-  // Send the packet
-  auto status = esp_ble_gattc_write_char(
-      parent_->get_gattc_if(),
-      parent_->get_conn_id(),
-      chr->handle,
-      sizeof(packet),
-      packet,
-      ESP_GATT_WRITE_TYPE_NO_RSP,
-      ESP_GATT_AUTH_REQ_NONE);
+  // Create write callback that captures BLE write context
+  auto write_func = [this, chr](const uint8_t* data, size_t len) -> bool {
+    auto status = esp_ble_gattc_write_char(
+        this->parent_->get_gattc_if(),
+        this->parent_->get_conn_id(),
+        chr->handle,
+        len,
+        const_cast<uint8_t*>(data),  // ESP-IDF API doesn't use const
+        ESP_GATT_WRITE_TYPE_NO_RSP,
+        ESP_GATT_AUTH_REQ_NONE);
+    return (status == ESP_OK);
+  };
   
-  if (status != ESP_OK) {
-    ESP_LOGW(TAG, "Failed to send read request: status=%d", status);
+  // Use transport to write packet (handles splitting if needed)
+  if (!transport_.write_packet(packet, sizeof(packet), write_func)) {
+    ESP_LOGW(TAG, "Failed to send read request via transport");
   }
 }
 
@@ -392,21 +401,26 @@ void AlphaHwrComponent::send_auth_packet(const uint8_t *data, size_t len) {
     return;
   }
   
-  // CRITICAL FIX: Use write without response (ESP_GATT_WRITE_TYPE_NO_RSP)
+  // Create write callback that captures BLE write context
+  // CRITICAL: Use write without response (ESP_GATT_WRITE_TYPE_NO_RSP)
   // This matches the Python library's behavior (response=False)
-  auto status = esp_ble_gattc_write_char(
-      parent_->get_gattc_if(),
-      parent_->get_conn_id(),
-      chr->handle,
-      len,
-      (uint8_t *)data,
-      ESP_GATT_WRITE_TYPE_NO_RSP,  // Write without response - faster, matches Python
-      ESP_GATT_AUTH_REQ_NONE);
+  auto write_func = [this, chr](const uint8_t* data, size_t len) -> bool {
+    auto status = esp_ble_gattc_write_char(
+        this->parent_->get_gattc_if(),
+        this->parent_->get_conn_id(),
+        chr->handle,
+        len,
+        const_cast<uint8_t*>(data),  // ESP-IDF API doesn't use const
+        ESP_GATT_WRITE_TYPE_NO_RSP,  // Write without response - faster, matches Python
+        ESP_GATT_AUTH_REQ_NONE);
+    return (status == ESP_OK);
+  };
   
-  if (status == ESP_OK) {
+  // Use transport to write packet (handles splitting if needed)
+  if (transport_.write_packet(data, len, write_func)) {
     ESP_LOGD(TAG, "Sent auth packet (%zu bytes)", len);
   } else {
-    ESP_LOGW(TAG, "Failed to send auth packet: status=%d", status);
+    ESP_LOGW(TAG, "Failed to send auth packet via transport");
   }
 }
 
@@ -688,40 +702,8 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
       auto *notify_evt = &param->notify;
       if (notify_evt->value_len > 0) {
         ESP_LOGD(TAG, "Received notification, %d bytes", notify_evt->value_len);
-        
-        // Check if this is the start of a new packet (frame byte 0x24 or 0x27)
-        if (notify_evt->value[0] == 0x24 || notify_evt->value[0] == 0x27) {
-          // Start of new packet - check if we need length info
-          if (notify_evt->value_len >= 2) {
-            expected_packet_length_ = notify_evt->value[1] + 2;  // Length field + Frame + Length bytes
-            ESP_LOGD(TAG, "New packet started, expected total length: %d bytes", expected_packet_length_);
-          }
-          
-          // Clear buffer and start fresh
-          reassembly_buffer_.clear();
-          reassembly_buffer_.insert(reassembly_buffer_.end(), 
-                                   notify_evt->value, 
-                                   notify_evt->value + notify_evt->value_len);
-          reassembling_ = true;
-        } else if (reassembling_) {
-          // Continuation of previous packet
-          reassembly_buffer_.insert(reassembly_buffer_.end(), 
-                                   notify_evt->value, 
-                                   notify_evt->value + notify_evt->value_len);
-          ESP_LOGD(TAG, "Reassembly: %d/%d bytes", reassembly_buffer_.size(), expected_packet_length_);
-        } else {
-          // Single packet or unknown format
-          decode_packet(notify_evt->value, notify_evt->value_len);
-          break;
-        }
-        
-        // Check if we have the complete packet
-        if (reassembling_ && reassembly_buffer_.size() >= expected_packet_length_) {
-          ESP_LOGD(TAG, "Packet complete, decoding %d bytes", reassembly_buffer_.size());
-          decode_packet(reassembly_buffer_.data(), reassembly_buffer_.size());
-          reassembling_ = false;
-          reassembly_buffer_.clear();
-        }
+        // Pass to transport for reassembly (callback will invoke decode_packet when complete)
+        transport_.on_notification(notify_evt->value, notify_evt->value_len);
       }
       break;
     }
@@ -733,8 +715,7 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
       auth_started_ = false;  // Reset auth flag on disconnect
       geni_service_found_ = false;
       discovery_retry_count_ = 0;
-      reassembling_ = false;  // Reset reassembly state
-      reassembly_buffer_.clear();
+      transport_.reset();  // Reset transport state on disconnect
       break;
     
     default:
