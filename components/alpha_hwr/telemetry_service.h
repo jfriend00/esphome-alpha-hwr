@@ -28,93 +28,29 @@
 
 namespace esphome {
 namespace alpha_hwr {
+namespace core {
+class Transport;
+}
+
 namespace services {
-
-/**
- * Callback for sending BLE packets.
- * 
- * @param data Packet data to send
- * @param len Length of packet data
- * @return true if write was successful, false otherwise
- */
-using WriteCallback = std::function<bool(const uint8_t* data, size_t len)>;
-
-/**
- * Callback for scheduling delayed tasks.
- * 
- * @param delay_ms Delay in milliseconds before executing callback
- * @param callback Function to execute after delay
- */
-using SchedulerCallback = std::function<void(uint32_t delay_ms, std::function<void()> callback)>;
 
 // Forward declaration for SensorPublisher
 class SensorPublisher;
 
 /**
  * Telemetry Service
- * 
- * Manages all telemetry-related operations for the ALPHA HWR pump.
- * 
- * Usage:
- * 1. Create instance
- * 2. Set callbacks (write, scheduler, sensor_update)
- * 3. Call start() when pump is ready
- * 4. Call poll() periodically to request telemetry
- * 5. Route incoming packets to on_packet()
- * 6. Call stop() when disconnecting
- * 
- * Example:
- * ```cpp
- * services::TelemetryService telemetry_service_;
- * 
- * // In setup():
- * telemetry_service_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
- *     return this->write_ble_packet(data, len);
- * });
- * 
- * telemetry_service_.set_scheduler_callback([this](uint32_t delay_ms, auto cb) {
- *     this->set_timeout(delay_ms, std::move(cb));
- * });
- * 
- * telemetry_service_.set_sensor_update_callback([this](const uint8_t* data, size_t len) {
- *     this->update_sensors(data, len);
- * });
- * 
- * // When ready:
- * telemetry_service_.start();
- * 
- * // In update() (every 10 seconds):
- * telemetry_service_.poll();
- * 
- * // In notification handler:
- * telemetry_service_.on_packet(data, len);
- * ```
  */
 class TelemetryService {
  public:
   /**
    * Constructor
    */
-  TelemetryService();
+  TelemetryService(core::Transport &transport);
 
   /**
    * Destructor
    */
   ~TelemetryService() = default;
-
-  /**
-   * Set callback for writing BLE packets.
-   * 
-   * @param callback Function to call when sending packets
-   */
-  void set_write_callback(WriteCallback callback);
-
-  /**
-   * Set callback for scheduling delayed tasks.
-   * 
-   * @param callback Function to call when scheduling tasks
-   */
-  void set_scheduler_callback(SchedulerCallback callback);
 
   /**
    * Set sensor publisher for updating ESPHome sensors.
@@ -175,9 +111,7 @@ class TelemetryService {
   void on_packet(const uint8_t* data, size_t len);
 
  private:
-  // Callbacks
-  WriteCallback write_callback_;
-  SchedulerCallback scheduler_callback_;
+  core::Transport &transport_;
   
   // Sensor publisher (for publishing telemetry to ESPHome sensors)
   SensorPublisher* sensor_publisher_{nullptr};

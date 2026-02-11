@@ -110,6 +110,16 @@ class ScheduleService {
    */
   void set_write_callback(WriteCallback callback) { this->write_callback_ = callback; }
 
+  /**
+   * Set callback for timeout operations (ESPHome's set_timeout).
+   * Required for async write operations with completion callbacks.
+   * 
+   * @param callback Function that takes (lambda, delay_ms) and schedules lambda to run after delay
+   */
+  void set_timeout_callback(std::function<void(std::function<void()>, uint32_t)> callback) { 
+    this->set_timeout_callback_ = callback; 
+  }
+
   // -------------------------------------------------------------------------
   // Schedule State Operations
   // -------------------------------------------------------------------------
@@ -198,36 +208,62 @@ class ScheduleService {
   bool read_entries(std::vector<ScheduleEntry> *entries, int layer = -1);
 
   /**
-   * Write schedule entries to the pump.
-   *
-   * Writes a complete weekly schedule to the specified layer. Each layer
-   * can contain up to 7 entries (one per day). Entries are validated before
-   * writing to ensure no overlaps or invalid time ranges.
-   *
-   * @param entries Vector of ScheduleEntry objects to write
-   * @param layer Schedule layer to write to (0-4)
-   * @return True if successfully written, false otherwise
-   *
-   * Protocol: Class 10, OpSpec 0xB3 (OpSpec 5), Object 84
-   * - SubID: 1000 + layer
-   * - Payload: 42 bytes (7 days × 6 bytes, no header for writes)
-   * - APDU format:
-   *   [0x0A]              # Class 10
-   *   [0xB3]              # OpSpec 5
-   *   [84]                # Object ID
-   *   [SubH][SubL]        # SubID (big-endian)
-   *   [0x00]              # Reserved
-   *   [0xDE][0x01][0x00]  # Type 222 header
-   *   [0x00][0x2A]        # Size (42 bytes)
-   *   [42 bytes data]     # Schedule entries
-   *
-   * Validation:
-   * - Layer must be 0-4
-   * - Time ranges must be valid (non-zero duration)
-   * - No overlaps allowed within same day/layer
-   * - Only one entry per day per layer (last one wins)
+   * Read schedule entries from the pump (async with callback).
+   * 
+   * @param layer Layer to read (0-4)
+   * @param on_complete Callback invoked with success status and entries
+   * @return True if read request sent successfully
    */
+  bool read_entries_async(int layer, std::function<void(bool success, const std::vector<ScheduleEntry>& entries)> on_complete);
+
+   /**
+    * Write schedule entries to the pump (synchronous, fire-and-forget).
+    *
+    * Writes a complete weekly schedule to the specified layer. Each layer
+    * can contain up to 7 entries (one per day). Entries are validated before
+    * writing to ensure no overlaps or invalid time ranges.
+    *
+    * Note: This is fire-and-forget mode - returns immediately without waiting
+    * for acknowledgment. Use write_entries_async() for proper transaction handling.
+    *
+    * @param entries Vector of ScheduleEntry objects to write
+    * @param layer Schedule layer to write to (0-4)
+    * @return True if successfully written, false otherwise
+    */
   bool write_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0);
+
+  /**
+    * Write schedule entries to the pump (async with completion callback).
+    *
+    * Writes a complete weekly schedule and waits for acknowledgment from pump.
+    * Uses ESPHome's set_timeout() to check for response after write completes.
+    *
+    * @param entries Vector of ScheduleEntry objects to write
+    * @param layer Schedule layer to write to (0-4)
+    * @param on_complete Callback invoked when write completes (with success status)
+    * @return True if write packet sent successfully, false on validation/send error
+    *
+    * Protocol: Class 10, OpSpec 0xB3 (OpSpec 5), Object 84
+    * - SubID: 1000 + layer
+    * - Payload: 42 bytes (7 days × 6 bytes, no header for writes)
+    * - APDU format:
+    *   [0x0A]              # Class 10
+    *   [0xB3]              # OpSpec 5
+    *   [84]                # Object ID
+    *   [SubH][SubL]        # SubID (big-endian)
+    *   [0x00]              # Reserved
+    *   [0xDE][0x01][0x00]  # Type 222 header
+    *   [0x00][0x2A]        # Size (42 bytes)
+    *   [42 bytes data]     # Schedule entries
+    *
+    * Validation:
+    * - Layer must be 0-4
+    * - Time ranges must be valid (non-zero duration)
+    * - No overlaps allowed within same day/layer
+    * - Only one entry per day per layer (last one wins)
+    */
+  bool write_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
+                          std::function<void(bool success)> on_complete);
 
   /**
    * Clear (disable) a schedule entry for a specific day.
@@ -327,6 +363,9 @@ class ScheduleService {
 
   ScheduleCallback schedule_callback_;
   WriteCallback write_callback_;
+  
+  // Timeout callback for async operations (provided by main component)
+  std::function<void(std::function<void()>, uint32_t)> set_timeout_callback_;
 
   // Cached state for async read operations
   bool schedule_state_cached_;       ///< True if schedule_enabled_ contains valid data

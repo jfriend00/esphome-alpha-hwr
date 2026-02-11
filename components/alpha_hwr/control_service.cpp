@@ -1,4 +1,5 @@
 #include "control_service.h"
+#include "transport.h"
 #include "esphome/core/log.h"
 #include <cstring>
 
@@ -51,10 +52,6 @@ void ControlService::set_schedule_callback(std::function<void(std::function<void
   schedule_callback_ = callback;
 }
 
-void ControlService::set_write_callback(std::function<bool(const uint8_t*, size_t)> callback) {
-  write_callback_ = callback;
-}
-
 bool ControlService::start(uint8_t mode) {
   // Verify session is authenticated
   if (session_.get_state() != core::SessionState::READY) {
@@ -101,14 +98,13 @@ bool ControlService::start(uint8_t mode) {
   memcpy(&apdu[6], payload, 12);
 
   // Build GENI frame
-  uint8_t packet[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet);
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
 
-  // Send packet
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write start command packet");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
 
   // Schedule configuration commit (after 200ms delay)
   // Reference: control.py lines 223-226
@@ -170,14 +166,13 @@ bool ControlService::stop(uint8_t mode) {
   memcpy(&apdu[6], payload, 12);
 
   // Build GENI frame
-  uint8_t packet[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet);
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
 
-  // Send packet
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write stop command packet");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
 
   // Schedule configuration commit (after 200ms delay)
   // Reference: control.py lines 290-293
@@ -227,14 +222,13 @@ bool ControlService::set_mode(ControlMode mode) {
     memcpy(&apdu[6], payload, 12);
 
   // Build GENI frame
-  uint8_t packet[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet);
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
 
-  // Send packet
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write start command packet");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
     
     current_mode_ = mode;
     ESP_LOGI(TAG, "Mode set to %s (Class 10)", get_mode_name(mode));
@@ -286,14 +280,13 @@ bool ControlService::set_mode(ControlMode mode) {
   apdu[2] = cmd_id;
 
   // Build GENI frame
-  uint8_t packet[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet);
+  uint8_t packet_raw[32];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
 
-  // Send packet
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write mode command packet (Class 3)");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
   
   current_mode_ = mode;
   ESP_LOGI(TAG, "Mode set to %s (Class 3)", get_mode_name(mode));
@@ -313,13 +306,13 @@ bool ControlService::enable_remote_mode() {
   // Reference: control.py lines 329-332
   uint8_t apdu[3] = {0x03, 0xC1, 0x07};
   
-  uint8_t packet[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet);
+  uint8_t packet_raw[32];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
   
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write enable remote command");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
   
   ESP_LOGI(TAG, "Remote mode enabled");
   return true;
@@ -338,13 +331,13 @@ bool ControlService::disable_remote_mode() {
   // Reference: control.py lines 358-361
   uint8_t apdu[3] = {0x03, 0xC1, 0x06};
   
-  uint8_t packet[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet);
+  uint8_t packet_raw[32];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
   
-  if (!write_callback_ || !write_callback_(packet, packet_len)) {
-    ESP_LOGE(TAG, "Failed to write disable remote command");
-    return false;
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
   
   ESP_LOGI(TAG, "Remote mode disabled (Auto)");
   return true;
@@ -416,14 +409,13 @@ void ControlService::send_configuration_commit() {
   };
   memcpy(apdu, commit_data, 21);
   
-  uint8_t packet[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 21, packet);
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 21, packet_raw);
   
-  if (write_callback_ && write_callback_(packet, packet_len)) {
-    ESP_LOGD(TAG, "Configuration commit sent");
-  } else {
-    ESP_LOGW(TAG, "Failed to write configuration commit");
-  }
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
 }
 
 bool ControlService::get_class10_mapping(ControlMode mode, ControlModeMapping &mapping) {

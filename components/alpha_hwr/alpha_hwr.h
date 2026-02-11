@@ -76,6 +76,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
  public:
   explicit AlphaHwrComponent(ble_client::BLEClient *parent) : 
       PollingComponent(10000),
+      auth_(transport_),
+      telemetry_service_(transport_),
       control_service_(transport_, session_),
       schedule_service_(transport_, session_) {
     parent->register_ble_node(this);
@@ -163,8 +165,15 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool read_schedule_entries(std::vector<ScheduleEntry> *entries, int layer = -1) {
     return schedule_service_.read_entries(entries, layer);
   }
+  bool read_schedule_entries_async(int layer, std::function<void(bool, const std::vector<ScheduleEntry>&)> on_complete) {
+    return schedule_service_.read_entries_async(layer, on_complete);
+  }
   bool write_schedule_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0) {
     return schedule_service_.write_entries(entries, layer);
+  }
+  bool write_schedule_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
+                                    std::function<void(bool)> on_complete) {
+    return schedule_service_.write_entries_async(entries, layer, on_complete);
   }
   bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
     return schedule_service_.clear_entry(day, layer);

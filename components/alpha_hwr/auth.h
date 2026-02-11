@@ -8,6 +8,8 @@ namespace esphome {
 namespace alpha_hwr {
 namespace core {
 
+class Transport;
+
 /**
  * @brief Authentication handler for Grundfos ALPHA HWR pumps
  * 
@@ -40,15 +42,6 @@ namespace core {
 class Authentication {
  public:
   /**
-   * @brief Callback function type for writing BLE packets
-   * 
-   * @param data Pointer to packet data
-   * @param len Length of packet in bytes
-   * @return true if write was successful
-   */
-  using WriteCallback = std::function<bool(const uint8_t* data, size_t len)>;
-  
-  /**
    * @brief Callback function type for completion notification
    * 
    * Called when authentication handshake completes successfully.
@@ -67,17 +60,7 @@ class Authentication {
   /**
    * @brief Construct an Authentication handler
    */
-  Authentication();
-  
-  /**
-   * @brief Set the BLE write callback
-   * 
-   * This callback will be invoked to send authentication packets
-   * to the pump via the GENI characteristic.
-   * 
-   * @param callback Function to write BLE packets
-   */
-  void set_write_callback(WriteCallback callback);
+  Authentication(Transport &transport);
   
   /**
    * @brief Set the scheduler callback
@@ -125,7 +108,7 @@ class Authentication {
   bool is_running() const { return running_; }
   
  private:
-  WriteCallback write_callback_;  ///< Callback to write BLE packets
+  Transport &transport_;  ///< Transport layer
   SchedulerCallback scheduler_callback_;  ///< Callback to schedule delayed tasks
   CompletionCallback completion_callback_;  ///< Callback for completion
   bool running_ = false;  ///< True if authentication is in progress
