@@ -9,6 +9,8 @@
 #include "telemetry_service.h"
 #include "frame_builder.h"
 #include "frame_parser.h"
+#include "telemetry_decoder.h"
+#include "sensor_publisher.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -26,8 +28,8 @@ void TelemetryService::set_scheduler_callback(SchedulerCallback callback) {
   scheduler_callback_ = std::move(callback);
 }
 
-void TelemetryService::set_sensor_update_callback(SensorUpdateCallback callback) {
-  sensor_update_callback_ = std::move(callback);
+void TelemetryService::set_sensor_publisher(SensorPublisher* publisher) {
+  sensor_publisher_ = publisher;
 }
 
 void TelemetryService::start() {
@@ -183,45 +185,60 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
 void TelemetryService::handle_motor_state_response(const uint8_t* data, size_t len) {
   ESP_LOGI(TAG, "Motor state response (OpSpec 0x30)");
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Decode motor state using telemetry decoder
+  protocol::MotorStateTelemetry motor = protocol::decode_motor_state_response(data, len);
+  
+  // Publish to sensors
+  if (sensor_publisher_) {
+    sensor_publisher_->publish_motor_state(motor);
   }
 }
 
 void TelemetryService::handle_flow_pressure_response(const uint8_t* data, size_t len) {
   ESP_LOGI(TAG, "Flow/pressure response (OpSpec 0x2B)");
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Decode flow/pressure using telemetry decoder
+  protocol::FlowPressureTelemetry flow = protocol::decode_flow_pressure_response(data, len);
+  
+  // Publish to sensors
+  if (sensor_publisher_) {
+    sensor_publisher_->publish_flow_pressure(flow);
   }
 }
 
 void TelemetryService::handle_temperature_response(const uint8_t* data, size_t len) {
   ESP_LOGI(TAG, "Temperature response (OpSpec 0x14)");
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Decode temperature using telemetry decoder
+  protocol::TemperatureTelemetry temp = protocol::decode_temperature_response(data, len);
+  
+  // Publish to sensors
+  if (sensor_publisher_) {
+    sensor_publisher_->publish_temperature(temp);
   }
 }
 
 void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len) {
   ESP_LOGI(TAG, "Alarms response (OpSpec 0x13, Obj 88, Sub 0)");
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Decode alarms using telemetry decoder
+  protocol::AlarmWarningTelemetry alarms = protocol::decode_alarms_warnings_response(data, len, 0x13);
+  
+  // Publish to sensors
+  if (sensor_publisher_) {
+    sensor_publisher_->publish_alarms(alarms.codes);
   }
 }
 
 void TelemetryService::handle_warnings_response(const uint8_t* data, size_t len) {
   ESP_LOGI(TAG, "Warnings response (OpSpec 0x13, Obj 88, Sub 11)");
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Decode warnings using telemetry decoder
+  protocol::AlarmWarningTelemetry warnings = protocol::decode_alarms_warnings_response(data, len, 0x13);
+  
+  // Publish to sensors
+  if (sensor_publisher_) {
+    sensor_publisher_->publish_warnings(warnings.codes);
   }
 }
 
@@ -235,9 +252,29 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
   
   ESP_LOGD(TAG, "Passive telemetry notification: Sub=0x%04X, Obj=0x%04X", sub_id, obj_id);
   
-  // Sensor update callback handles decoding and publishing
-  if (sensor_update_callback_) {
-    sensor_update_callback_(data, len);
+  // Standard Motor State (Sub 0x0045, Obj 0x0057 = Decimal Sub 69, Obj 87)
+  if (sub_id == 0x0045 && obj_id == 0x0057) {
+    protocol::MotorStateTelemetry motor = protocol::decode_passive_motor_state(data, len);
+    if (sensor_publisher_) {
+      sensor_publisher_->publish_motor_state(motor);
+    }
+  }
+  // Standard Flow/Head (Sub 0x0122, Obj 0x005D = Decimal Sub 290, Obj 93)
+  else if (sub_id == 0x0122 && obj_id == 0x005D) {
+    protocol::FlowPressureTelemetry flow = protocol::decode_passive_flow_pressure(data, len);
+    if (sensor_publisher_) {
+      sensor_publisher_->publish_flow_pressure(flow);
+    }
+  }
+  // Standard Temperature (Sub 0x012C, Obj 0x005D = Decimal Sub 300, Obj 93)
+  else if (sub_id == 0x012C && obj_id == 0x005D) {
+    protocol::TemperatureTelemetry temp = protocol::decode_passive_temperature(data, len);
+    if (sensor_publisher_) {
+      sensor_publisher_->publish_temperature(temp);
+    }
+  }
+  else {
+    ESP_LOGD(TAG, "Unknown passive notification (Sub=0x%04X, Obj=0x%04X)", sub_id, obj_id);
   }
 }
 

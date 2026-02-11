@@ -47,17 +47,8 @@ using WriteCallback = std::function<bool(const uint8_t* data, size_t len)>;
  */
 using SchedulerCallback = std::function<void(uint32_t delay_ms, std::function<void()> callback)>;
 
-/**
- * Callback for updating sensor values.
- * 
- * This callback is invoked when telemetry data is decoded and ready to be
- * published to sensors. The implementation should route the data to the
- * appropriate ESPHome sensor components.
- * 
- * @param data Parsed packet data
- * @param len Length of packet data
- */
-using SensorUpdateCallback = std::function<void(const uint8_t* data, size_t len)>;
+// Forward declaration for SensorPublisher
+class SensorPublisher;
 
 /**
  * Telemetry Service
@@ -126,11 +117,11 @@ class TelemetryService {
   void set_scheduler_callback(SchedulerCallback callback);
 
   /**
-   * Set callback for updating sensors.
+   * Set sensor publisher for updating ESPHome sensors.
    * 
-   * @param callback Function to call when telemetry data is ready
+   * @param publisher Pointer to SensorPublisher instance
    */
-  void set_sensor_update_callback(SensorUpdateCallback callback);
+  void set_sensor_publisher(SensorPublisher* publisher);
 
   /**
    * Start telemetry service.
@@ -187,7 +178,9 @@ class TelemetryService {
   // Callbacks
   WriteCallback write_callback_;
   SchedulerCallback scheduler_callback_;
-  SensorUpdateCallback sensor_update_callback_;
+  
+  // Sensor publisher (for publishing telemetry to ESPHome sensors)
+  SensorPublisher* sensor_publisher_{nullptr};
 
   // State
   bool running_ = false;

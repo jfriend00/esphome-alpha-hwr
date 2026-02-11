@@ -17,6 +17,7 @@
 #include "session.h"
 #include "auth.h"
 #include "telemetry_service.h"
+#include "sensor_publisher.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -75,23 +76,23 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
   }
 
-  void set_flow_sensor(sensor::Sensor *sensor) { flow_sensor_ = sensor; }
-  void set_head_sensor(sensor::Sensor *sensor) { head_sensor_ = sensor; }
-  void set_power_sensor(sensor::Sensor *sensor) { power_sensor_ = sensor; }
-  void set_rpm_sensor(sensor::Sensor *sensor) { rpm_sensor_ = sensor; }
-  void set_temp_media_sensor(sensor::Sensor *sensor) { temp_media_sensor_ = sensor; }
-  void set_temp_converter_sensor(sensor::Sensor *sensor) { temp_converter_sensor_ = sensor; }
-  void set_temp_pcb_sensor(sensor::Sensor *sensor) { temp_pcb_sensor_ = sensor; }
-  void set_temp_control_box_sensor(sensor::Sensor *sensor) { temp_control_box_sensor_ = sensor; }
-  void set_voltage_sensor(sensor::Sensor *sensor) { voltage_sensor_ = sensor; }
-  void set_voltage_dc_sensor(sensor::Sensor *sensor) { voltage_dc_sensor_ = sensor; }
-  void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
-  void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
-  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { outlet_pressure_sensor_ = sensor; }
+  void set_flow_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_flow_sensor(sensor); }
+  void set_head_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_head_sensor(sensor); }
+  void set_power_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_power_sensor(sensor); }
+  void set_rpm_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_rpm_sensor(sensor); }
+  void set_temp_media_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_media_sensor(sensor); }
+  void set_temp_converter_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_converter_sensor(sensor); }
+  void set_temp_pcb_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_pcb_sensor(sensor); }
+  void set_temp_control_box_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_control_box_sensor(sensor); }
+  void set_voltage_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_voltage_sensor(sensor); }
+  void set_voltage_dc_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_voltage_dc_sensor(sensor); }
+  void set_current_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_current_sensor(sensor); }
+  void set_inlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_inlet_pressure_sensor(sensor); }
+  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_outlet_pressure_sensor(sensor); }
   void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
 #ifdef USE_TEXT_SENSOR
-  void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { alarms_sensor_ = sensor; }
-  void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { warnings_sensor_ = sensor; }
+  void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }
+  void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_warnings_text_sensor(sensor); }
 #endif
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
@@ -111,28 +112,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
 
  private:
   ble_client::BLEClient *parent_ = nullptr;
-  sensor::Sensor *flow_sensor_{nullptr};
-  sensor::Sensor *head_sensor_{nullptr};
-  sensor::Sensor *power_sensor_{nullptr};
-  sensor::Sensor *rpm_sensor_{nullptr};
-  sensor::Sensor *temp_media_sensor_{nullptr};
-  sensor::Sensor *temp_converter_sensor_{nullptr};
-  sensor::Sensor *temp_pcb_sensor_{nullptr};
-  sensor::Sensor *temp_control_box_sensor_{nullptr};
-  sensor::Sensor *voltage_sensor_{nullptr};
-  sensor::Sensor *voltage_dc_sensor_{nullptr};
-  sensor::Sensor *current_sensor_{nullptr};
-  sensor::Sensor *inlet_pressure_sensor_{nullptr};
-  sensor::Sensor *outlet_pressure_sensor_{nullptr};
-  binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
-#ifdef USE_TEXT_SENSOR
-  text_sensor::TextSensor *alarms_sensor_{nullptr};
-  text_sensor::TextSensor *warnings_sensor_{nullptr};
-#endif
   
   bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding
   
-  void decode_packet(uint8_t *data, size_t len);
   void authenticate();
   void subscribe_to_notifications();
   void init_security();
@@ -154,6 +136,12 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   
   // Telemetry service (handles all telemetry operations)
   services::TelemetryService telemetry_service_;
+  
+  // Sensor publisher (maps telemetry to ESPHome sensors)
+  services::SensorPublisher sensor_publisher_;
+  
+  // Pairing status sensor (separate from telemetry)
+  binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
 };
 
 }  // namespace alpha_hwr
