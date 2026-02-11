@@ -38,6 +38,7 @@
 
 #include "esphome/core/component.h"
 #include <vector>
+#include <deque>
 #include <functional>
 
 namespace esphome {
@@ -117,42 +118,57 @@ class Transport {
  public:
   /**
    * Callback type for complete packets.
-   * 
-   * Called when a complete GENI packet has been reassembled.
-   * 
-   * Parameters:
-   *   data - Pointer to complete packet data
-   *   len  - Length of complete packet in bytes
    */
   using PacketCallback = std::function<void(const uint8_t* data, size_t len)>;
 
   /**
    * Callback type for BLE write operations.
-   * 
-   * This abstracts the actual BLE write call, allowing the transport
-   * to be independent of ESP-IDF details.
-   * 
-   * Parameters:
-   *   data - Pointer to data to write
-   *   len  - Length of data in bytes
-   * 
-   * Returns:
-   *   true if write was successful, false otherwise
    */
   using WriteCallback = std::function<bool(const uint8_t* data, size_t len)>;
 
   /**
    * Callback type for response handlers.
-   * 
-   * Called when a matching response packet arrives.
-   * 
-   * Parameters:
-   *   data - Pointer to packet payload (after GENI header, before CRC)
-   *   len  - Length of payload in bytes
    */
   using ResponseCallback = std::function<void(const uint8_t* data, size_t len)>;
 
+  /**
+   * Callback for command completion.
+   */
+  using CommandCallback = std::function<void(bool success, const uint8_t* data, size_t len)>;
+
+  struct Command {
+    std::vector<uint8_t> packet;
+    size_t bytes_sent{0};
+    uint16_t expect_obj_id{0};
+    uint16_t expect_sub_id{0};
+    CommandCallback callback{nullptr};
+    uint32_t timeout_ms{3000};
+    uint32_t timestamp_ms{0};
+    bool waiting_for_response{false};
+  };
+
   Transport();
+
+  void set_write_callback(WriteCallback callback) { write_callback_ = callback; }
+
+  /**
+   * Process transport state machine and command queue.
+   * Should be called from the main component loop().
+   */
+  void loop();
+
+  /**
+   * Queue a command for transmission.
+   * 
+   * @param packet The complete GENI packet to send
+   * @param expect_obj_id If non-zero, wait for response with this Object ID
+   * @param expect_sub_id If non-zero, wait for response with this Sub-ID
+   * @param callback Called when command completes or times out
+   * @param timeout_ms How long to wait for response
+   */
+  void send_command(const std::vector<uint8_t>& packet, uint16_t expect_obj_id = 0, 
+                    uint16_t expect_sub_id = 0, CommandCallback callback = nullptr, 
+                    uint32_t timeout_ms = 3000);
 
   /**
    * Set callback for complete packets.
@@ -181,26 +197,6 @@ class Transport {
    * @param len Length of notification data
    */
   void on_notification(const uint8_t* data, size_t len);
-
-  /**
-   * Write packet to BLE characteristic.
-   * 
-   * Automatically splits packets exceeding 20 bytes into multiple writes.
-   * This is required because BLE MTU limits individual writes.
-   * 
-   * For packets <= 20 bytes:
-   *   - Single write
-   * 
-   * For packets > 20 bytes:
-   *   - Write first 20 bytes
-   *   - Write remaining bytes
-   * 
-   * @param data Pointer to packet data
-   * @param len Length of packet
-   * @param write_func Callback to perform actual BLE write
-   * @return true if all writes succeeded, false otherwise
-   */
-  bool write_packet(const uint8_t* data, size_t len, WriteCallback write_func);
 
   /**
    * Reset transport state.
@@ -354,6 +350,17 @@ class Transport {
     uint32_t timestamp_ms;    ///< Registration timestamp (for timeout)
   };
 
+  enum class State {
+    IDLE,
+    SENDING_CHUNKS,
+    AWAITING_RESPONSE
+  };
+
+  State state_{State::IDLE};
+  std::deque<Command> command_queue_;
+  uint32_t last_send_time_{0};
+  uint32_t send_pacing_ms_{50}; // Delay between fragments or commands
+
   // Reassembly state
   bool reassembling_;                         ///< True if currently accumulating packet fragments
   std::vector<uint8_t> reassembly_buffer_;    ///< Buffer for accumulating packet fragments
@@ -361,6 +368,7 @@ class Transport {
 
   // Callback for complete packets
   PacketCallback packet_callback_;            ///< Called when packet is complete
+  WriteCallback write_callback_{nullptr};    ///< Callback for BLE writes
 
   // Response handler management
   std::vector<PendingHandler> pending_handlers_;  ///< Registered response handlers

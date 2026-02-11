@@ -24,8 +24,102 @@ Transport::Transport()
 }
 
 void Transport::set_packet_callback(PacketCallback callback) {
-  packet_callback_ = callback;
-  ESP_LOGD(TAG, "Packet callback registered");
+  this->packet_callback_ = callback;
+}
+
+void Transport::loop() {
+  if (this->command_queue_.empty()) {
+    this->state_ = State::IDLE;
+    return;
+  }
+
+  uint32_t now = millis();
+  auto &cmd = this->command_queue_.front();
+
+  switch (this->state_) {
+    case State::IDLE:
+      // Check pacing between commands
+      if (now - this->last_send_time_ < this->send_pacing_ms_) {
+        return;
+      }
+      this->state_ = State::SENDING_CHUNKS;
+      cmd.bytes_sent = 0;
+      // Fall through to SENDING_CHUNKS
+      [[fallthrough]];
+
+    case State::SENDING_CHUNKS: {
+      // Check pacing between chunks
+      if (now - this->last_send_time_ < this->send_pacing_ms_) {
+        return;
+      }
+
+      size_t remaining = cmd.packet.size() - cmd.bytes_sent;
+      size_t to_send = std::min(remaining, BLE_MTU_LIMIT);
+
+      ESP_LOGV(TAG, "Sending chunk: %zu bytes (%zu/%zu sent)", 
+               to_send, cmd.bytes_sent + to_send, cmd.packet.size());
+
+      if (this->write_callback_(cmd.packet.data() + cmd.bytes_sent, to_send)) {
+        cmd.bytes_sent += to_send;
+        this->last_send_time_ = now;
+
+        if (cmd.bytes_sent >= cmd.packet.size()) {
+          // Finished sending all chunks
+          if (cmd.expect_obj_id != 0) {
+            this->state_ = State::AWAITING_RESPONSE;
+            cmd.timestamp_ms = now;
+            cmd.waiting_for_response = true;
+            ESP_LOGD(TAG, "Command sent, waiting for response (Obj %d Sub %d)", 
+                     cmd.expect_obj_id, cmd.expect_sub_id);
+          } else {
+            ESP_LOGD(TAG, "Command sent (no response expected)");
+            if (cmd.callback) {
+              cmd.callback(true, nullptr, 0);
+            }
+            this->command_queue_.pop_front();
+            this->state_ = State::IDLE;
+          }
+        }
+      } else {
+        ESP_LOGE(TAG, "Failed to send chunk, dropping command");
+        if (cmd.callback) {
+          cmd.callback(false, nullptr, 0);
+        }
+        this->command_queue_.pop_front();
+        this->state_ = State::IDLE;
+      }
+      break;
+    }
+
+    case State::AWAITING_RESPONSE:
+      if (now - cmd.timestamp_ms > cmd.timeout_ms) {
+        ESP_LOGW(TAG, "Command timeout waiting for Obj %d Sub %d", 
+                 cmd.expect_obj_id, cmd.expect_sub_id);
+        if (cmd.callback) {
+          cmd.callback(false, nullptr, 0);
+        }
+        this->command_queue_.pop_front();
+        this->state_ = State::IDLE;
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+void Transport::send_command(const std::vector<uint8_t>& packet, uint16_t expect_obj_id, 
+                            uint16_t expect_sub_id, CommandCallback callback, 
+                            uint32_t timeout_ms) {
+  Command cmd;
+  cmd.packet = packet;
+  cmd.expect_obj_id = expect_obj_id;
+  cmd.expect_sub_id = expect_sub_id;
+  cmd.callback = callback;
+  cmd.timeout_ms = timeout_ms;
+  
+  this->command_queue_.push_back(cmd);
+  ESP_LOGD(TAG, "Command queued (queue size: %zu)", this->command_queue_.size());
 }
 
 bool Transport::is_frame_start(uint8_t byte) const {
@@ -107,56 +201,6 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
   }
 }
 
-bool Transport::write_packet(const uint8_t* data, size_t len, WriteCallback write_func) {
-  if (!write_func) {
-    ESP_LOGE(TAG, "No write callback provided");
-    return false;
-  }
-
-  if (len == 0) {
-    ESP_LOGW(TAG, "Attempted to write empty packet");
-    return false;
-  }
-
-  // Check if packet needs to be split due to BLE MTU limit
-  if (len > BLE_MTU_LIMIT) {
-    ESP_LOGD(TAG, "Splitting packet: %d bytes (MTU limit: %d)", len, BLE_MTU_LIMIT);
-
-    // Write first chunk (20 bytes)
-    bool success = write_func(data, BLE_MTU_LIMIT);
-    if (!success) {
-      ESP_LOGE(TAG, "Failed to write first chunk");
-      return false;
-    }
-    ESP_LOGV(TAG, "Wrote chunk 1: %d bytes", BLE_MTU_LIMIT);
-
-    // Small delay between chunks (Python uses 10ms)
-    // In ESPHome, we can't do async delay here, so we rely on BLE stack buffering
-    // The ESP-IDF BLE stack should handle this appropriately
-
-    // Write remaining bytes
-    size_t remaining = len - BLE_MTU_LIMIT;
-    success = write_func(data + BLE_MTU_LIMIT, remaining);
-    if (!success) {
-      ESP_LOGE(TAG, "Failed to write second chunk");
-      return false;
-    }
-    ESP_LOGV(TAG, "Wrote chunk 2: %d bytes", remaining);
-    ESP_LOGD(TAG, "Split write complete: %d bytes total", len);
-    
-    return true;
-  } else {
-    // Single write for packets <= 20 bytes
-    bool success = write_func(data, len);
-    if (success) {
-      ESP_LOGV(TAG, "Wrote packet: %d bytes", len);
-    } else {
-      ESP_LOGE(TAG, "Failed to write packet");
-    }
-    return success;
-  }
-}
-
 void Transport::reset() {
   ESP_LOGD(TAG, "Resetting transport state");
   reassembling_ = false;
@@ -218,6 +262,44 @@ void Transport::check_timeouts(uint32_t timeout_ms) {
 }
 
 bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
+  // Extract payload: skip header (10 bytes) and CRC (2 bytes)
+  const uint8_t* payload = data + 10;
+  size_t payload_len = len - 12;
+
+  // Extract identifiers from the response packet
+  uint8_t opspec = (len > 5) ? data[5] : 0x00;
+  uint16_t packet_sub_id = (len > 7) ? (data[6] << 8) | data[7] : 0;
+  uint16_t packet_obj_id = (len > 9) ? (data[8] << 8) | data[9] : 0;
+
+  ESP_LOGV(TAG, "Parsing response: OpSpec=0x%02X, Sub=%d, Obj=%d", opspec, packet_sub_id, packet_obj_id);
+
+  // 1. Check if we are waiting for a command response
+  if (this->state_ == State::AWAITING_RESPONSE && !this->command_queue_.empty()) {
+    auto &cmd = this->command_queue_.front();
+    
+    // MATCHING LOGIC:
+    // Some responses (like 0xDE01) always come back with SubID 0 despite the request.
+    // Also, some responses seem to swap ObjID and SubID positions or use fixed type codes.
+    bool matched = (packet_obj_id == cmd.expect_obj_id && (packet_sub_id == cmd.expect_sub_id || packet_sub_id == 0));
+    
+    // BACKUP MATCH: If ObjID doesn't match but SubID matches our expected ObjID (swapped)
+    if (!matched && packet_sub_id == cmd.expect_obj_id) {
+      matched = true;
+    }
+
+    if (matched) {
+      ESP_LOGD(TAG, "Command response matched for Obj %d (Sub %d -> %d)", 
+               packet_obj_id, cmd.expect_sub_id, packet_sub_id);
+      if (cmd.callback) {
+        cmd.callback(true, payload, payload_len);
+      }
+      this->command_queue_.pop_front();
+      this->state_ = State::IDLE;
+      return true;
+    }
+  }
+
+  // 2. Check registered response handlers
   if (pending_handlers_.empty()) {
     return false;  // No handlers registered
   }
@@ -237,7 +319,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   }
 
   // Extract OpSpec to see what kind of response this is
-  uint8_t opspec = (len > 5) ? data[5] : 0x00;
+  opspec = (len > 5) ? data[5] : 0x00;
 
   // CRITICAL: Different OpSpecs have DIFFERENT packet structures!
   // See reference/alpha-hwr/src/alpha_hwr/protocol/frame_parser.py lines 278-294
@@ -254,8 +336,8 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   //   - Bytes 8-9: Object ID (big-endian uint16)
   //   - These are the responses we want to match for schedule reads
   
-  uint16_t packet_obj_id = 0;
-  uint16_t packet_sub_id = 0;
+  packet_obj_id = 0;
+  packet_sub_id = 0;
   
   // Only parse as DataObject format for non-register-read OpSpecs
   bool is_register_read = (opspec == 0x30 || opspec == 0x2B || opspec == 0x14 || 

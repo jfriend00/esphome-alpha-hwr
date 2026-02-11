@@ -7,6 +7,7 @@
  */
 
 #include "telemetry_service.h"
+#include "transport.h"
 #include "frame_builder.h"
 #include "frame_parser.h"
 #include "telemetry_decoder.h"
@@ -16,16 +17,8 @@ namespace esphome {
 namespace alpha_hwr {
 namespace services {
 
-TelemetryService::TelemetryService() {
+TelemetryService::TelemetryService(core::Transport &transport) : transport_(transport) {
   ESP_LOGI(TAG, "TelemetryService created");
-}
-
-void TelemetryService::set_write_callback(WriteCallback callback) {
-  write_callback_ = std::move(callback);
-}
-
-void TelemetryService::set_scheduler_callback(SchedulerCallback callback) {
-  scheduler_callback_ = std::move(callback);
 }
 
 void TelemetryService::set_sensor_publisher(SensorPublisher* publisher) {
@@ -56,26 +49,16 @@ bool TelemetryService::is_running() const {
 }
 
 void TelemetryService::send_read_request(uint32_t register_addr) {
-  if (!write_callback_) {
-    ESP_LOGW(TAG, "Write callback not set, cannot send read request");
-    return;
-  }
-  
   // Build the read packet using frame_builder
-  uint8_t packet[11];  // Class 10 read packets are always 11 bytes
-  protocol::build_class10_read(register_addr, packet);
+  uint8_t packet_raw[11];  // Class 10 read packets are always 11 bytes
+  protocol::build_class10_read(register_addr, packet_raw);
   
-  // Log what we're sending
-  char hex_str[40];
-  sprintf(hex_str, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
-          packet[0], packet[1], packet[2], packet[3], packet[4], 
-          packet[5], packet[6], packet[7], packet[8], packet[9], packet[10]);
-  ESP_LOGD(TAG, "Sending READ request for register 0x%06X: %s", register_addr, hex_str);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + 11);
   
-  // Send via write callback
-  if (!write_callback_(packet, sizeof(packet))) {
-    ESP_LOGW(TAG, "Failed to send read request for register 0x%06X", register_addr);
-  }
+  ESP_LOGD(TAG, "Queueing READ request for register 0x%06X", register_addr);
+  
+  // Send via transport queue (no response matching here as telemetry uses various OpSpecs)
+  this->transport_.send_command(packet);
 }
 
 void TelemetryService::poll() {
@@ -84,37 +67,14 @@ void TelemetryService::poll() {
     return;
   }
   
-  if (!write_callback_ || !scheduler_callback_) {
-    ESP_LOGW(TAG, "Callbacks not set, cannot poll");
-    return;
-  }
+  ESP_LOGI(TAG, "Polling telemetry registers...");
   
-  ESP_LOGI(TAG, "Polling telemetry...");
-  
-  // Request motor state (0x570045)
-  send_read_request(0x570045);
-  
-  // Small delay between requests
-  scheduler_callback_(100, [this]() {
-    // Request flow/pressure (0x5D0122)
-    send_read_request(0x5D0122);
-  });
-  
-  // Another delay
-  scheduler_callback_(200, [this]() {
-    // Request temperature (0x5D012C)
-    send_read_request(0x5D012C);
-  });
-  
-  // Request alarms (Obj 88, Sub 0 → 0x580000)
-  scheduler_callback_(300, [this]() {
-    send_read_request(0x580000);
-  });
-  
-  // Request warnings (Obj 88, Sub 11 → 0x58000B)
-  scheduler_callback_(400, [this]() {
-    send_read_request(0x58000B);
-  });
+  // Queue all read requests. The transport layer will pace them.
+  send_read_request(0x570045); // Motor state
+  send_read_request(0x5D0122); // Flow/pressure
+  send_read_request(0x5D012C); // Temperature
+  send_read_request(0x580000); // Alarms
+  send_read_request(0x58000B); // Warnings
 }
 
 void TelemetryService::on_packet(const uint8_t* data, size_t len) {

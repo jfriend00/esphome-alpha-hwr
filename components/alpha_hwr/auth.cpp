@@ -1,4 +1,5 @@
 #include "auth.h"
+#include "transport.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -6,11 +7,7 @@ namespace core {
 
 static const char *TAG = "alpha_hwr.auth";
 
-Authentication::Authentication() {}
-
-void Authentication::set_write_callback(WriteCallback callback) {
-  write_callback_ = std::move(callback);
-}
+Authentication::Authentication(Transport &transport) : transport_(transport) {}
 
 void Authentication::set_scheduler_callback(SchedulerCallback callback) {
   scheduler_callback_ = std::move(callback);
@@ -41,24 +38,15 @@ void Authentication::cancel() {
 }
 
 bool Authentication::send_packet(const uint8_t* data, size_t len) {
-  if (!write_callback_) {
-    ESP_LOGE(TAG, "No write callback configured");
-    return false;
-  }
-  
   if (!running_) {
     ESP_LOGD(TAG, "Authentication cancelled, skipping packet send");
     return false;
   }
   
-  bool success = write_callback_(data, len);
-  if (success) {
-    ESP_LOGD(TAG, "Sent auth packet (%zu bytes)", len);
-  } else {
-    ESP_LOGW(TAG, "Failed to send auth packet");
-  }
+  std::vector<uint8_t> packet(data, data + len);
+  this->transport_.send_command(packet);
   
-  return success;
+  return true;
 }
 
 void Authentication::stage1_legacy_burst(int repeat_count) {

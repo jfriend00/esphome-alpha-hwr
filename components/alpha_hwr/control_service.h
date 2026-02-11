@@ -110,16 +110,6 @@ class ControlService {
   void set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback);
   
   /**
-   * Set callback for BLE write operations.
-   * 
-   * The control service needs to write packets to the BLE characteristic.
-   * The main component provides this callback.
-   * 
-   * @param callback Function to write data to BLE characteristic
-   */
-  void set_write_callback(std::function<bool(const uint8_t*, size_t)> callback);
-  
-  /**
    * Start the pump.
    * 
    * Sends the start command using Class 10 DataObject method.
@@ -222,7 +212,6 @@ class ControlService {
   core::Session &session_;
   ControlMode current_mode_{ControlMode::CONSTANT_SPEED};
   std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
-  std::function<bool(const uint8_t*, size_t)> write_callback_;
   
   /**
    * Build GENI protocol packet with CRC.

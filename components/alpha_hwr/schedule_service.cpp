@@ -70,78 +70,35 @@ bool ScheduleService::poll_state() {
 
   ESP_LOGD(TAG, "Polling schedule state (Object 84, SubID 1)...");
 
-  // Build Class 10 READ request for Object 84, SubID 1 (ClockProgramOverview)
-  // APDU: [0x0A][0x03][ObjID][SubID_H][SubID_L]
+  // Build Class 10 READ request for Object 84, SubID 1
   uint8_t apdu[5];
-  apdu[0] = 0x0A;   // Class 10
-  apdu[1] = 0x03;   // OpSpec INFO (read)
-  apdu[2] = 84;     // Object ID
-  apdu[3] = 0x00;   // SubID high byte
-  apdu[4] = 0x01;   // SubID low byte (SubID = 1)
+  apdu[0] = 0x0A; apdu[1] = 0x03; apdu[2] = 84; apdu[3] = 0x00; apdu[4] = 0x01;
 
-  // Build GENI frame
-  uint8_t frame[256];
+  uint8_t frame[64];
   size_t frame_len = 0;
   this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
 
-  // Register response handler before sending request
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
   // IMPORTANT: Pump responds with SubID 0, not SubID 1 that we requested!
-  // This appears to be a quirk of the ALPHA HWR firmware.
-  // Capture 'this' pointer to access member variables in callback
-  this->transport_.register_response_handler(0xDA01, 0,  // Type 218 (ClockProgramOverview), SubID 0 
-    [this](const uint8_t* payload, size_t payload_len) {
-      // ClockProgramOverview response structure:
-      // Response frame: [STX][LEN][DST][SRC][Class][OpSpec][ObjID][SubID_H][SubID_L][...DATA...][CRC_H][CRC_L]
-      // Payload starts at byte 10 (after frame header)
-      // 
-      // Payload structure (matches Python reference schedule.py:732-740):
-      // Bytes 0-2: 3-byte header (varies by response)
-      // Bytes 3-12: ClockProgramOverview structure (10 bytes):
-      //   Byte 3: max_nof_actions
-      //   Byte 4: max_nof_single_events
-      //   Byte 5: max_nof_alternative_events_per_day
-      //   Byte 6: max_nof_events_per_day
-      //   Byte 7: clock_program_enabled ← Key field for enable/disable
-      //   Byte 8: default_action (SchedulingActionType)
-      //   Bytes 9-12: base_set_point (float32, big-endian)
-      
-      ESP_LOGV(TAG, "Schedule state response received (%zu bytes)", payload_len);
-      
-      if (payload_len >= 13) {
-        // Extract the enabled flag (byte 7 of payload)
-        this->schedule_enabled_ = (payload[7] != 0);
-        this->schedule_state_cached_ = true;
-        
-        // Cache the complete 10-byte ClockProgramOverview structure (bytes 3-12)
-        // This is needed for read-modify-write operations in set_state()
-        memcpy(this->overview_structure_, payload + 3, 10);
-        this->overview_cached_ = true;
-        
-        ESP_LOGD(TAG, "Schedule state updated: %s (byte 7 = 0x%02X)", 
-                 this->schedule_enabled_ ? "enabled" : "disabled", payload[7]);
-        ESP_LOGV(TAG, "ClockProgramOverview cached: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                 this->overview_structure_[0], this->overview_structure_[1],
-                 this->overview_structure_[2], this->overview_structure_[3],
-                 this->overview_structure_[4], this->overview_structure_[5],
-                 this->overview_structure_[6], this->overview_structure_[7],
-                 this->overview_structure_[8], this->overview_structure_[9]);
-      } else {
-        ESP_LOGW(TAG, "Schedule state response too short (%zu bytes, need at least 13)", payload_len);
-      }
+  this->transport_.send_command(packet, 0xDA01, 0, [this](bool success, const uint8_t* payload, size_t payload_len) {
+    if (!success) {
+      ESP_LOGW(TAG, "Failed to poll schedule state (timeout)");
+      return;
     }
-  );
 
-  // Send request via transport
-  if (!this->transport_.write_packet(frame, frame_len, 
-      [this](const uint8_t* data, size_t len) -> bool {
-        return this->write_callback_(0x00, data, len);
-      })) {
-    ESP_LOGE(TAG, "Failed to send schedule state read request");
-    return false;
-  }
+    if (payload_len >= 13) {
+      this->schedule_enabled_ = (payload[7] != 0);
+      this->schedule_state_cached_ = true;
+      memcpy(this->overview_structure_, payload + 3, 10);
+      this->overview_cached_ = true;
+      
+      ESP_LOGD(TAG, "Schedule state updated: %s", this->schedule_enabled_ ? "enabled" : "disabled");
+    } else {
+      ESP_LOGW(TAG, "Schedule state response too short (%zu bytes)", payload_len);
+    }
+  });
 
-  this->last_state_poll_ms_ = millis();
-  ESP_LOGD(TAG, "Schedule state poll request sent");
   return true;
 }
 
@@ -227,28 +184,22 @@ bool ScheduleService::send_configuration_commit() {
 
   ESP_LOGD(TAG, "Sending configuration commit...");
 
-  // Use cached ClockProgramOverview if available, otherwise use defaults
+  // CRITICAL: Use exact bytes from Python reference (control.py:1042)
+  // Any deviation causes pump to reject the commit!
+  // Python hardcoded: 02050005000100000000
   uint8_t structure_bytes[10];
+  structure_bytes[0] = 0x02;  // max_nof_actions
+  structure_bytes[1] = 0x05;  // max_nof_single_events
+  structure_bytes[2] = 0x00;  
+  structure_bytes[3] = 0x05;  // max_nof_events_per_day
+  structure_bytes[4] = 0x00;  // clock_program_enabled (0 = disabled, 1 = enabled)
+  structure_bytes[5] = 0x01;  // default_action = START
+  structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
+  structure_bytes[7] = 0x00;
+  structure_bytes[8] = 0x00;
+  structure_bytes[9] = 0x00;
   
-  if (this->overview_cached_) {
-    // Use cached structure from last poll
-    memcpy(structure_bytes, this->overview_structure_, 10);
-    ESP_LOGV(TAG, "Using cached ClockProgramOverview for commit");
-  } else {
-    // Fallback to reasonable defaults (from Python reference)
-    // Note: Python uses hardcoded values, we use cached or defaults
-    ESP_LOGD(TAG, "No cached overview, using default values for commit");
-    structure_bytes[0] = 0x02;  // max_nof_actions (Python uses 2, we normally see 140)
-    structure_bytes[1] = 0x05;  // max_nof_single_events
-    structure_bytes[2] = 0x00;  
-    structure_bytes[3] = 0x05;  // max_nof_events_per_day
-    structure_bytes[4] = 0x00;  // clock_program_enabled (current state)
-    structure_bytes[5] = 0x01;  // default_action = START
-    structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
-    structure_bytes[7] = 0x00;
-    structure_bytes[8] = 0x00;
-    structure_bytes[9] = 0x00;
-  }
+  ESP_LOGD(TAG, "Using hardcoded Python reference values for commit");
 
   // Build APDU: Class 10 SET command for Object 84, SubID 1
   uint8_t apdu[21];
@@ -282,8 +233,6 @@ bool ScheduleService::send_configuration_commit() {
 // -------------------------------------------------------------------------
 
 bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int layer) {
-  ESP_LOGI(TAG, "=== READ_ENTRIES CALLED === layer=%d", layer);
-  
   if (!this->session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot read schedule entries: session not ready");
     return false;
@@ -296,99 +245,101 @@ bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int laye
 
   ESP_LOGI(TAG, "Reading schedule entries for layer %d...", layer);
 
-  // Calculate SubID: 1000 + layer (matches Python reference schedule.py:312)
   uint16_t sub_id = 1000 + layer;
 
-  // Register response handler for schedule entries
-  // Response will have Type 0xDE01 (222 - schedule data), SubID 0
-  // Note: The pump responds with a fixed type code, not the request object ID
-  this->transport_.register_response_handler(0xDE01, 0,  // Type 222 (schedule entries), SubID 0
-    [this, entries, layer](const uint8_t* payload, size_t payload_len) {
-      // Schedule entries response structure (matches Python schedule.py:317-337):
-      // Response frame: [STX][LEN][DST][SRC][Class][OpSpec][ObjID][SubID_H][SubID_L][...DATA...][CRC_H][CRC_L]
-      // Payload starts at byte 10 (after frame header)
-      // 
-      // Payload structure:
-      // Bytes 0-2: 3-byte header (varies by response)
-      // Bytes 3-44: Schedule entries (7 days × 6 bytes = 42 bytes)
-      // Total: 45 bytes
-      //
-      // Each 6-byte entry:
-      //   Byte 0: Enabled flag (0x01=enabled, 0x00=disabled)
-      //   Byte 1: Action code (0x02=run pump)
-      //   Byte 2: Start hour (0-23)
-      //   Byte 3: Start minute (0-59)
-      //   Byte 4: End hour (0-23)
-      //   Byte 5: End minute (0-59)
-      //
-      // Days: Monday=0, Tuesday=1, ..., Sunday=6
-
-      ESP_LOGV(TAG, "Schedule entries response received (%zu bytes)", payload_len);
-
-      if (payload_len < 45) {
-        ESP_LOGW(TAG, "Schedule entries response too short (%zu bytes, need 45)", payload_len);
-        entries->clear();
-        return;
-      }
-
-      // Skip 3-byte header to get to entry data
-      const uint8_t* entry_data = payload + 3;
-
-      // Day names in order (Monday=0 through Sunday=6)
-      static const char* day_names[7] = {
-        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
-      };
-
-      entries->clear();
-      int enabled_count = 0;
-
-      // Parse 7 days × 6 bytes
-      for (int day_idx = 0; day_idx < 7; day_idx++) {
-        size_t offset = day_idx * 6;
-        const uint8_t* entry_bytes = entry_data + offset;
-
-        // Only include enabled entries (byte 0 != 0)
-        if (entry_bytes[0] != 0) {
-          ScheduleEntry entry = ScheduleEntry::from_bytes(entry_bytes, day_names[day_idx], layer);
-          entries->push_back(entry);
-          enabled_count++;
-
-          ESP_LOGD(TAG, "  %s: %02d:%02d-%02d:%02d (action=0x%02X)", 
-                   day_names[day_idx],
-                   entry_bytes[2], entry_bytes[3],  // begin_hour, begin_minute
-                   entry_bytes[4], entry_bytes[5],  // end_hour, end_minute
-                   entry_bytes[1]);                  // action
-        }
-      }
-
-      ESP_LOGI(TAG, "Read %d enabled entries from layer %d", enabled_count, layer);
-    }
-  );
-
-  // Build APDU: Class 10 INFO command for Object 84 at SubID (1000 + layer)
-  // OpSpec 0x03 = INFO (read operation)
   uint8_t apdu[5];
-  apdu[0] = 0x0A;    // Class 10
-  apdu[1] = 0x03;    // OpSpec INFO (read)
-  apdu[2] = 84;      // Object 84 (decimal)
-  apdu[3] = (sub_id >> 8) & 0xFF;  // SubID high byte
-  apdu[4] = sub_id & 0xFF;         // SubID low byte
+  apdu[0] = 0x0A; apdu[1] = 0x03; apdu[2] = 84; apdu[3] = (sub_id >> 8) & 0xFF; apdu[4] = sub_id & 0xFF;
 
-  // Build frame with proper framing
   uint8_t frame[64];
   size_t frame_len;
   this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
 
-  // Send request via transport
-  if (!this->transport_.write_packet(frame, frame_len,
-      [this](const uint8_t* data, size_t len) -> bool {
-        return this->write_callback_(0x00, data, len);
-      })) {
-    ESP_LOGE(TAG, "Failed to send schedule entries read request");
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  this->transport_.send_command(packet, 0xDE01, 0, [this, entries, layer](bool success, const uint8_t* payload, size_t payload_len) {
+    if (!success) {
+      ESP_LOGW(TAG, "Failed to read schedule entries for layer %d (timeout)", layer);
+      return;
+    }
+
+    if (payload_len < 45) {
+      ESP_LOGW(TAG, "Schedule entries response too short (%zu bytes)", payload_len);
+      entries->clear();
+      return;
+    }
+
+    const uint8_t* entry_data = payload + 3;
+    entries->clear();
+    int enabled_count = 0;
+
+    for (int day_idx = 0; day_idx < 7; day_idx++) {
+      size_t offset = day_idx * 6;
+      const uint8_t* entry_bytes = entry_data + offset;
+
+      if (entry_bytes[0] != 0) {
+        ScheduleEntry entry = ScheduleEntry::from_bytes(entry_bytes, DAY_NAMES[day_idx], layer);
+        entries->push_back(entry);
+        enabled_count++;
+      }
+    }
+
+    ESP_LOGI(TAG, "Read %d enabled entries from layer %d", enabled_count, layer);
+  });
+
+  return true;
+}
+
+bool ScheduleService::read_entries_async(int layer, std::function<void(bool success, const std::vector<ScheduleEntry>& entries)> on_complete) {
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot read schedule entries: session not ready");
     return false;
   }
 
-  ESP_LOGD(TAG, "Schedule entries read request sent for layer %d (SubID %d)", layer, sub_id);
+  if (layer < 0 || layer > 4) {
+    ESP_LOGE(TAG, "Invalid layer %d (must be 0-4)", layer);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Reading schedule entries for layer %d (async)...", layer);
+
+  uint16_t sub_id = 1000 + layer;
+
+  uint8_t apdu[5];
+  apdu[0] = 0x0A; apdu[1] = 0x03; apdu[2] = 84; apdu[3] = (sub_id >> 8) & 0xFF; apdu[4] = sub_id & 0xFF;
+
+  uint8_t frame[64];
+  size_t frame_len;
+  this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  this->transport_.send_command(packet, 0xDE01, 0, [this, on_complete, layer](bool success, const uint8_t* payload, size_t payload_len) {
+    std::vector<ScheduleEntry> entries;
+    if (!success) {
+      ESP_LOGW(TAG, "Failed to read schedule entries for layer %d (timeout)", layer);
+      if (on_complete) on_complete(false, entries);
+      return;
+    }
+
+    if (payload_len < 45) {
+      ESP_LOGW(TAG, "Schedule entries response too short (%zu bytes)", payload_len);
+      if (on_complete) on_complete(false, entries);
+      return;
+    }
+
+    const uint8_t* entry_data = payload + 3;
+    for (int day_idx = 0; day_idx < 7; day_idx++) {
+      size_t offset = day_idx * 6;
+      const uint8_t* entry_bytes = entry_data + offset;
+      if (entry_bytes[0] != 0) {
+        entries.push_back(ScheduleEntry::from_bytes(entry_bytes, DAY_NAMES[day_idx], layer));
+      }
+    }
+
+    ESP_LOGI(TAG, "Read %d enabled entries from layer %d (async)", (int)entries.size(), layer);
+    if (on_complete) on_complete(true, entries);
+  });
+
   return true;
 }
 
@@ -466,23 +417,131 @@ bool ScheduleService::write_entries(const std::vector<ScheduleEntry> &entries, u
   // Append payload
   memcpy(apdu + 11, payload_data, 42);
 
+  // DEBUG: Dump complete APDU bytes before sending
+  ESP_LOGI(TAG, "=== WRITE APDU DEBUG (53 bytes) ===");
+  ESP_LOGI(TAG, "APDU Header (11 bytes): %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+           apdu[0], apdu[1], apdu[2], apdu[3], apdu[4], apdu[5], 
+           apdu[6], apdu[7], apdu[8], apdu[9], apdu[10]);
+  ESP_LOGI(TAG, "Payload (42 bytes):");
+  for (int i = 0; i < 7; i++) {
+    int offset = 11 + (i * 6);
+    ESP_LOGI(TAG, "  Day %d: %02X %02X %02X %02X %02X %02X", i,
+             apdu[offset], apdu[offset+1], apdu[offset+2], 
+             apdu[offset+3], apdu[offset+4], apdu[offset+5]);
+  }
+
   // Send write command
   if (!this->write_class10_command(apdu, 53)) {
     ESP_LOGE(TAG, "Failed to write schedule to layer %d", layer);
     return false;
   }
 
-  ESP_LOGD(TAG, "Schedule entries written to layer %d, sending configuration commit...", layer);
+  ESP_LOGI(TAG, "Schedule written successfully to layer %d", layer);
+  return true;
+}
 
-  // CRITICAL: Send configuration commit after writing schedule entries
-  // Without this, the pump will not persist the changes!
-  // See: reference/alpha-hwr/src/alpha_hwr/services/control.py:_send_configuration_commit
-  if (!this->send_configuration_commit()) {
-    ESP_LOGW(TAG, "Configuration commit failed, schedule may not persist");
-    // Don't return false - the write might still work
+bool ScheduleService::write_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
+                                          std::function<void(bool)> on_complete) {
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot write schedule entries: session not ready");
+    if (on_complete) on_complete(false);
+    return false;
   }
 
-  ESP_LOGI(TAG, "Schedule written successfully to layer %d", layer);
+  if (!this->set_timeout_callback_) {
+    ESP_LOGE(TAG, "Cannot use async write: set_timeout_callback not configured");
+    if (on_complete) on_complete(false);
+    return false;
+  }
+
+  // Validate layer
+  if (layer > 4) {
+    ESP_LOGE(TAG, "Invalid layer: %d. Must be 0-4.", layer);
+    if (on_complete) on_complete(false);
+    return false;
+  }
+
+  // Validate entries
+  std::vector<std::string> errors;
+  if (!this->validate_entries(entries, &errors)) {
+    ESP_LOGE(TAG, "Schedule validation failed:");
+    for (const auto &error : errors) {
+      ESP_LOGE(TAG, "  %s", error.c_str());
+    }
+    if (on_complete) on_complete(false);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Writing %zu schedule entries to layer %d (async mode)...", entries.size(), layer);
+
+  // Prepare 42-byte payload (7 days × 6 bytes)
+  uint8_t payload_data[42];
+  memset(payload_data, 0, 42);  // Initialize with zeros (disabled entries)
+
+  // Map day names to indices
+  std::map<std::string, int> day_indices;
+  for (int i = 0; i < 7; i++) {
+    day_indices[DAY_NAMES[i]] = i;
+  }
+
+  // Fill payload with entries
+  for (const auto &entry : entries) {
+    auto it = day_indices.find(entry.get_day());
+    if (it == day_indices.end()) {
+      ESP_LOGW(TAG, "Invalid day name in entry: %s", entry.get_day().c_str());
+      continue;
+    }
+
+    int day_idx = it->second;
+    size_t offset = day_idx * 6;
+
+    // Fill 6-byte entry
+    entry.to_bytes(payload_data + offset);
+
+    ESP_LOGD(TAG, "Added entry for %s at offset %zu", entry.get_day().c_str(), offset);
+  }
+
+  // Build APDU
+  uint16_t sub_id = 1000 + layer;
+  uint8_t sub_h = (sub_id >> 8) & 0xFF;
+  uint8_t sub_l = sub_id & 0xFF;
+
+  uint8_t apdu[53];  // 11 header bytes + 42 data bytes
+  apdu[0] = 0x0A;    // Class 10
+  apdu[1] = 0xB3;    // OpSpec 5
+  apdu[2] = 84;      // Object ID 84
+  apdu[3] = sub_h;   // SubID high byte
+  apdu[4] = sub_l;   // SubID low byte
+  apdu[5] = 0x00;    // Reserved
+  apdu[6] = 0xDE;    // Type 222 header
+  apdu[7] = 0x01;
+  apdu[8] = 0x00;
+  apdu[9] = 0x00;   // Size high byte
+  apdu[10] = 0x2A;  // Size low byte (42 bytes)
+
+  // Append payload
+  memcpy(apdu + 11, payload_data, 42);
+
+  // Build GENI frame
+  uint8_t frame[256];
+  size_t frame_len = 0;
+  this->build_geni_frame(0xE7, 0xF8, apdu, 53, frame, &frame_len);
+
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  ESP_LOGI(TAG, "Queueing async schedule write for layer %d...", layer);
+
+  this->transport_.send_command(packet, 0xDE01, 0, [on_complete, layer](bool success, const uint8_t* data, size_t len) {
+    if (success) {
+      ESP_LOGI(TAG, "Async write completed with ACK for layer %d", layer);
+    } else {
+      ESP_LOGW(TAG, "Async write timeout/error for layer %d - treating as success (per Python reference)", layer);
+    }
+    if (on_complete) {
+      on_complete(true); // Always return true to match Python behavior for timeouts
+    }
+  }, 3000);
+
   return true;
 }
 
@@ -626,27 +685,19 @@ bool ScheduleService::validate_entries(const std::vector<ScheduleEntry> &entries
 // Read operations (get_state/read_entries) will be added in Phase 8
 
 bool ScheduleService::write_class10_command(const uint8_t *apdu, size_t apdu_len) {
-  if (!this->write_callback_) {
-    ESP_LOGE(TAG, "Write callback not configured");
-    return false;
-  }
-
   // Build GENI frame
   uint8_t frame[256];
   size_t frame_len = 0;
   this->build_geni_frame(0xE7, 0xF8, apdu, apdu_len, frame, &frame_len);
 
-  ESP_LOGD(TAG, "Writing Class 10 command (%zu bytes)", frame_len);
+  ESP_LOGD(TAG, "Queueing Class 10 command (%zu bytes)", frame_len);
 
-  // Write frame via callback
-  if (!this->write_callback_(0x00, frame, frame_len)) {
-    ESP_LOGE(TAG, "Failed to write Class 10 command");
-    return false;
-  }
+  // Convert frame to vector for send_command
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+  
+  // Use send_command to queue the packet with pacing and non-blocking wait
+  this->transport_.send_command(packet);
 
-  // For write operations, we typically don't wait for a response
-  // The pump may or may not send an acknowledgment
-  ESP_LOGD(TAG, "Class 10 write command sent successfully");
   return true;
 }
 

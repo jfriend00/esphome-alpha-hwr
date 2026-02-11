@@ -56,14 +56,8 @@ void AlphaHwrComponent::setup() {
     this->transport_.on_notification(data, len);
   });
   
-  // Initialize transport callback for complete packets
-  transport_.set_packet_callback([this](const uint8_t* data, size_t len) {
-    // Route to telemetry service for processing
-    this->telemetry_service_.on_packet(data, len);
-  });
-  
-  // Initialize authentication module callbacks
-  auth_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
+  // Set transport write callback
+  this->transport_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
     // Get GENI service and characteristic
     auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
     if (!service) return false;
@@ -71,7 +65,6 @@ void AlphaHwrComponent::setup() {
     auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
     if (!chr) return false;
     
-    // Write to BLE characteristic using write without response
     auto status = esp_ble_gattc_write_char(
         this->parent_->get_gattc_if(),
         this->parent_->get_conn_id(),
@@ -83,6 +76,13 @@ void AlphaHwrComponent::setup() {
     return (status == ESP_OK);
   });
   
+  // Initialize transport callback for complete packets
+  transport_.set_packet_callback([this](const uint8_t* data, size_t len) {
+    // Route to telemetry service for processing
+    this->telemetry_service_.on_packet(data, len);
+  });
+  
+  // Initialize authentication module callbacks
   auth_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
     this->set_timeout(delay_ms, std::move(callback));
   });
@@ -95,35 +95,6 @@ void AlphaHwrComponent::setup() {
     this->telemetry_service_.start();
   });
   
-  // Initialize telemetry service callbacks
-  telemetry_service_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
-    // Get GENI service and characteristic
-    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
-    if (!service) return false;
-    
-    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-    if (!chr) return false;
-    
-    // Use transport to write packet (handles splitting if needed)
-    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
-      auto status = esp_ble_gattc_write_char(
-          this->parent_->get_gattc_if(),
-          this->parent_->get_conn_id(),
-          chr->handle,
-          pkt_len,
-          const_cast<uint8_t*>(pkt_data),
-          ESP_GATT_WRITE_TYPE_NO_RSP,
-          ESP_GATT_AUTH_REQ_NONE);
-      return (status == ESP_OK);
-    };
-    
-    return this->transport_.write_packet(data, len, write_func);
-  });
-  
-  telemetry_service_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
-    this->set_timeout(delay_ms, std::move(callback));
-  });
-  
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
   
   // Initialize control service callbacks
@@ -131,62 +102,19 @@ void AlphaHwrComponent::setup() {
     this->set_timeout(delay_ms, std::move(callback));
   });
   
-  control_service_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
-    // Get GENI service and characteristic
-    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
-    if (!service) return false;
-    
-    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-    if (!chr) return false;
-    
-    // Use transport to write packet (handles splitting if needed)
-    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
-      auto status = esp_ble_gattc_write_char(
-          this->parent_->get_gattc_if(),
-          this->parent_->get_conn_id(),
-          chr->handle,
-          pkt_len,
-          const_cast<uint8_t*>(pkt_data),
-          ESP_GATT_WRITE_TYPE_NO_RSP,
-          ESP_GATT_AUTH_REQ_NONE);
-      return (status == ESP_OK);
-    };
-    
-    return this->transport_.write_packet(data, len, write_func);
-  });
-  
   // Initialize schedule service callbacks
   schedule_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
     this->set_timeout(delay_ms, std::move(callback));
   });
   
-  schedule_service_.set_write_callback([this](uint16_t handle, const uint8_t* data, uint16_t len) -> bool {
-    // Get GENI service and characteristic
-    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
-    if (!service) return false;
-    
-    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-    if (!chr) return false;
-    
-    // Use transport to write packet (handles splitting if needed)
-    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
-      auto status = esp_ble_gattc_write_char(
-          this->parent_->get_gattc_if(),
-          this->parent_->get_conn_id(),
-          chr->handle,
-          pkt_len,
-          const_cast<uint8_t*>(pkt_data),
-          ESP_GATT_WRITE_TYPE_NO_RSP,
-          ESP_GATT_AUTH_REQ_NONE);
-      return (status == ESP_OK);
-    };
-    
-    return this->transport_.write_packet(data, len, write_func);
+  schedule_service_.set_timeout_callback([this](std::function<void()> callback, uint32_t delay_ms) {
+    this->set_timeout(delay_ms, std::move(callback));
   });
 }
 
 void AlphaHwrComponent::loop() {
-  // Keep-alive or periodic tasks if needed
+  // Process transport command queue and state machine
+  this->transport_.loop();
 }
 
 // Called every 10 seconds by PollingComponent
