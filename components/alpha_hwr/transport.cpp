@@ -285,9 +285,50 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   if (this->state_ == State::AWAITING_RESPONSE && !this->command_queue_.empty()) {
     auto &cmd = this->command_queue_.front();
     
-    // MATCHING LOGIC:
-    // Some responses (like 0xDE01) always come back with SubID 0 despite the request.
-    // Also, some responses seem to swap ObjID and SubID positions or use fixed type codes.
+    // For Class 10 DataObject reads, we need to check if this is a valid response
+    // by checking the packet structure, not just Object/Sub ID matching
+    // because the pump may send telemetry responses while we're waiting
+    
+    // First, validate basic packet structure
+    if (len < 12) {
+      ESP_LOGV(TAG, "Packet too short, discarding");
+      return false;  // Too short, discard it
+    }
+    
+    // Check if this is a Class 10 packet (0x0A at byte 4)
+    bool is_class10 = (data[4] == 0x0A);
+    
+    if (!is_class10) {
+      ESP_LOGV(TAG, "Not a Class 10 packet (class=0x%02X), discarding for command response matching", data[4]);
+      return false;  // Not Class 10, let it go to packet callback or discard
+    }
+    
+    // This IS a Class 10 response. Now check if it matches our expected Object/Sub ID
+    // Extract OpSpec
+    opspec = (len > 5) ? data[5] : 0x00;
+    
+    // Determine packet structure based on OpSpec
+    bool is_register_read = (opspec == 0x30 || opspec == 0x2B || opspec == 0x14 || 
+                             opspec == 0x2E || opspec == 0x2D || opspec == 0x09);
+    
+     if (is_register_read) {
+       // This is telemetry register-read response, not a DataObject response
+       // Discard it for command matching purposes
+       ESP_LOGD(TAG, "Class 10 register-read (OpSpec=0x%02X), skipping for command response (waiting for Obj %d Sub %d)", 
+                opspec, cmd.expect_obj_id, cmd.expect_sub_id);
+       return false;
+     }
+    
+    // This is a Class 10 DataObject response. Extract Object/Sub IDs
+    if (len > 9) {
+      packet_sub_id = (data[6] << 8) | data[7];  // Sub-ID is at bytes 6-7
+      packet_obj_id = (data[8] << 8) | data[9];  // Object ID is at bytes 8-9
+    } else {
+      ESP_LOGV(TAG, "DataObject packet too short to extract IDs");
+      return false;
+    }
+    
+    // Now check if this matches our expected Object/Sub ID
     bool matched = (packet_obj_id == cmd.expect_obj_id && (packet_sub_id == cmd.expect_sub_id || packet_sub_id == 0));
     
     // BACKUP MATCH: If ObjID doesn't match but SubID matches our expected ObjID (swapped)
@@ -304,7 +345,16 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
       this->command_queue_.pop_front();
       this->state_ = State::IDLE;
       return true;
-    }
+     } else {
+       // This is a Class 10 DataObject response but doesn't match what we're waiting for
+       // This means the pump sent us a different object's response
+       // Log it but DON'T consume it - let it pass to registered handlers or telemetry processing
+       ESP_LOGD(TAG, "Class 10 DataObject received (Obj %d Sub %d) but doesn't match expected (Obj %d Sub %d), continuing to wait",
+                packet_obj_id, packet_sub_id, cmd.expect_obj_id, cmd.expect_sub_id);
+       // Return false so it can be processed by other handlers
+       // We stay in AWAITING_RESPONSE state and keep waiting
+       return false;
+     }
   }
 
   // 2. Check registered response handlers
@@ -313,8 +363,6 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   }
 
   // Validate packet structure
-  // GENI Frame: [STX][LEN][DST][SRC][Class][OpSpec][ObjH][ObjL][SubH][SubL][...DATA...][CRC_H][CRC_L]
-  // Minimum size: 12 bytes (header 10 + CRC 2)
   if (len < 12) {
     ESP_LOGV(TAG, "Packet too short for response matching (%d bytes)", len);
     return false;
@@ -329,21 +377,6 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   // Extract OpSpec to see what kind of response this is
   opspec = (len > 5) ? data[5] : 0x00;
 
-  // CRITICAL: Different OpSpecs have DIFFERENT packet structures!
-  // See reference/alpha-hwr/src/alpha_hwr/protocol/frame_parser.py lines 278-294
-  //
-  // Register-read responses (OpSpec 0x30, 0x2B, 0x14, 0x2E, 0x2D, 0x09):
-  //   Format: [Class][OpSpec][Seq(2)][Id(2)][Res(2)][DataLen][Data...]
-  //   - Bytes 6-7: Sequence number (NOT SubID)
-  //   - Bytes 8-9: Register ID (can be treated as obj_id for routing)
-  //   - These are telemetry streaming responses, NOT DataObject responses
-  //
-  // DataObject responses (OpSpec 0x03, 0x93, 0xB3, etc.):
-  //   Format: [Class][OpSpec][SubH][SubL][ObjH][ObjL][Data...]
-  //   - Bytes 6-7: Sub-ID (big-endian uint16)
-  //   - Bytes 8-9: Object ID (big-endian uint16)
-  //   - These are the responses we want to match for schedule reads
-  
   packet_obj_id = 0;
   packet_sub_id = 0;
   

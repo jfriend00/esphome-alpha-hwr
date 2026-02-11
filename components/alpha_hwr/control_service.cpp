@@ -64,30 +64,29 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
 
   ESP_LOGD(TAG, "Reading current control mode from pump (Object 86, SubID 6)...");
 
-  // Build Class 10 READ request: [0x0A][0x03][Sub-H][Sub-L][Obj-H][Obj-L]
-  // Object 86 (0x0056), SubID 6 (0x0006)
-  // Reference: control.py::_read_class10_object() lines 76-85
-  // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
-  uint8_t apdu[6];
-  apdu[0] = 0x0A;  // Class 10
-  apdu[1] = 0x03;  // OpSpec: READ
-  apdu[2] = 0x00;  // SubID high byte
-  apdu[3] = 0x06;  // SubID low byte  
-  apdu[4] = 0x00;  // Object 86 high byte
-  apdu[5] = 0x56;  // Object 86 low byte
-
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 6, packet_raw);
+   // Build Class 10 READ request: [0x0A][0x03][Obj][Sub-H][Sub-L]
+   // Object 86 (0x56), SubID 6 (0x0006)
+   // Reference: control.py::_read_class10_object() lines 76-85
+   // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
+   uint8_t apdu[5];
+   apdu[0] = 0x0A;  // Class 10
+   apdu[1] = 0x03;  // OpSpec: READ (INFO)
+   apdu[2] = 0x56;  // Object 86 (1 byte!)
+   apdu[3] = 0x00;  // SubID 6 high byte
+   apdu[4] = 0x06;  // SubID 6 low byte
+   
+   uint8_t packet_raw[64];
+   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
 
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Send with response matching for Object 86 (0x0056), accepting any SubID
+  // Send with response matching for Object 86 (0x0056), SubID 6 (0x0006)
   // Reference: base.py::_read_class10_object() expects response with class 10
   // Note: Using longer timeout (5 seconds) since Object 86 read may take longer
   this->transport_.send_command(
     packet, 
     0x0056,  // Expect Object 86 (0x00 high byte, 0x56 low byte)
-    0,       // Any SubID (0 = accept SubID 0 as wildcard, or the actual SubID 6)
+    0x0006,  // Expect SubID 6 (0x00 high byte, 0x06 low byte)
     [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
       if (!success) {
         ESP_LOGW(TAG, "Failed to read control mode (timeout)");
