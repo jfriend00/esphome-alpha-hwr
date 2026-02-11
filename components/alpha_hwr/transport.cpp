@@ -56,6 +56,22 @@ void Transport::loop() {
       size_t remaining = cmd.packet.size() - cmd.bytes_sent;
       size_t to_send = std::min(remaining, BLE_MTU_LIMIT);
 
+      // Log packet hex for debugging - especially for Object 86
+      if (cmd.bytes_sent == 0 && cmd.expect_obj_id == 0x0056) {
+        ESP_LOGI(TAG, "[OBJ86] Sending Object 86 Sub %d request, full packet (%zu bytes):", 
+                 cmd.expect_sub_id, cmd.packet.size());
+        // Print in chunks of 20 bytes
+        for (size_t i = 0; i < cmd.packet.size(); i += 20) {
+          std::string hex_line;
+          for (size_t j = i; j < std::min(i + 20, cmd.packet.size()); j++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", cmd.packet[j]);
+            hex_line += buf;
+          }
+          ESP_LOGI(TAG, "[OBJ86] %s", hex_line.c_str());
+        }
+      }
+
       ESP_LOGV(TAG, "Sending chunk: %zu bytes (%zu/%zu sent)", 
                to_send, cmd.bytes_sent + to_send, cmd.packet.size());
 
@@ -279,11 +295,30 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   uint16_t packet_sub_id = (len > 7) ? (data[6] << 8) | data[7] : 0;
   uint16_t packet_obj_id = (len > 9) ? (data[8] << 8) | data[9] : 0;
 
-  ESP_LOGV(TAG, "Parsing response: OpSpec=0x%02X, Sub=%d, Obj=%d", opspec, packet_sub_id, packet_obj_id);
+  // Log ALL incoming packets when waiting for a command response (for debugging)
+  if (this->state_ == State::AWAITING_RESPONSE && !this->command_queue_.empty()) {
+    auto &cmd = this->command_queue_.front();
+    if (len > 5) {
+      ESP_LOGD(TAG, "[AWAITING] Packet received: len=%d, Class=%02X, OpSpec=%02X, Sub=%d, Obj=%d (waiting for Obj %d Sub %d)",
+               len, (len > 4 ? data[4] : 0xFF), opspec, packet_sub_id, packet_obj_id, cmd.expect_obj_id, cmd.expect_sub_id);
+    }
+  }
 
   // 1. Check if we are waiting for a command response
   if (this->state_ == State::AWAITING_RESPONSE && !this->command_queue_.empty()) {
     auto &cmd = this->command_queue_.front();
+    
+    // For debugging Object 86, log EVERY Class 10 packet received when awaiting
+    if (cmd.expect_obj_id == 0x0056 && len > 5 && data[4] == 0x0A) {
+      ESP_LOGI(TAG, "[OBJ86] Class 10 packet received while awaiting: OpSpec=0x%02X, len=%d bytes", 
+               data[5], len);
+      // Log the full packet structure
+      if (len >= 10) {
+        uint16_t pkt_sub = (data[6] << 8) | data[7];
+        uint16_t pkt_obj = (data[8] << 8) | data[9];
+        ESP_LOGI(TAG, "[OBJ86]   Sub=%d (0x%04X), Obj=%d (0x%04X)", pkt_sub, pkt_sub, pkt_obj, pkt_obj);
+      }
+    }
     
     // For Class 10 DataObject reads, we need to check if this is a valid response
     // by checking the packet structure, not just Object/Sub ID matching
@@ -320,9 +355,11 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
      }
     
     // This is a Class 10 DataObject response. Extract Object/Sub IDs
+    // Frame structure: [STX][LEN][DST][SRC][Class][OpSpec][ObjH][ObjL][SubH][SubL]...[CRC]
+    // So bytes 6-7 are Object ID (2 bytes, big-endian), bytes 8-9 are Sub-ID (2 bytes, big-endian)
     if (len > 9) {
-      packet_sub_id = (data[6] << 8) | data[7];  // Sub-ID is at bytes 6-7
-      packet_obj_id = (data[8] << 8) | data[9];  // Object ID is at bytes 8-9
+      packet_obj_id = (data[6] << 8) | data[7];  // Object ID is at bytes 6-7
+      packet_sub_id = (data[8] << 8) | data[9];  // Sub-ID is at bytes 8-9
     } else {
       ESP_LOGV(TAG, "DataObject packet too short to extract IDs");
       return false;
@@ -392,8 +429,8 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   
   // Parse as DataObject format
   if (len > 9) {
-    packet_sub_id = (data[6] << 8) | data[7];  // Sub-ID is 16-bit big-endian
-    packet_obj_id = (data[8] << 8) | data[9];  // Object ID is 16-bit big-endian
+    packet_obj_id = (data[6] << 8) | data[7];  // Object ID is 16-bit big-endian at bytes 6-7
+    packet_sub_id = (data[8] << 8) | data[9];  // Sub-ID is 16-bit big-endian at bytes 8-9
   } else {
     ESP_LOGV(TAG, "Packet too short to extract Object/SubID");
     return false;

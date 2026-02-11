@@ -13,7 +13,7 @@ bool AlphaHwrComponent::is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDevice
 }
 
 void AlphaHwrComponent::setup() {
-  ESP_LOGI(TAG, "Alpha HWR Component setup");
+  ESP_LOGI(TAG, "================== Alpha HWR Component setup() called ==================");
   
   // Initialize BLE connection manager
   ble_manager_.set_ble_client(parent_);

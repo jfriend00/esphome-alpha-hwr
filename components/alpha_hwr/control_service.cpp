@@ -83,61 +83,61 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
   // Send with response matching for Object 86 (0x0056), SubID 6 (0x0006)
   // Reference: base.py::_read_class10_object() expects response with class 10
   // Note: Using longer timeout (5 seconds) since Object 86 read may take longer
-  this->transport_.send_command(
-    packet, 
-    0x0056,  // Expect Object 86 (0x00 high byte, 0x56 low byte)
-    0x0006,  // Expect SubID 6 (0x00 high byte, 0x06 low byte)
-    [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
-      if (!success) {
-        ESP_LOGW(TAG, "Failed to read control mode (timeout)");
+    this->transport_.send_command(
+      packet, 
+      0x0056,  // Expect Object 86 (0x00 high byte, 0x56 low byte)
+      0x0006,  // Expect SubID 6 (0x00 high byte, 0x06 low byte)
+      [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
+        if (!success) {
+          ESP_LOGW(TAG, "Failed to read control mode (timeout)");
+          if (on_complete) {
+            on_complete(false, current_mode_);
+          }
+          return;
+        }
+
+        if (payload_len >= 10) {
+          // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
+          // Determine offset: check for 3-byte header [00 00 XX]
+          int offset = 0;
+          if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+            offset = 3;
+          }
+
+          if (payload_len >= offset + 7) {
+            uint8_t control_source = payload[offset];
+            uint8_t operation_mode = payload[offset + 1];
+            uint8_t control_mode_byte = payload[offset + 2];
+
+            ESP_LOGD(TAG, 
+              "Parsed control mode: mode=%d, op_mode=%d, source=%d (raw payload_len=%zu)", 
+              control_mode_byte, operation_mode, control_source, payload_len);
+
+            // Validate control mode value
+            if (control_mode_byte <= static_cast<uint8_t>(ControlMode::NONE)) {
+              current_mode_ = static_cast<ControlMode>(control_mode_byte);
+              ESP_LOGI(TAG, "Control mode updated to %d (%s)", 
+                control_mode_byte, get_mode_name(current_mode_));
+              
+              if (on_complete) {
+                on_complete(true, current_mode_);
+              }
+              return;
+            } else {
+              ESP_LOGW(TAG, "Invalid control mode value: %d", control_mode_byte);
+            }
+          } else {
+            ESP_LOGW(TAG, "Response too short: expected >= %d bytes, got %zu", offset + 7, payload_len);
+          }
+        } else {
+          ESP_LOGW(TAG, "Response payload too short: expected >= 10 bytes, got %zu", payload_len);
+        }
+
         if (on_complete) {
           on_complete(false, current_mode_);
         }
-        return;
-      }
-
-      if (payload_len >= 10) {
-        // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
-        // Determine offset: check for 3-byte header [00 00 XX]
-        int offset = 0;
-        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
-          offset = 3;
-        }
-
-        if (payload_len >= offset + 7) {
-          uint8_t control_source = payload[offset];
-          uint8_t operation_mode = payload[offset + 1];
-          uint8_t control_mode_byte = payload[offset + 2];
-
-          ESP_LOGD(TAG, 
-            "Parsed control mode: mode=%d, op_mode=%d, source=%d (raw payload_len=%zu)", 
-            control_mode_byte, operation_mode, control_source, payload_len);
-
-          // Validate control mode value
-          if (control_mode_byte <= static_cast<uint8_t>(ControlMode::NONE)) {
-            current_mode_ = static_cast<ControlMode>(control_mode_byte);
-            ESP_LOGI(TAG, "Control mode updated to %d (%s)", 
-              control_mode_byte, get_mode_name(current_mode_));
-            
-            if (on_complete) {
-              on_complete(true, current_mode_);
-            }
-            return;
-          } else {
-            ESP_LOGW(TAG, "Invalid control mode value: %d", control_mode_byte);
-          }
-        } else {
-          ESP_LOGW(TAG, "Response too short: expected >= %d bytes, got %zu", offset + 7, payload_len);
-        }
-      } else {
-        ESP_LOGW(TAG, "Response payload too short: expected >= 10 bytes, got %zu", payload_len);
-      }
-
-      if (on_complete) {
-        on_complete(false, current_mode_);
-      }
-    }
-  );
+      },
+      5000);  // 5-second timeout for Object 86 read
 
   return true;
 }
