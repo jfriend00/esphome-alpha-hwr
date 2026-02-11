@@ -14,6 +14,9 @@
 #include "codec.h"
 #include "frame_builder.h"
 #include "transport.h"
+#include "session.h"
+#include "auth.h"
+#include "telemetry_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -63,14 +66,6 @@ static const esp32_ble_tracker::ESPBTUUID GRUNDFOS_SERVICE_UUID =
     esp32_ble_tracker::ESPBTUUID::from_uint16(0xFE5D);
 static const esp32_ble_tracker::ESPBTUUID GENI_CHAR_UUID = 
     esp32_ble_tracker::ESPBTUUID::from_raw("859cffd1-036e-432a-aa28-1a0085b87ba9");
-
-// Authentication packets from Python library source (alpha_hwr/core/authentication.py)
-// These match the Python implementation EXACTLY - do not use documentation packets!
-static const uint8_t AUTH_LEGACY[] = {0x27, 0x07, 0xE7, 0xF8, 0x02, 0x03, 0x94, 0x95, 0x96, 0xEB, 0x47};
-static const uint8_t AUTH_CLASS10[] = {0x27, 0x07, 0xE7, 0xF8, 0x0A, 0x03, 0x56, 0x00, 0x06, 0xC5, 0x5A};
-// IMPORTANT: EXTEND_1 is Class 0x0B, EXTEND_2 is Class 0x05 (matching Python source)
-static const uint8_t AUTH_EXT_1[] = {0x27, 0x05, 0xE7, 0xF8, 0x0B, 0xC1, 0x0F, 0xD0, 0xC3};
-static const uint8_t AUTH_EXT_2[] = {0x27, 0x05, 0xE7, 0xF8, 0x05, 0xC1, 0x4B, 0xC3, 0x82};
 
 class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientNode {
  public:
@@ -139,30 +134,10 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   
   void decode_packet(uint8_t *data, size_t len);
   void authenticate();
-  void send_auth_packet(const uint8_t *data, size_t len);
   void subscribe_to_notifications();
   void init_security();
   
-  // Telemetry polling functions
-  void poll_telemetry();
-  void send_read_request(uint32_t register_addr);
-  
-  // Non-blocking authentication stages
-  void auth_stage1_legacy_burst(int repeat_count);
-  void auth_stage2_class10_burst(int repeat_count);
-  void auth_stage3_extensions();
-  
-  bool authenticated_ = false;
-  bool subscribed_ = false;
-  bool auth_started_ = false;  // Prevent multiple auth attempts
-  uint32_t last_auth_time_ = 0;
-  
-  // Track current authentication stage for async execution
-  int auth_stage1_count_ = 0;
-  int auth_stage2_count_ = 0;
-  
   // Service discovery retry mechanism
-  bool geni_service_found_ = false;
   uint8_t discovery_retry_count_ = 0;
   static const uint8_t MAX_DISCOVERY_RETRIES = 3;
   static const uint32_t DISCOVERY_RETRY_DELAY_MS = 1000;
@@ -170,6 +145,15 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   
   // BLE transport layer (handles packet reassembly)
   core::Transport transport_;
+  
+  // Session state management (handles connection state machine)
+  core::Session session_;
+  
+  // Authentication module (handles 3-stage handshake)
+  core::Authentication auth_;
+  
+  // Telemetry service (handles all telemetry operations)
+  services::TelemetryService telemetry_service_;
 };
 
 }  // namespace alpha_hwr

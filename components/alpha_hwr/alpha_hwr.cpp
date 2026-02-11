@@ -150,6 +150,74 @@ void AlphaHwrComponent::setup() {
   
   // Initialize transport callback for complete packets
   transport_.set_packet_callback([this](const uint8_t* data, size_t len) {
+    // Route to telemetry service for processing
+    this->telemetry_service_.on_packet(data, len);
+  });
+  
+  // Initialize authentication module callbacks
+  auth_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
+    // Get GENI service and characteristic
+    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
+    if (!service) return false;
+    
+    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
+    if (!chr) return false;
+    
+    // Write to BLE characteristic using write without response
+    auto status = esp_ble_gattc_write_char(
+        this->parent_->get_gattc_if(),
+        this->parent_->get_conn_id(),
+        chr->handle,
+        len,
+        const_cast<uint8_t*>(data),
+        ESP_GATT_WRITE_TYPE_NO_RSP,
+        ESP_GATT_AUTH_REQ_NONE);
+    return (status == ESP_OK);
+  });
+  
+  auth_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
+    this->set_timeout(delay_ms, std::move(callback));
+  });
+  
+  auth_.set_completion_callback([this]() {
+    this->session_.on_authenticated();
+    ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
+    
+    // Start telemetry service when authenticated
+    this->telemetry_service_.start();
+  });
+  
+  // Initialize telemetry service callbacks
+  telemetry_service_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
+    // Get GENI service and characteristic
+    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
+    if (!service) return false;
+    
+    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
+    if (!chr) return false;
+    
+    // Use transport to write packet (handles splitting if needed)
+    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
+      auto status = esp_ble_gattc_write_char(
+          this->parent_->get_gattc_if(),
+          this->parent_->get_conn_id(),
+          chr->handle,
+          pkt_len,
+          const_cast<uint8_t*>(pkt_data),
+          ESP_GATT_WRITE_TYPE_NO_RSP,
+          ESP_GATT_AUTH_REQ_NONE);
+      return (status == ESP_OK);
+    };
+    
+    return this->transport_.write_packet(data, len, write_func);
+  });
+  
+  telemetry_service_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
+    this->set_timeout(delay_ms, std::move(callback));
+  });
+  
+  telemetry_service_.set_sensor_update_callback([this](const uint8_t* data, size_t len) {
+    // Route to existing decode_packet for sensor publishing
     this->decode_packet(const_cast<uint8_t*>(data), len);
   });
 }
@@ -158,99 +226,14 @@ void AlphaHwrComponent::loop() {
   // Keep-alive or periodic tasks if needed
 }
 
-// Send a telemetry read request
-void AlphaHwrComponent::send_read_request(uint32_t register_addr) {
-  if (!parent_) {
-    ESP_LOGW(TAG, "Parent BLE client not available");
-    return;
-  }
-  
-  if (!authenticated_) {
-    ESP_LOGD(TAG, "Not authenticated yet, skipping telemetry poll");
-    return;
-  }
-  
-  // Get Grundfos service (0xFE5D)
-  auto *service = parent_->get_service(GRUNDFOS_SERVICE_UUID);
-  if (!service) {
-    ESP_LOGW(TAG, "Grundfos service not found for read request");
-    return;
-  }
-  
-  auto *chr = parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-  if (!chr) {
-    ESP_LOGW(TAG, "GENI characteristic not found");
-    return;
-  }
-  
-  // Build the read packet using frame_builder
-  uint8_t packet[11];  // Class 10 read packets are always 11 bytes
-  protocol::build_class10_read(register_addr, packet);
-  
-  // Log what we're sending
-  char hex_str[40];
-  sprintf(hex_str, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
-          packet[0], packet[1], packet[2], packet[3], packet[4], 
-          packet[5], packet[6], packet[7], packet[8], packet[9], packet[10]);
-  ESP_LOGD(TAG, "Sending READ request for register 0x%06X: %s", register_addr, hex_str);
-  
-  // Create write callback that captures BLE write context
-  auto write_func = [this, chr](const uint8_t* data, size_t len) -> bool {
-    auto status = esp_ble_gattc_write_char(
-        this->parent_->get_gattc_if(),
-        this->parent_->get_conn_id(),
-        chr->handle,
-        len,
-        const_cast<uint8_t*>(data),  // ESP-IDF API doesn't use const
-        ESP_GATT_WRITE_TYPE_NO_RSP,
-        ESP_GATT_AUTH_REQ_NONE);
-    return (status == ESP_OK);
-  };
-  
-  // Use transport to write packet (handles splitting if needed)
-  if (!transport_.write_packet(packet, sizeof(packet), write_func)) {
-    ESP_LOGW(TAG, "Failed to send read request via transport");
-  }
-}
-
-// Poll telemetry data (called every 10 seconds by update())
-void AlphaHwrComponent::poll_telemetry() {
-  ESP_LOGI(TAG, "Polling telemetry...");
-  
-  // Request motor state (0x570045)
-  send_read_request(0x570045);
-  
-  // Small delay between requests
-  this->set_timeout(100, [this]() {
-    // Request flow/pressure (0x5D0122)
-    send_read_request(0x5D0122);
-  });
-  
-  // Another delay
-  this->set_timeout(200, [this]() {
-    // Request temperature (0x5D012C)
-    send_read_request(0x5D012C);
-  });
-  
-  // Request alarms (Obj 88, Sub 0 → 0x580000)
-  this->set_timeout(300, [this]() {
-    send_read_request(0x580000);
-  });
-  
-  // Request warnings (Obj 88, Sub 11 → 0x58000B)
-  this->set_timeout(400, [this]() {
-    send_read_request(0x58000B);
-  });
-}
-
 // Called every 10 seconds by PollingComponent
 void AlphaHwrComponent::update() {
-  ESP_LOGI(TAG, "update() called - authenticated: %d, parent: %d, conn_id: 0x%02X", 
-           authenticated_, parent_ != nullptr, 
+  ESP_LOGI(TAG, "update() called - ready: %d, parent: %d, conn_id: 0x%02X", 
+           session_.is_ready(), parent_ != nullptr, 
            parent_ ? parent_->get_conn_id() : 0xFF);
   
-  if (authenticated_ && parent_ && parent_->get_conn_id() != 0xFF) {
-    poll_telemetry();
+  if (session_.is_ready() && parent_ && parent_->get_conn_id() != 0xFF) {
+    telemetry_service_.poll();
   } else {
     ESP_LOGW(TAG, "Skipping telemetry poll - not ready");
   }
@@ -309,7 +292,7 @@ void AlphaHwrComponent::subscribe_to_notifications() {
     ESP_LOGI(TAG, "CCCD write successful - notifications should now be enabled");
   }
   
-  subscribed_ = true;
+  session_.on_subscribed();
 }
 
 void AlphaHwrComponent::authenticate() {
@@ -318,110 +301,8 @@ void AlphaHwrComponent::authenticate() {
     return;
   }
   
-  ESP_LOGI(TAG, "Starting non-blocking authentication handshake (3-stage sequence)...");
-  
-  // Reset authentication stage counters
-  auth_stage1_count_ = 0;
-  auth_stage2_count_ = 0;
-  
-  // Start Stage 1 immediately
-  auth_stage1_legacy_burst(0);
-}
-
-void AlphaHwrComponent::auth_stage1_legacy_burst(int repeat_count) {
-  if (repeat_count < 3) {
-    // Send legacy magic packet
-    ESP_LOGD(TAG, "Stage 1: Sending legacy magic packet %d/3", repeat_count + 1);
-    send_auth_packet(AUTH_LEGACY, sizeof(AUTH_LEGACY));
-    
-    // Schedule next repeat after 50ms (Python uses 0.05s delay)
-    this->set_timeout(50, [this, repeat_count]() {
-      auth_stage1_legacy_burst(repeat_count + 1);
-    });
-  } else {
-    // Stage 1 complete, wait 100ms then start Stage 2 (Python uses 0.1s)
-    ESP_LOGD(TAG, "Stage 1 complete, waiting 100ms before Stage 2...");
-    this->set_timeout(100, [this]() {
-      auth_stage2_class10_burst(0);
-    });
-  }
-}
-
-void AlphaHwrComponent::auth_stage2_class10_burst(int repeat_count) {
-  if (repeat_count < 5) {
-    // Send Class 10 unlock packet
-    ESP_LOGD(TAG, "Stage 2: Sending Class 10 unlock packet %d/5", repeat_count + 1);
-    send_auth_packet(AUTH_CLASS10, sizeof(AUTH_CLASS10));
-    
-    // Schedule next repeat after 50ms (Python uses 0.05s delay)
-    this->set_timeout(50, [this, repeat_count]() {
-      auth_stage2_class10_burst(repeat_count + 1);
-    });
-  } else {
-    // Stage 2 complete, wait 200ms then start Stage 3 (Python uses 0.2s)
-    ESP_LOGD(TAG, "Stage 2 complete, waiting 200ms before Stage 3...");
-    this->set_timeout(200, [this]() {
-      auth_stage3_extensions();
-    });
-  }
-}
-
-void AlphaHwrComponent::auth_stage3_extensions() {
-  ESP_LOGD(TAG, "Stage 3: Sending extension packets...");
-  
-  // Python sends EXTEND_2 then EXTEND_1 (note the order)
-  // See authentication.py lines 344-351
-  send_auth_packet(AUTH_EXT_2, sizeof(AUTH_EXT_2));
-  send_auth_packet(AUTH_EXT_1, sizeof(AUTH_EXT_1));
-  
-  // Wait 500ms for final stabilization (Python uses 0.5s)
-  this->set_timeout(500, [this]() {
-    authenticated_ = true;
-    ESP_LOGI(TAG, "✓ Authentication handshake complete - waiting for telemetry...");
-  });
-}
-
-void AlphaHwrComponent::send_auth_packet(const uint8_t *data, size_t len) {
-  if (!parent_) {
-    ESP_LOGW(TAG, "Parent BLE client not available");
-    return;
-  }
-  
-  // Get Grundfos service (0xFE5D)
-  auto *service = parent_->get_service(GRUNDFOS_SERVICE_UUID);
-  
-  if (!service) {
-    ESP_LOGW(TAG, "Grundfos service not found for auth packet");
-    return;
-  }
-  
-  auto *chr = parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-  if (!chr) {
-    ESP_LOGW(TAG, "GENI characteristic not found");
-    return;
-  }
-  
-  // Create write callback that captures BLE write context
-  // CRITICAL: Use write without response (ESP_GATT_WRITE_TYPE_NO_RSP)
-  // This matches the Python library's behavior (response=False)
-  auto write_func = [this, chr](const uint8_t* data, size_t len) -> bool {
-    auto status = esp_ble_gattc_write_char(
-        this->parent_->get_gattc_if(),
-        this->parent_->get_conn_id(),
-        chr->handle,
-        len,
-        const_cast<uint8_t*>(data),  // ESP-IDF API doesn't use const
-        ESP_GATT_WRITE_TYPE_NO_RSP,  // Write without response - faster, matches Python
-        ESP_GATT_AUTH_REQ_NONE);
-    return (status == ESP_OK);
-  };
-  
-  // Use transport to write packet (handles splitting if needed)
-  if (transport_.write_packet(data, len, write_func)) {
-    ESP_LOGD(TAG, "Sent auth packet (%zu bytes)", len);
-  } else {
-    ESP_LOGW(TAG, "Failed to send auth packet via transport");
-  }
+  session_.on_authenticating();
+  auth_.start();
 }
 
 void AlphaHwrComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
@@ -556,10 +437,11 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
     case ESP_GATTC_OPEN_EVT: {
       ESP_LOGI(TAG, "BLE connection opened. Pairing enabled: %s", pairing_enabled_ ? "YES" : "NO");
       
-      // Reset discovery and authentication state
-      geni_service_found_ = false;
+      // Notify session of connection
+      session_.on_connected();
+      
+      // Reset discovery retry counter
       discovery_retry_count_ = 0;
-      auth_started_ = false;
       
       // Only request encryption/pairing if explicitly enabled
       if (pairing_enabled_) {
@@ -627,7 +509,7 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
         auto *service = parent_->get_service(GRUNDFOS_SERVICE_UUID);
         
         if (service) {
-          geni_service_found_ = true;
+          session_.on_service_found();
           ESP_LOGI(TAG, "✓ Grundfos service found!");
           ESP_LOGI(TAG, "  UUID: %s", service->uuid.to_string().c_str());
           ESP_LOGI(TAG, "  Start Handle: 0x%04x, End Handle: 0x%04x", 
@@ -710,10 +592,7 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
     
     case ESP_GATTC_DISCONNECT_EVT:
       ESP_LOGW(TAG, "Disconnected (reason: 0x%02x)", param->disconnect.reason);
-      authenticated_ = false;
-      subscribed_ = false;
-      auth_started_ = false;  // Reset auth flag on disconnect
-      geni_service_found_ = false;
+      session_.on_disconnected();
       discovery_retry_count_ = 0;
       transport_.reset();  // Reset transport state on disconnect
       break;
