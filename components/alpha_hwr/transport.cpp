@@ -179,26 +179,34 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
     return;
   }
 
-  // Check if packet is complete
-  if (reassembling_ && expected_packet_length_ > 0 && 
-      reassembly_buffer_.size() >= expected_packet_length_) {
-    ESP_LOGD(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
+   // Check if packet is complete
+   if (reassembling_ && expected_packet_length_ > 0 && 
+       reassembly_buffer_.size() >= expected_packet_length_) {
+     ESP_LOGD(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
 
-    // Try to dispatch to registered response handler first
-    bool dispatched = try_dispatch_response(reassembly_buffer_.data(), reassembly_buffer_.size());
+     // Log first 12 bytes for debugging packet structure
+     if (reassembly_buffer_.size() >= 12) {
+       ESP_LOGV(TAG, "Packet bytes [0-11]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                reassembly_buffer_[0], reassembly_buffer_[1], reassembly_buffer_[2], reassembly_buffer_[3],
+                reassembly_buffer_[4], reassembly_buffer_[5], reassembly_buffer_[6], reassembly_buffer_[7],
+                reassembly_buffer_[8], reassembly_buffer_[9], reassembly_buffer_[10], reassembly_buffer_[11]);
+     }
 
-    // If not dispatched to a handler, invoke general packet callback
-    if (!dispatched && packet_callback_) {
-      packet_callback_(reassembly_buffer_.data(), reassembly_buffer_.size());
-    } else if (!dispatched) {
-      ESP_LOGW(TAG, "Complete packet received but no handler or callback registered");
-    }
+     // Try to dispatch to registered response handler first
+     bool dispatched = try_dispatch_response(reassembly_buffer_.data(), reassembly_buffer_.size());
 
-    // Clear state for next packet
-    reassembling_ = false;
-    reassembly_buffer_.clear();
-    expected_packet_length_ = 0;
-  }
+     // If not dispatched to a handler, invoke general packet callback
+     if (!dispatched && packet_callback_) {
+       packet_callback_(reassembly_buffer_.data(), reassembly_buffer_.size());
+     } else if (!dispatched) {
+       ESP_LOGW(TAG, "Complete packet received but no handler or callback registered");
+     }
+
+     // Clear state for next packet
+     reassembling_ = false;
+     reassembly_buffer_.clear();
+     expected_packet_length_ = 0;
+   }
 }
 
 void Transport::reset() {

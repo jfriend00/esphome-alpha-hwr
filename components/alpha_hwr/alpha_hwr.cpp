@@ -94,6 +94,15 @@ void AlphaHwrComponent::setup() {
       // Start telemetry service when authenticated
       this->telemetry_service_.start();
       
+      // Read actual control mode from pump
+      this->control_service_.get_mode_async([this](bool success, services::ControlMode mode) {
+        if (success) {
+          ESP_LOGI(TAG, "✓ Control mode synced: %s", services::ControlService::get_mode_name(mode));
+        } else {
+          ESP_LOGW(TAG, "Failed to read control mode from pump");
+        }
+      });
+      
       // Refresh schedule display on successful authentication
       this->set_timeout(3000, [this]() {
         ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
