@@ -81,8 +81,6 @@ bool ScheduleService::poll_state() {
   size_t frame_len = 0;
   this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
 
-  ESP_LOGV(TAG, "Schedule read request frame (%zu bytes)", frame_len);
-
   // Register response handler before sending request
   // IMPORTANT: Pump responds with SubID 0, not SubID 1 that we requested!
   // This appears to be a quirk of the ALPHA HWR firmware.

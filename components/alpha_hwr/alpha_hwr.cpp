@@ -196,11 +196,15 @@ void AlphaHwrComponent::update() {
            parent_ ? parent_->get_conn_id() : 0xFF);
   
   if (session_.is_ready() && parent_ && parent_->get_conn_id() != 0xFF) {
-    // Poll telemetry
+    // Poll telemetry first
     telemetry_service_.poll();
     
-    // Poll schedule state (every update cycle = 10s)
-    schedule_service_.poll_state();
+    // CRITICAL FIX: Space out schedule poll to avoid request collision
+    // The pump appears to have trouble handling concurrent Class 10 reads.
+    // Delay schedule poll by 500ms to ensure telemetry response completes first.
+    this->set_timeout("schedule_poll", 500, [this]() {
+      schedule_service_.poll_state();
+    });
     
     // Check for timed-out response handlers (2 second timeout)
     transport_.check_timeouts(2000);
