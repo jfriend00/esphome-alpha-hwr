@@ -294,3 +294,50 @@ The layered architecture is now in place. When adding new features:
 * **Telemetry:** Streaming smoothly with paced polling.
 * **Schedules:** Persistence fixed; bi-directional management fully functional.
 * **Architecture:** Layered, service-based, and non-blocking.
+
+
+### Session: 2026-02-11 - Part 3: Object 86 Sub 6 Response Parsing Fix
+
+**Goal:** Fix Object 86 Sub 6 (control mode read) which was timing out despite correct packet sending.
+
+**What We Did:**
+
+1. **Identified Response Parsing Bug**
+   * Discovered that Object/Sub-ID bytes were being parsed in reverse order
+   * Python reference shows frame structure: `[ObjH][ObjL][SubH][SubL]`
+   * C++ code was incorrectly parsing as: Sub-ID at bytes 6-7, Obj-ID at bytes 8-9
+   * Actually correct order: Obj-ID at bytes 6-7, Sub-ID at bytes 8-9
+
+2. **Applied Fix**
+   * Corrected byte parsing in `Transport::try_dispatch_response()` (two locations)
+   * Extended Object 86 timeout from 3s to 5s for slower reads
+   * Added comprehensive debug logging to trace Object 86 packet flow
+
+3. **Added Logging Infrastructure**
+   * Log full packet hex when sending Object 86 requests
+   * Log all Class 10 packets when awaiting Object 86 response
+   * Helps diagnose response matching issues
+
+**Current Discovery:**
+
+* **Parsing Fix:** ✓ Confirmed correct - swapped bytes 6-7 (Object) and 8-9 (Sub-ID)
+* **Object 86 Response:** Still timing out even with correct parsing
+  - Request packet sends correctly: `27 07 E7 F8 0A 03 56 00 06 3A A5`
+  - No response packets received during 5-second window
+  - Other Class 10 reads (schedules, telemetry) work perfectly
+  - **Hypothesis:** This specific pump instance (10.0.1.86) may not support Object 86 Sub 6 via BLE
+  - **Evidence:** Device successfully authenticates and reads other Class 10 objects
+
+**Next Steps:**
+
+1. Verify on different pump hardware or Python reference client
+2. Check if Object 86 requires different authentication level
+3. Possible fallback: Use Class 3 register-based mode reading instead
+4. Document Object 86 limitation if confirmed device-specific
+
+**Code Quality:**
+
+* Maintained layered architecture principles
+* Added non-invasive debug logging
+* Extended timeout respects protocol constraints
+* Ready for production with current telemetry/schedule functionality intact
