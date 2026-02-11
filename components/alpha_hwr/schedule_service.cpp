@@ -720,6 +720,77 @@ void ScheduleService::build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *
   *frame_len = 4 + apdu_len + 2;  // Start + Length + Dst + Src + APDU + CRC
 }
 
+// -------------------------------------------------------------------------
+// Display & Formatting Methods
+// -------------------------------------------------------------------------
+
+bool ScheduleService::get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
+  if (!result) {
+    ESP_LOGE(TAG, "get_schedule_display_string() called with null result pointer");
+    return false;
+  }
+
+  // Static day names in order
+  static const char *DAYS[7] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
+
+  // Build a map of day -> list of times
+  // Each day contains a vector of [start_time, end_time] strings
+  struct DaySchedule {
+    std::vector<std::pair<std::string, std::string>> time_blocks;
+  };
+  DaySchedule day_schedules[7];
+
+  // Collect all enabled entries and group by day
+  for (const auto &entry : entries) {
+    if (!entry.is_enabled()) {
+      continue;  // Skip disabled entries
+    }
+
+    int day_idx = entry.get_day_index();
+    if (day_idx < 0 || day_idx >= 7) {
+      continue;  // Skip invalid days
+    }
+
+    day_schedules[day_idx].time_blocks.push_back({entry.get_begin_time(), entry.get_end_time()});
+  }
+
+  // Sort each day's time blocks by start time
+  for (int i = 0; i < 7; i++) {
+    auto &blocks = day_schedules[i].time_blocks;
+    std::sort(blocks.begin(), blocks.end(), [](const std::pair<std::string, std::string> &a,
+                                               const std::pair<std::string, std::string> &b) {
+      return a.first < b.first;  // Simple string comparison works for HH:MM format
+    });
+  }
+
+  // Build output string
+  std::string output;
+  for (int i = 0; i < 7; i++) {
+    output += DAYS[i];
+    output += ": ";
+
+    if (day_schedules[i].time_blocks.empty()) {
+      output += "OFF";
+    } else {
+      for (size_t j = 0; j < day_schedules[i].time_blocks.size(); j++) {
+        if (j > 0) {
+          output += ", ";
+        }
+        output += day_schedules[i].time_blocks[j].first;
+        output += "-";
+        output += day_schedules[i].time_blocks[j].second;
+      }
+    }
+
+    if (i < 6) {
+      output += "\n";
+    }
+  }
+
+  *result = output;
+  return true;
+}
+
 }  // namespace services
 }  // namespace alpha_hwr
 }  // namespace esphome

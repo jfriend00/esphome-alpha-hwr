@@ -53,51 +53,56 @@ ble_client:
 text_sensor:
 
 alpha_hwr:
-  id: pump
-  ble_client_id: hwr_pump_client
-  enable_pairing: true  # Enable BLE pairing for enhanced telemetry
-  
-  # Pairing Status
-  pairing_status:
-    name: "Pairing Status"
-  
-  # Enhanced Electrical (requires pairing)
-  voltage:
-    name: "Grid Voltage"
-  voltage_dc:
-    name: "DC Voltage"
-  current:
-    name: "Motor Current"
-  
-  # Basic Telemetry
-  power:
-    name: "Power Consumption"
-  rpm:
-    id: motor_speed
-    name: "Motor Speed"
-  flow:
-    name: "Flow Rate"
-  head:
-    name: "Head Pressure"
-  
-  # Pressure Sensors (requires pairing)
-  inlet_pressure:
-    name: "Inlet Pressure"
-  outlet_pressure:
-    name: "Outlet Pressure"
-  
-  # Temperature Sensors (all)
-  temp_media:
-    name: "Water Temperature"
-  temp_converter:
-    name: "Converter Temperature"
-  temp_pcb:
-    name: "PCB Temperature"
-  temp_control_box:
-    name: "Control Box Temperature"
-  
-  # Alarms & Warnings
-  alarms:
-    name: "Active Alarms"
-  warnings:
-    name: "Active Warnings"
+   id: pump
+   ble_client_id: hwr_pump_client
+   enable_pairing: true  # Enable BLE pairing for enhanced telemetry
+   
+   # Pairing Status
+   pairing_status:
+     name: "Pairing Status"
+   
+   # Enhanced Electrical (requires pairing)
+   voltage:
+     name: "Grid Voltage"
+   voltage_dc:
+     name: "DC Voltage"
+   current:
+     name: "Motor Current"
+   
+   # Basic Telemetry
+   power:
+     name: "Power Consumption"
+   rpm:
+     id: motor_speed
+     name: "Motor Speed"
+   flow:
+     name: "Flow Rate"
+   head:
+     name: "Head Pressure"
+   
+   # Pressure Sensors (requires pairing)
+   inlet_pressure:
+     name: "Inlet Pressure"
+   outlet_pressure:
+     name: "Outlet Pressure"
+   
+   # Temperature Sensors (all)
+   temp_media:
+     name: "Water Temperature"
+   temp_converter:
+     name: "Converter Temperature"
+   temp_pcb:
+     name: "PCB Temperature"
+   temp_control_box:
+     name: "Control Box Temperature"
+   
+   # Alarms & Warnings
+   alarms:
+     name: "Active Alarms"
+   warnings:
+     name: "Active Warnings"
+   
+   # Schedule Display
+   schedule:
+     name: "Weekly Schedule"
+

@@ -98,12 +98,13 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   void set_current_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_current_sensor(sensor); }
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_inlet_pressure_sensor(sensor); }
   void set_outlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_outlet_pressure_sensor(sensor); }
-  void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
+   void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
 #ifdef USE_TEXT_SENSOR
-  void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }
-  void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_warnings_text_sensor(sensor); }
+   void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }
+   void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_warnings_text_sensor(sensor); }
+   void set_schedule_text_sensor(text_sensor::TextSensor *sensor) { schedule_text_sensor_ = sensor; }
 #endif
-  void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
+   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
   void setup() override;
   void loop() override;
@@ -147,8 +148,12 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
-  // Pairing status sensor (separate from telemetry)
-  binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+   // Pairing status sensor (separate from telemetry)
+   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+#ifdef USE_TEXT_SENSOR
+   // Schedule display sensor
+   text_sensor::TextSensor *schedule_text_sensor_{nullptr};
+#endif
   
  public:
   // Control service access methods (for ESPHome switches/buttons)
@@ -158,26 +163,68 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool enable_remote() { return control_service_.enable_remote_mode(); }
   bool disable_remote() { return control_service_.disable_remote_mode(); }
   
-  // Schedule service access methods (for ESPHome buttons/lambdas)
-  bool enable_schedule() { return schedule_service_.enable(); }
-  bool disable_schedule() { return schedule_service_.disable(); }
-  bool get_schedule_state(bool *result) { return schedule_service_.get_state(result); }
-  bool read_schedule_entries(std::vector<ScheduleEntry> *entries, int layer = -1) {
-    return schedule_service_.read_entries(entries, layer);
-  }
-  bool read_schedule_entries_async(int layer, std::function<void(bool, const std::vector<ScheduleEntry>&)> on_complete) {
-    return schedule_service_.read_entries_async(layer, on_complete);
-  }
-  bool write_schedule_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0) {
-    return schedule_service_.write_entries(entries, layer);
-  }
-  bool write_schedule_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
-                                    std::function<void(bool)> on_complete) {
-    return schedule_service_.write_entries_async(entries, layer, on_complete);
-  }
-  bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
-    return schedule_service_.clear_entry(day, layer);
-  }
+   // Schedule service access methods (for ESPHome buttons/lambdas)
+   bool enable_schedule() { return schedule_service_.enable(); }
+   bool disable_schedule() { return schedule_service_.disable(); }
+   bool get_schedule_state(bool *result) { return schedule_service_.get_state(result); }
+   bool read_schedule_entries(std::vector<ScheduleEntry> *entries, int layer = -1) {
+     return schedule_service_.read_entries(entries, layer);
+   }
+   bool read_schedule_entries_async(int layer, std::function<void(bool, const std::vector<ScheduleEntry>&)> on_complete) {
+     return schedule_service_.read_entries_async(layer, on_complete);
+   }
+   bool write_schedule_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0) {
+     return schedule_service_.write_entries(entries, layer);
+   }
+   bool write_schedule_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
+                                     std::function<void(bool)> on_complete) {
+     return schedule_service_.write_entries_async(entries, layer, on_complete);
+   }
+   bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
+     return schedule_service_.clear_entry(day, layer);
+   }
+    bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
+      return schedule_service_.get_schedule_display_string(entries, result);
+    }
+
+    /**
+     * Asynchronously read the pump schedule and update the text sensor display.
+     * 
+     * This is a convenience method for displaying the current schedule in Home Assistant.
+     * It reads all schedule layers from the pump and formats them into a readable string,
+     * then publishes to the schedule_text_sensor if one is configured.
+     * 
+     * Usage in YAML button lambda:
+     *   on_press:
+     *     - lambda: id(pump).update_schedule_display();
+     */
+    void update_schedule_display() {
+      // Read all schedule layers asynchronously
+      this->read_schedule_entries_async(-1, [this](bool success, const std::vector<ScheduleEntry> &entries) {
+        if (!success) {
+          ESP_LOGW(TAG, "Failed to read schedule for display update");
+#ifdef USE_TEXT_SENSOR
+          if (this->schedule_text_sensor_) {
+            this->schedule_text_sensor_->publish_state("Error reading schedule");
+          }
+#endif
+          return;
+        }
+
+        // Format and display the schedule
+#ifdef USE_TEXT_SENSOR
+        if (this->schedule_text_sensor_) {
+          std::string display_str;
+          if (this->get_schedule_display_string(entries, &display_str)) {
+            this->schedule_text_sensor_->publish_state(display_str);
+            ESP_LOGI(TAG, "Schedule display updated:\n%s", display_str.c_str());
+          } else {
+            this->schedule_text_sensor_->publish_state("Error formatting schedule");
+          }
+        }
+#endif
+      });
+    }
 };
 
 }  // namespace alpha_hwr

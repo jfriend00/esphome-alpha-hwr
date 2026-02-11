@@ -284,24 +284,50 @@ class ScheduleService {
   // Validation Methods
   // -------------------------------------------------------------------------
 
-  /**
-   * Validate a list of schedule entries for conflicts and errors.
-   *
-   * Performs comprehensive validation including:
-   * - Time range validity (not zero duration)
-   * - No overlaps within same day/layer
-   * - Valid day names
-   * - Valid layer values (0-4)
-   *
-   * @param entries Vector of ScheduleEntry instances to validate
-   * @param errors Output vector - populated with error messages if validation fails
-   * @return True if all entries are valid, false if any errors found
-   *
-   * Example error messages:
-   * - "Entry 2 (Monday 06:00-06:00): Invalid time range: begin and end times are identical (06:00)"
-   * - "Overlap detected: Monday layer 0: 06:00-08:00 overlaps with 07:00-09:00"
-   */
-  bool validate_entries(const std::vector<ScheduleEntry> &entries, std::vector<std::string> *errors);
+   /**
+    * Validate a list of schedule entries for conflicts and errors.
+    *
+    * Performs comprehensive validation including:
+    * - Time range validity (not zero duration)
+    * - No overlaps within same day/layer
+    * - Valid day names
+    * - Valid layer values (0-4)
+    *
+    * @param entries Vector of ScheduleEntry instances to validate
+    * @param errors Output vector - populated with error messages if validation fails
+    * @return True if all entries are valid, false if any errors found
+    *
+    * Example error messages:
+    * - "Entry 2 (Monday 06:00-06:00): Invalid time range: begin and end times are identical (06:00)"
+    * - "Overlap detected: Monday layer 0: 06:00-08:00 overlaps with 07:00-09:00"
+    */
+   bool validate_entries(const std::vector<ScheduleEntry> &entries, std::vector<std::string> *errors);
+
+   // -------------------------------------------------------------------------
+   // Display & Formatting Methods
+   // -------------------------------------------------------------------------
+
+   /**
+    * Get a human-readable schedule display string.
+    *
+    * Formats all schedule entries (across all layers) into a readable string
+    * organized by day of week. Multiple time blocks per day are displayed on
+    * the same line separated by commas. Days with no schedule show as "OFF".
+    *
+    * Format example:
+    *   Monday: 06:00-08:00, 10:00-12:00, 15:00-17:00
+    *   Tuesday: 06:00-08:00, 10:00-12:00
+    *   ...
+    *   Saturday: OFF
+    *   Sunday: OFF
+    *
+    * @param entries Vector of all schedule entries (typically from read_entries with layer=-1)
+    * @param result Output string - populated with formatted schedule
+    * @return True if formatting succeeded, false on error
+    *
+    * Note: Entries are automatically sorted by day and time. Only enabled entries are displayed.
+    */
+   bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result);
 
  protected:
   // -------------------------------------------------------------------------

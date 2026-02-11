@@ -38,6 +38,7 @@ CONF_PAIRING_STATUS = "pairing_status"
 CONF_ENABLE_PAIRING = "enable_pairing"
 CONF_ALARMS = "alarms"
 CONF_WARNINGS = "warnings"
+CONF_SCHEDULE = "schedule"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -126,6 +127,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_WARNINGS): text_sensor.text_sensor_schema(
             icon="mdi:alert",
         ),
+        cv.Optional(CONF_SCHEDULE): text_sensor.text_sensor_schema(
+            icon="mdi:calendar-clock",
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -201,3 +205,7 @@ async def to_code(config):
     if CONF_WARNINGS in config:
         sens = await text_sensor.new_text_sensor(config[CONF_WARNINGS])
         cg.add(var.set_warnings_text_sensor(sens))
+
+    if CONF_SCHEDULE in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SCHEDULE])
+        cg.add(var.set_schedule_text_sensor(sens))
