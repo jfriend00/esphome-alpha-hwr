@@ -19,6 +19,7 @@
 #include "telemetry_service.h"
 #include "sensor_publisher.h"
 #include "ble_connection_manager.h"
+#include "control_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -71,7 +72,9 @@ static const esp32_ble_tracker::ESPBTUUID GENI_CHAR_UUID =
 
 class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientNode {
  public:
-  explicit AlphaHwrComponent(ble_client::BLEClient *parent) : PollingComponent(10000) {
+  explicit AlphaHwrComponent(ble_client::BLEClient *parent) : 
+      PollingComponent(10000),
+      control_service_(transport_, session_) {
     parent->register_ble_node(this);
     parent_ = parent;
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
@@ -130,11 +133,22 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Telemetry service (handles all telemetry operations)
   services::TelemetryService telemetry_service_;
   
+  // Control service (handles pump start/stop and mode changes)
+  services::ControlService control_service_;
+  
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
   // Pairing status sensor (separate from telemetry)
   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+  
+ public:
+  // Control service access methods (for ESPHome switches/buttons)
+  bool pump_start() { return control_service_.start(); }
+  bool pump_stop() { return control_service_.stop(); }
+  bool set_control_mode(services::ControlMode mode) { return control_service_.set_mode(mode); }
+  bool enable_remote() { return control_service_.enable_remote_mode(); }
+  bool disable_remote() { return control_service_.disable_remote_mode(); }
 };
 
 }  // namespace alpha_hwr

@@ -125,6 +125,35 @@ void AlphaHwrComponent::setup() {
   });
   
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
+  
+  // Initialize control service callbacks
+  control_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
+    this->set_timeout(delay_ms, std::move(callback));
+  });
+  
+  control_service_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
+    // Get GENI service and characteristic
+    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
+    if (!service) return false;
+    
+    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
+    if (!chr) return false;
+    
+    // Use transport to write packet (handles splitting if needed)
+    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
+      auto status = esp_ble_gattc_write_char(
+          this->parent_->get_gattc_if(),
+          this->parent_->get_conn_id(),
+          chr->handle,
+          pkt_len,
+          const_cast<uint8_t*>(pkt_data),
+          ESP_GATT_WRITE_TYPE_NO_RSP,
+          ESP_GATT_AUTH_REQ_NONE);
+      return (status == ESP_OK);
+    };
+    
+    return this->transport_.write_packet(data, len, write_func);
+  });
 }
 
 void AlphaHwrComponent::loop() {
