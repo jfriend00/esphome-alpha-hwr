@@ -18,6 +18,7 @@
 #include "auth.h"
 #include "telemetry_service.h"
 #include "sensor_publisher.h"
+#include "ble_connection_manager.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -106,9 +107,6 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Static helper method to validate if a device is an ALPHA HWR pump
   // Returns true if device matches Grundfos ALPHA HWR product signature
   static bool is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDevice &device);
-  
-  // Debug helper to dump all discovered services and characteristics
-  void dump_services();
 
  private:
   ble_client::BLEClient *parent_ = nullptr;
@@ -116,14 +114,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding
   
   void authenticate();
-  void subscribe_to_notifications();
-  void init_security();
   
-  // Service discovery retry mechanism
-  uint8_t discovery_retry_count_ = 0;
-  static const uint8_t MAX_DISCOVERY_RETRIES = 3;
-  static const uint32_t DISCOVERY_RETRY_DELAY_MS = 1000;
-  static const uint32_t POST_CONNECT_DELAY_MS = 500;
+  // BLE connection manager (handles all BLE operations)
+  core::BLEConnectionManager ble_manager_;
   
   // BLE transport layer (handles packet reassembly)
   core::Transport transport_;
