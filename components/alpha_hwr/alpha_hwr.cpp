@@ -1,4 +1,6 @@
 #include "alpha_hwr.h"
+#include "frame_parser.h"
+#include "telemetry_decoder.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -151,39 +153,6 @@ void AlphaHwrComponent::loop() {
   // Keep-alive or periodic tasks if needed
 }
 
-// CRC-16-CCITT calculation (base function, no final XOR)
-uint16_t AlphaHwrComponent::calc_crc16(const uint8_t *data, size_t len) {
-  uint16_t crc = 0xFFFF;  // Initial value
-  for (size_t i = 0; i < len; i++) {
-    crc = ((crc << 8) ^ CRC_TABLE[((crc >> 8) ^ data[i]) & 0xFF]) & 0xFFFF;
-  }
-  return crc;
-}
-
-// CRC-16-CCITT calculation with final XOR (used for READ operations)
-uint16_t AlphaHwrComponent::calc_crc16_read(const uint8_t *data, size_t len) {
-  return calc_crc16(data, len) ^ 0xFFFF;
-}
-
-// Build a Class 10 READ request packet
-void AlphaHwrComponent::build_class10_read_packet(uint32_t register_addr, uint8_t *packet_out) {
-  // Frame structure: [27] [07] [E7] [F8] [0A] [03] [Reg-H] [Reg-M] [Reg-L] [CRC-H] [CRC-L]
-  packet_out[0] = 0x27;  // FRAME_START
-  packet_out[1] = 0x07;  // Length (7 bytes: E7 F8 0A 03 + 3 register bytes)
-  packet_out[2] = 0xE7;  // SERVICE_ID_HIGH
-  packet_out[3] = 0xF8;  // Source address
-  packet_out[4] = 0x0A;  // CLASS_10
-  packet_out[5] = 0x03;  // OpSpec (READ)
-  packet_out[6] = (register_addr >> 16) & 0xFF;  // Register high byte
-  packet_out[7] = (register_addr >> 8) & 0xFF;   // Register middle byte
-  packet_out[8] = register_addr & 0xFF;          // Register low byte
-  
-  // Calculate CRC over bytes 1-8 (everything after start byte, before CRC)
-  uint16_t crc = calc_crc16_read(&packet_out[1], 8);
-  packet_out[9] = (crc >> 8) & 0xFF;   // CRC high byte
-  packet_out[10] = crc & 0xFF;          // CRC low byte
-}
-
 // Send a telemetry read request
 void AlphaHwrComponent::send_read_request(uint32_t register_addr) {
   if (!parent_) {
@@ -209,9 +178,9 @@ void AlphaHwrComponent::send_read_request(uint32_t register_addr) {
     return;
   }
   
-  // Build the read packet
-  uint8_t packet[11];
-  build_class10_read_packet(register_addr, packet);
+  // Build the read packet using frame_builder
+  uint8_t packet[11];  // Class 10 read packets are always 11 bytes
+  protocol::build_class10_read(register_addr, packet);
   
   // Log what we're sending
   char hex_str[40];
@@ -773,15 +742,6 @@ void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt
   }
 }
 
-float AlphaHwrComponent::read_float_be(uint8_t *data, size_t offset) {
-  if (offset + 4 > 255) return 0.0f;
-  uint32_t temp = (data[offset] << 24) | (data[offset + 1] << 16) | 
-                  (data[offset + 2] << 8) | data[offset + 3];
-  float val;
-  memcpy(&val, &temp, 4);
-  return val;
-}
-
 void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
   // Log ALL packets for debugging
   ESP_LOGD(TAG, "Packet received: %d bytes", len);
@@ -795,119 +755,129 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     ESP_LOGD(TAG, "  Hex: %s", hex_str);
   }
   
-  if (len < 6) {
-    ESP_LOGD(TAG, "  Packet too short (< 6 bytes), ignoring");
+  // Parse frame using protocol layer
+  protocol::ParsedFrame frame = protocol::parse_frame(data, len);
+  
+  // Validate frame structure
+  if (!frame.valid) {
+    ESP_LOGD(TAG, "  Invalid frame structure, ignoring");
     return;
   }
   
   // Log packet structure
-  ESP_LOGD(TAG, "  Frame: 0x%02X, Class: 0x%02X, OpSpec: 0x%02X", 
-           data[0], data[4], len >= 6 ? data[5] : 0);
+  ESP_LOGD(TAG, "  Frame: Type=%s, Class: 0x%02X, OpSpec: 0x%02X", 
+           frame.frame_type == protocol::FrameType::RESPONSE ? "Response" : "Request",
+           frame.class_byte, frame.opspec);
   
-  // Check frame start (0x24 for response)
-  if (data[0] != 0x24) {
-    ESP_LOGD(TAG, "  Not a response frame (expected 0x24), ignoring");
+  // Check for response frame (we only process responses)
+  if (frame.frame_type != protocol::FrameType::RESPONSE) {
+    ESP_LOGD(TAG, "  Not a response frame, ignoring");
     return;
   }
   
-  // Check class (0x0A for Class 10)
-  if (len < 5 || data[4] != 0x0A) {
-    ESP_LOGD(TAG, "  Not Class 10 (got 0x%02X), ignoring", data[4]);
+  // Check CRC validity (warn but continue - some implementations may vary)
+  if (!frame.crc_valid) {
+    ESP_LOGW(TAG, "  CRC validation failed (continuing anyway)");
+  }
+  
+  // Check for Class 10 (we only handle Class 10 for now)
+  if (frame.class_byte != protocol::CLASS_10) {
+    ESP_LOGD(TAG, "  Not Class 10 (got 0x%02X), ignoring", frame.class_byte);
     return;
   }
 
-  uint8_t opspec = data[5];
-  ESP_LOGD(TAG, "  Class 10 packet, OpSpec: 0x%02X", opspec);
+  uint8_t opspec = frame.opspec;
+  ESP_LOGD(TAG, "  Class 10 packet, OpSpec: 0x%02X, Sub=0x%04X, Obj=0x%04X", 
+           opspec, frame.sub_id, frame.obj_id);
 
   // Register READ responses (OpSpec 0x30 = motor, 0x2B = flow, 0x14 = temp)
-  if (opspec == 0x30 && len >= 41) {
-    // Motor state response: floats start at offset 13
-    // [0]=AC voltage, [1]=DC voltage, [2]=current, [3]=power, [5]=RPM, [6]=converter temp
+  if (opspec == 0x30) {
     ESP_LOGI(TAG, "  Motor state response (OpSpec 0x30)");
     
-    float voltage_ac = read_float_be(data, 13); // Float[0] at offset 13
-    float voltage_dc = read_float_be(data, 17); // Float[1] at offset 17
-    float current = read_float_be(data, 21);    // Float[2] at offset 21
-    float power = read_float_be(data, 25);      // Float[3] at offset 25
-    float rpm = read_float_be(data, 33);        // Float[5] at offset 33
-    float converter_temp = read_float_be(data, 37); // Float[6] at offset 37
+    // Decode motor state using telemetry decoder
+    protocol::MotorStateTelemetry motor = protocol::decode_motor_state_response(data, len);
     
-    if (power >= 0 && power <= 1000 && rpm >= 0 && rpm <= 10000) {
+    // Validate and log
+    if (motor.has_power && motor.has_speed) {
       ESP_LOGI(TAG, "✓ Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", 
-               voltage_ac, voltage_dc, current, power, rpm, converter_temp);
-      if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage_ac);
-      if (voltage_dc_sensor_ != nullptr && voltage_dc >= 0 && voltage_dc <= 500) {
-        voltage_dc_sensor_->publish_state(voltage_dc);
+               motor.has_voltage_ac ? motor.voltage_ac_v : 0,
+               motor.has_voltage_dc ? motor.voltage_dc_v : 0,
+               motor.has_current ? motor.current_a : 0,
+               motor.power_w, motor.speed_rpm,
+               motor.has_converter_temp ? motor.converter_temperature_c : 0);
+      
+      // Publish to sensors
+      if (motor.has_voltage_ac && voltage_sensor_ != nullptr) {
+        voltage_sensor_->publish_state(motor.voltage_ac_v);
       }
-      if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
-      if (power_sensor_ != nullptr) power_sensor_->publish_state(power);
-      if (rpm_sensor_ != nullptr) rpm_sensor_->publish_state(rpm);
-      // Publish converter temperature - even if NaN (shows as "Unavailable" in HA)
-      if (temp_converter_sensor_ != nullptr) {
-        if (std::isnan(converter_temp) || (converter_temp >= -20 && converter_temp <= 120)) {
-          temp_converter_sensor_->publish_state(converter_temp);
-        }
+      if (motor.has_voltage_dc && voltage_dc_sensor_ != nullptr) {
+        voltage_dc_sensor_->publish_state(motor.voltage_dc_v);
+      }
+      if (motor.has_current && current_sensor_ != nullptr) {
+        current_sensor_->publish_state(motor.current_a);
+      }
+      if (motor.has_power && power_sensor_ != nullptr) {
+        power_sensor_->publish_state(motor.power_w);
+      }
+      if (motor.has_speed && rpm_sensor_ != nullptr) {
+        rpm_sensor_->publish_state(motor.speed_rpm);
+      }
+      if (motor.has_converter_temp && temp_converter_sensor_ != nullptr) {
+        temp_converter_sensor_->publish_state(motor.converter_temperature_c);
       }
     }
   }
-  else if (opspec == 0x2B && len >= 45) {
-    // Flow/pressure response: floats start at offset 13
-    // [6]=flow at offset 37, [7]=head at offset 41, [8]=inlet_pressure at offset 45, [9]=outlet_pressure at offset 49
+  else if (opspec == 0x2B) {
     ESP_LOGI(TAG, "  Flow/pressure response (OpSpec 0x2B)");
     
-    float flow = read_float_be(data, 37);
-    float head = read_float_be(data, 41);
+    // Decode flow/pressure using telemetry decoder
+    protocol::FlowPressureTelemetry flow_data = protocol::decode_flow_pressure_response(data, len);
     
-    // Inlet and outlet pressure may not always be present
-    float inlet_pressure = NAN;
-    float outlet_pressure = NAN;
-    if (len >= 49) {
-      inlet_pressure = read_float_be(data, 45);
-    }
-    if (len >= 53) {
-      outlet_pressure = read_float_be(data, 49);
-    }
-    
-    if (flow >= 0 && flow <= 100 && head >= 0 && head <= 50) {
+    // Validate and log
+    if (flow_data.has_flow && flow_data.has_head) {
       ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar, P_out=%.2f bar", 
-               flow, head, inlet_pressure, outlet_pressure);
-      if (flow_sensor_ != nullptr) flow_sensor_->publish_state(flow);
-      if (head_sensor_ != nullptr) head_sensor_->publish_state(head);
+               flow_data.flow_m3h, flow_data.head_m,
+               flow_data.has_inlet_pressure ? flow_data.inlet_pressure_bar : NAN,
+               flow_data.has_outlet_pressure ? flow_data.outlet_pressure_bar : NAN);
       
-      // Publish pressure sensors - even if NaN (shows as "Unavailable" in HA)
-      if (inlet_pressure_sensor_ != nullptr) {
-        if (std::isnan(inlet_pressure) || (inlet_pressure >= 0 && inlet_pressure <= 20)) {
-          inlet_pressure_sensor_->publish_state(inlet_pressure);
-        }
+      // Publish to sensors
+      if (flow_data.has_flow && flow_sensor_ != nullptr) {
+        flow_sensor_->publish_state(flow_data.flow_m3h);
       }
-      if (outlet_pressure_sensor_ != nullptr) {
-        if (std::isnan(outlet_pressure) || (outlet_pressure >= 0 && outlet_pressure <= 20)) {
-          outlet_pressure_sensor_->publish_state(outlet_pressure);
-        }
+      if (flow_data.has_head && head_sensor_ != nullptr) {
+        head_sensor_->publish_state(flow_data.head_m);
+      }
+      if (flow_data.has_inlet_pressure && inlet_pressure_sensor_ != nullptr) {
+        inlet_pressure_sensor_->publish_state(flow_data.inlet_pressure_bar);
+      }
+      if (flow_data.has_outlet_pressure && outlet_pressure_sensor_ != nullptr) {
+        outlet_pressure_sensor_->publish_state(flow_data.outlet_pressure_bar);
       }
     } else {
-      ESP_LOGW(TAG, "  Invalid flow/head values (flow=%.3f, head=%.2f)", flow, head);
+      ESP_LOGW(TAG, "  Invalid flow/head values");
     }
   }
-  else if (opspec == 0x14 && len >= 25) {
-    // Temperature response: floats start at offset 13
-    // [0]=media temp, [1]=PCB temp, [2]=control box temp
+  else if (opspec == 0x14) {
     ESP_LOGI(TAG, "  Temperature response (OpSpec 0x14)");
     
-    float media_temp = read_float_be(data, 13);     // Float[0] at offset 13
-    float pcb_temp = read_float_be(data, 17);       // Float[1] at offset 17
-    float control_box_temp = read_float_be(data, 21); // Float[2] at offset 21
+    // Decode temperature using telemetry decoder
+    protocol::TemperatureTelemetry temp_data = protocol::decode_temperature_response(data, len);
     
-    ESP_LOGI(TAG, "✓ Temps: Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C", media_temp, pcb_temp, control_box_temp);
+    // Log
+    ESP_LOGI(TAG, "✓ Temps: Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C",
+             temp_data.has_media_temp ? temp_data.media_temperature_c : NAN,
+             temp_data.has_pcb_temp ? temp_data.pcb_temperature_c : NAN,
+             temp_data.has_control_box_temp ? temp_data.control_box_temperature_c : NAN);
     
-    if (media_temp >= -20 && media_temp <= 100 && temp_media_sensor_ != nullptr) {
-      temp_media_sensor_->publish_state(media_temp);
+    // Publish to sensors
+    if (temp_data.has_media_temp && temp_media_sensor_ != nullptr) {
+      temp_media_sensor_->publish_state(temp_data.media_temperature_c);
     }
-    if (pcb_temp >= -20 && pcb_temp <= 150 && temp_pcb_sensor_ != nullptr) {
-      temp_pcb_sensor_->publish_state(pcb_temp);
+    if (temp_data.has_pcb_temp && temp_pcb_sensor_ != nullptr) {
+      temp_pcb_sensor_->publish_state(temp_data.pcb_temperature_c);
     }
-    if (control_box_temp >= -20 && control_box_temp <= 150 && temp_control_box_sensor_ != nullptr) {
-      temp_control_box_sensor_->publish_state(control_box_temp);
+    if (temp_data.has_control_box_temp && temp_control_box_sensor_ != nullptr) {
+      temp_control_box_sensor_->publish_state(temp_data.control_box_temperature_c);
     }
   }
   // OpSpec 0x13 = Alarms/Warnings response
@@ -976,11 +946,11 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     
     // Standard Motor State (Sub 0x0045, Obj 0x0057)
     if (sub_id == 0x0045 && obj_id == 0x0057 && len >= 38) {
-      float voltage = read_float_be(data, 10);     // Offset 10 (Float[0])
-      float current = read_float_be(data, 18);     // Offset 18 (Float[2])
-      float power = read_float_be(data, 26);       // Offset 26 (Float[4])
-      float rpm = read_float_be(data, 30);         // Offset 30 (Float[5])
-      float converter_temp = read_float_be(data, 34); // Offset 34 (Float[6])
+      float voltage = protocol::decode_float_be(data, 10);     // Offset 10 (Float[0])
+      float current = protocol::decode_float_be(data, 18);     // Offset 18 (Float[2])
+      float power = protocol::decode_float_be(data, 26);       // Offset 26 (Float[4])
+      float rpm = protocol::decode_float_be(data, 30);         // Offset 30 (Float[5])
+      float converter_temp = protocol::decode_float_be(data, 34); // Offset 34 (Float[6])
       ESP_LOGI(TAG, "✓ Motor (passive): %.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C", voltage, current, power, rpm, converter_temp);
       if (voltage_sensor_ != nullptr) voltage_sensor_->publish_state(voltage);
       if (current_sensor_ != nullptr) current_sensor_->publish_state(current);
@@ -992,17 +962,17 @@ void AlphaHwrComponent::decode_packet(uint8_t *data, size_t len) {
     }
     // Standard Flow/Head (Sub 0x0122, Obj 0x005D = Decimal Sub 290, Obj 93)
     else if (sub_id == 0x0122 && obj_id == 0x005D && len >= 18) {
-      float flow = read_float_be(data, 10);
-      float head = read_float_be(data, 14);
+      float flow = protocol::decode_float_be(data, 10);
+      float head = protocol::decode_float_be(data, 14);
       ESP_LOGI(TAG, "✓ Flow/Head (passive): %.3f m³/h, %.2f m", flow, head);
       if (flow_sensor_ != nullptr) flow_sensor_->publish_state(flow);
       if (head_sensor_ != nullptr) head_sensor_->publish_state(head);
     }
     // Standard Temperature (Sub 0x012C, Obj 0x005D = Decimal Sub 300, Obj 93)
     else if (sub_id == 0x012C && obj_id == 0x005D && len >= 22) {
-      float media_temp = read_float_be(data, 10);      // Offset 10 (Float[0])
-      float pcb_temp = read_float_be(data, 14);        // Offset 14 (Float[1])
-      float control_box_temp = read_float_be(data, 18); // Offset 18 (Float[2])
+      float media_temp = protocol::decode_float_be(data, 10);      // Offset 10 (Float[0])
+      float pcb_temp = protocol::decode_float_be(data, 14);        // Offset 14 (Float[1])
+      float control_box_temp = protocol::decode_float_be(data, 18); // Offset 18 (Float[2])
       ESP_LOGI(TAG, "✓ Temps (passive): Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C", media_temp, pcb_temp, control_box_temp);
       if (media_temp >= -20 && media_temp <= 100 && temp_media_sensor_ != nullptr) {
         temp_media_sensor_->publish_state(media_temp);
