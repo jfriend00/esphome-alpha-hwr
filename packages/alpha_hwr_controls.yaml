@@ -1,0 +1,154 @@
+# ==============================================================================
+# ALPHA HWR Control Package
+# ==============================================================================
+#
+# This package provides comprehensive UI controls for the Grundfos ALPHA HWR pump:
+# - Pump run/stop switch
+# - Schedule enable/disable switch
+# - Remote mode buttons (enable/disable)
+# - Control mode selector (10 operating modes)
+# - Schedule refresh button
+#
+# Usage:
+#   packages:
+#     alpha_hwr_base: !include packages/alpha_hwr_pairing.yaml
+#     alpha_hwr_controls: !include packages/alpha_hwr_controls.yaml
+#
+# Requirements:
+# - Main alpha_hwr component must have id: pump
+# - Motor Speed sensor must have id: motor_speed
+#
+# ==============================================================================
+
+# Ensure switch and button components are included
+switch:
+  # Pump Run/Stop Control
+  # Toggle pump on/off based on motor speed
+  - platform: template
+    name: "Pump Running"
+    icon: "mdi:pump"
+    optimistic: false
+    # Use Motor Speed sensor to determine actual state
+    lambda: |-
+      if (id(motor_speed).has_state()) {
+        return id(motor_speed).state > 0;
+      }
+      return false;
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Starting pump...");
+          bool result = id(pump).pump_start();
+          ESP_LOGI("switch", "Start pump result: %s", result ? "SUCCESS" : "FAILED");
+    turn_off_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Stopping pump...");
+          bool result = id(pump).pump_stop();
+          ESP_LOGI("switch", "Stop pump result: %s", result ? "SUCCESS" : "FAILED");
+  
+  # Schedule Enable/Disable Control
+  - platform: template
+    name: "Schedule Enabled"
+    icon: "mdi:calendar-clock"
+    optimistic: false  # Read actual state from pump
+    lambda: |-
+      bool enabled = false;
+      if (id(pump).get_schedule_state(&enabled)) {
+        return enabled;
+      }
+      return {};  // Return unknown if state not cached yet
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Enabling pump schedule...");
+          bool result = id(pump).enable_schedule();
+          ESP_LOGI("switch", "Enable schedule result: %s", result ? "SUCCESS" : "FAILED");
+    turn_off_action:
+      - lambda: |-
+          ESP_LOGI("switch", "Disabling pump schedule...");
+          bool result = id(pump).disable_schedule();
+          ESP_LOGI("switch", "Disable schedule result: %s", result ? "SUCCESS" : "FAILED");
+
+button:
+  - platform: restart
+    name: "Restart HWR Pump"
+  
+  # Remote Mode Buttons
+  - platform: template
+    name: "Enable Remote Mode"
+    icon: "mdi:remote"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Enabling remote mode...");
+          bool result = id(pump).enable_remote();
+          ESP_LOGI("button", "Enable remote result: %s", result ? "SUCCESS" : "FAILED");
+  
+  - platform: template
+    name: "Disable Remote Mode (Auto)"
+    icon: "mdi:remote-off"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Disabling remote mode (returning to Auto)...");
+          bool result = id(pump).disable_remote();
+          ESP_LOGI("button", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
+  
+  # Schedule Management Button
+  - platform: template
+    name: "Refresh Schedule Display"
+    icon: "mdi:refresh"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Refreshing schedule display...");
+          id(pump).update_schedule_display();
+
+select:
+  # Pump Control Mode Selector
+  # Allows users to select between different pump operation modes
+  - platform: template
+    name: "Pump Control Mode"
+    id: pump_mode_select
+    icon: "mdi:tune"
+    optimistic: true
+    options:
+      - "Constant Pressure"
+      - "Proportional Pressure"
+      - "Constant Speed"
+      - "Auto Adapt"
+      - "Constant Flow"
+      - "Auto Adapt Radiator"
+      - "Auto Adapt Underfloor"
+      - "Auto Adapt Combined"
+      - "DHW On/Off"
+      - "Temperature Range"
+    initial_option: "Constant Speed"
+    set_action:
+      - lambda: |-
+          ESP_LOGI("select", "Setting mode to: %s", x.c_str());
+          
+          esphome::alpha_hwr::services::ControlMode mode;
+          
+          if (x == "Constant Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE;
+          } else if (x == "Proportional Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE;
+          } else if (x == "Constant Speed") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED;
+          } else if (x == "Auto Adapt") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT;
+          } else if (x == "Constant Flow") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW;
+          } else if (x == "Auto Adapt Radiator") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_RADIATOR;
+          } else if (x == "Auto Adapt Underfloor") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_UNDERFLOOR;
+          } else if (x == "Auto Adapt Combined") {
+            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_COMBINED;
+          } else if (x == "DHW On/Off") {
+            mode = esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF;
+          } else if (x == "Temperature Range") {
+            mode = esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE;
+          } else {
+            ESP_LOGW("select", "Unknown mode: %s", x.c_str());
+            return;
+          }
+          
+          bool result = id(pump).set_control_mode(mode);
+          ESP_LOGI("select", "Set mode result: %s", result ? "SUCCESS" : "FAILED");

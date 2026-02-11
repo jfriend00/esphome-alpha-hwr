@@ -87,13 +87,19 @@ void AlphaHwrComponent::setup() {
     this->set_timeout(delay_ms, std::move(callback));
   });
   
-  auth_.set_completion_callback([this]() {
-    this->session_.on_authenticated();
-    ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
-    
-    // Start telemetry service when authenticated
-    this->telemetry_service_.start();
-  });
+   auth_.set_completion_callback([this]() {
+     this->session_.on_authenticated();
+     ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
+     
+     // Start telemetry service when authenticated
+     this->telemetry_service_.start();
+     
+     // Refresh schedule display on successful authentication
+     this->set_timeout(3000, [this]() {
+       ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
+       this->update_schedule_display();
+     });
+   });
   
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
   
