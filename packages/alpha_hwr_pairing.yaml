@@ -53,6 +53,7 @@ ble_client:
 text_sensor:
 
 alpha_hwr:
+  id: pump
   ble_client_id: hwr_pump_client
   enable_pairing: true  # Enable BLE pairing for enhanced telemetry
   
@@ -72,6 +73,7 @@ alpha_hwr:
   power:
     name: "Power Consumption"
   rpm:
+    id: motor_speed
     name: "Motor Speed"
   flow:
     name: "Flow Rate"

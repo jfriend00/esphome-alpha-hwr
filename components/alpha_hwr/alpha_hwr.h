@@ -20,6 +20,8 @@
 #include "sensor_publisher.h"
 #include "ble_connection_manager.h"
 #include "control_service.h"
+#include "schedule_service.h"
+#include "schedule_entry.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -74,7 +76,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
  public:
   explicit AlphaHwrComponent(ble_client::BLEClient *parent) : 
       PollingComponent(10000),
-      control_service_(transport_, session_) {
+      control_service_(transport_, session_),
+      schedule_service_(transport_, session_) {
     parent->register_ble_node(this);
     parent_ = parent;
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
@@ -136,6 +139,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Control service (handles pump start/stop and mode changes)
   services::ControlService control_service_;
   
+  // Schedule service (handles weekly schedule management)
+  services::ScheduleService schedule_service_;
+  
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
@@ -149,6 +155,20 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool set_control_mode(services::ControlMode mode) { return control_service_.set_mode(mode); }
   bool enable_remote() { return control_service_.enable_remote_mode(); }
   bool disable_remote() { return control_service_.disable_remote_mode(); }
+  
+  // Schedule service access methods (for ESPHome buttons/lambdas)
+  bool enable_schedule() { return schedule_service_.enable(); }
+  bool disable_schedule() { return schedule_service_.disable(); }
+  bool get_schedule_state(bool *result) { return schedule_service_.get_state(result); }
+  bool read_schedule_entries(std::vector<ScheduleEntry> *entries, int layer = -1) {
+    return schedule_service_.read_entries(entries, layer);
+  }
+  bool write_schedule_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0) {
+    return schedule_service_.write_entries(entries, layer);
+  }
+  bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
+    return schedule_service_.clear_entry(day, layer);
+  }
 };
 
 }  // namespace alpha_hwr

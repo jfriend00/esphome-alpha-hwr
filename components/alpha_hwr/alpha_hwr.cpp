@@ -154,6 +154,35 @@ void AlphaHwrComponent::setup() {
     
     return this->transport_.write_packet(data, len, write_func);
   });
+  
+  // Initialize schedule service callbacks
+  schedule_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
+    this->set_timeout(delay_ms, std::move(callback));
+  });
+  
+  schedule_service_.set_write_callback([this](uint16_t handle, const uint8_t* data, uint16_t len) -> bool {
+    // Get GENI service and characteristic
+    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
+    if (!service) return false;
+    
+    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
+    if (!chr) return false;
+    
+    // Use transport to write packet (handles splitting if needed)
+    auto write_func = [this, chr](const uint8_t* pkt_data, size_t pkt_len) -> bool {
+      auto status = esp_ble_gattc_write_char(
+          this->parent_->get_gattc_if(),
+          this->parent_->get_conn_id(),
+          chr->handle,
+          pkt_len,
+          const_cast<uint8_t*>(pkt_data),
+          ESP_GATT_WRITE_TYPE_NO_RSP,
+          ESP_GATT_AUTH_REQ_NONE);
+      return (status == ESP_OK);
+    };
+    
+    return this->transport_.write_packet(data, len, write_func);
+  });
 }
 
 void AlphaHwrComponent::loop() {
@@ -167,9 +196,16 @@ void AlphaHwrComponent::update() {
            parent_ ? parent_->get_conn_id() : 0xFF);
   
   if (session_.is_ready() && parent_ && parent_->get_conn_id() != 0xFF) {
+    // Poll telemetry
     telemetry_service_.poll();
+    
+    // Poll schedule state (every update cycle = 10s)
+    schedule_service_.poll_state();
+    
+    // Check for timed-out response handlers (2 second timeout)
+    transport_.check_timeouts(2000);
   } else {
-    ESP_LOGW(TAG, "Skipping telemetry poll - not ready");
+    ESP_LOGW(TAG, "Skipping polls - not ready");
   }
 }
 

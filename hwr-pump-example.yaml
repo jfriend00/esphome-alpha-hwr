@@ -86,3 +86,22 @@ text_sensor:
 button:
   - platform: restart
     name: "Restart HWR Pump"
+
+# Optional: Add schedule control switch
+# Uncomment to enable schedule management
+# switch:
+#   - platform: template
+#     name: "Schedule Enabled"
+#     icon: "mdi:calendar-clock"
+#     optimistic: true
+#     restore_mode: RESTORE_DEFAULT_OFF
+#     turn_on_action:
+#       - lambda: |-
+#           ESP_LOGI("switch", "Enabling pump schedule...");
+#           bool result = id(pump).enable_schedule();
+#           ESP_LOGI("switch", "Enable schedule result: %s", result ? "SUCCESS" : "FAILED");
+#     turn_off_action:
+#       - lambda: |-
+#           ESP_LOGI("switch", "Disabling pump schedule...");
+#           bool result = id(pump).disable_schedule();
+#           ESP_LOGI("switch", "Disable schedule result: %s", result ? "SUCCESS" : "FAILED");

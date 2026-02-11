@@ -141,6 +141,17 @@ class Transport {
    */
   using WriteCallback = std::function<bool(const uint8_t* data, size_t len)>;
 
+  /**
+   * Callback type for response handlers.
+   * 
+   * Called when a matching response packet arrives.
+   * 
+   * Parameters:
+   *   data - Pointer to packet payload (after GENI header, before CRC)
+   *   len  - Length of payload in bytes
+   */
+  using ResponseCallback = std::function<void(const uint8_t* data, size_t len)>;
+
   Transport();
 
   /**
@@ -224,6 +235,65 @@ class Transport {
    */
   uint16_t get_expected_length() const { return expected_packet_length_; }
 
+  /**
+   * Register a response handler for a specific request.
+   * 
+   * When a packet matching the specified Object ID and Sub-ID is received,
+   * the callback will be invoked with the payload data.
+   * 
+   * This enables async read operations where:
+   * 1. Service sends request packet
+   * 2. Service registers response handler with expected Object/Sub IDs
+   * 3. When response arrives, callback is invoked with payload
+   * 4. Service processes payload and updates state
+   * 
+   * Implementation Notes:
+   * - Handlers timeout after 2 seconds (configurable)
+   * - Only one handler per Object+Sub ID combination
+   * - Handlers are one-shot (automatically removed after invocation)
+   * - GENI frame structure: [STX][LEN][DST][SRC][Class][OpSpec][ObjH][ObjL][SubH][SubL][...DATA...][CRC]
+   * - Object ID is at bytes 6-7 (big-endian)
+   * - Sub-ID is at bytes 8-9 (big-endian)
+   * 
+   * Example Usage:
+   * ```cpp
+   * // Register handler for schedule state response (Object 84, SubID 1)
+   * transport.register_response_handler(84, 1, 
+   *   [this](const uint8_t* data, size_t len) {
+   *     if (len >= 8) {
+   *       bool enabled = data[7] != 0;  // Byte 7 is enabled flag
+   *       this->schedule_enabled_ = enabled;
+   *     }
+   *   }
+   * );
+   * 
+   * // Send read request
+   * uint8_t request[11];
+   * build_class10_read_request(84, 1, request);
+   * transport.write_packet(request, 11, ble_write_func);
+   * 
+   * // Callback will be invoked when response arrives
+   * ```
+   * 
+   * @param object_id Object ID to match (0-65535)
+   * @param sub_id Sub-ID to match (0-65535)
+   * @param callback Function to call with payload data
+   */
+  void register_response_handler(uint16_t object_id, uint16_t sub_id, ResponseCallback callback);
+
+  /**
+   * Check for timed-out response handlers.
+   * 
+   * Should be called periodically from component loop() to cleanup
+   * stale handlers that never received a response.
+   * 
+   * Handlers older than timeout_ms (default 2000ms) are removed and
+   * logged as warnings.
+   * 
+   * @param timeout_ms Handler timeout in milliseconds (default 2000)
+   */
+  void check_timeouts(uint32_t timeout_ms = 2000);
+
  private:
   /**
    * Check if buffer contains a frame start byte.
@@ -249,6 +319,41 @@ class Transport {
    */
   uint16_t calculate_expected_length() const;
 
+  /**
+   * Try to match and dispatch packet to a registered response handler.
+   * 
+   * Extracts Object ID and Sub-ID from packet, looks for matching handler,
+   * and invokes it with the payload data if found.
+   * 
+   * GENI Frame Structure:
+   *   [STX][LEN][DST][SRC][Class][OpSpec][ObjH][ObjL][SubH][SubL][...DATA...][CRC_H][CRC_L]
+   *   Byte 0: STX (0x24 for response)
+   *   Byte 1: Length
+   *   Byte 2: Destination
+   *   Byte 3: Source
+   *   Byte 4: Class (0x0A for Class 10)
+   *   Byte 5: OpSpec
+   *   Bytes 6-7: Object ID (big-endian)
+   *   Bytes 8-9: Sub-ID (big-endian)
+   *   Bytes 10 to -2: Payload data
+   *   Last 2 bytes: CRC
+   * 
+   * @param data Complete GENI packet
+   * @param len Packet length
+   * @return true if handler was found and invoked, false otherwise
+   */
+  bool try_dispatch_response(const uint8_t* data, size_t len);
+
+  /**
+   * Pending response handler entry.
+   */
+  struct PendingHandler {
+    uint16_t object_id;       ///< Object ID to match
+    uint16_t sub_id;          ///< Sub-ID to match
+    ResponseCallback callback; ///< Callback to invoke
+    uint32_t timestamp_ms;    ///< Registration timestamp (for timeout)
+  };
+
   // Reassembly state
   bool reassembling_;                         ///< True if currently accumulating packet fragments
   std::vector<uint8_t> reassembly_buffer_;    ///< Buffer for accumulating packet fragments
@@ -257,11 +362,15 @@ class Transport {
   // Callback for complete packets
   PacketCallback packet_callback_;            ///< Called when packet is complete
 
+  // Response handler management
+  std::vector<PendingHandler> pending_handlers_;  ///< Registered response handlers
+
   // Constants
   static constexpr size_t MAX_PACKET_SIZE = 256;  ///< Maximum GENI packet size (safety limit)
   static constexpr size_t BLE_MTU_LIMIT = 20;     ///< BLE write size limit (MTU - headers)
   static constexpr uint8_t FRAME_START_RESPONSE = 0x24;  ///< Response frame start byte
   static constexpr uint8_t FRAME_START_REQUEST = 0x27;   ///< Request frame start byte (echo)
+  static constexpr size_t MAX_PENDING_HANDLERS = 10;     ///< Maximum pending response handlers
 };
 
 }  // namespace core
