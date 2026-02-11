@@ -156,13 +156,18 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
 #endif
   
  public:
-  // Control service access methods (for ESPHome switches/buttons)
-  bool pump_start() { return control_service_.start(); }
-  bool pump_stop() { return control_service_.stop(); }
-  bool set_control_mode(services::ControlMode mode) { return control_service_.set_mode(mode); }
-  bool enable_remote() { return control_service_.enable_remote_mode(); }
-  bool disable_remote() { return control_service_.disable_remote_mode(); }
-  
+   // Control service access methods (for ESPHome switches/buttons)
+   bool pump_start() { return control_service_.start(); }
+   bool pump_stop() { return control_service_.stop(); }
+   bool set_control_mode(services::ControlMode mode) { return control_service_.set_mode(mode); }
+   bool enable_remote() { return control_service_.enable_remote_mode(); }
+   bool disable_remote() { return control_service_.disable_remote_mode(); }
+   
+   // State tracking getters
+   services::ControlMode get_control_mode() const { return control_service_.get_current_mode(); }
+   bool get_remote_enabled() const { return control_service_.get_remote_enabled(); }
+   static const char* get_control_mode_name(services::ControlMode mode) { return services::ControlService::get_mode_name(mode); }
+   
    // Schedule service access methods (for ESPHome buttons/lambdas)
    bool enable_schedule() { return schedule_service_.enable(); }
    bool disable_schedule() { return schedule_service_.disable(); }

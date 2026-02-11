@@ -294,54 +294,58 @@ bool ControlService::set_mode(ControlMode mode) {
 }
 
 bool ControlService::enable_remote_mode() {
-  // Verify session is authenticated
-  if (session_.get_state() != core::SessionState::READY) {
-    ESP_LOGW(TAG, "Cannot enable remote mode: session not ready");
-    return false;
-  }
+   // Verify session is authenticated
+   if (session_.get_state() != core::SessionState::READY) {
+     ESP_LOGW(TAG, "Cannot enable remote mode: session not ready");
+     return false;
+   }
 
-  ESP_LOGI(TAG, "Enabling remote mode...");
+   ESP_LOGI(TAG, "Enabling remote mode...");
 
-  // Class 3: 03 C1 07
-  // Reference: control.py lines 329-332
-  uint8_t apdu[3] = {0x03, 0xC1, 0x07};
-  
-  uint8_t packet_raw[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
-  
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+   // Class 3: 03 C1 07
+   // Reference: control.py lines 329-332
+   uint8_t apdu[3] = {0x03, 0xC1, 0x07};
+   
+   uint8_t packet_raw[32];
+   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
+   
+   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Send command via transport queue
-  this->transport_.send_command(packet);
-  
-  ESP_LOGI(TAG, "Remote mode enabled");
-  return true;
-}
+   // Send command via transport queue
+   this->transport_.send_command(packet);
+   
+   // Update state
+   this->is_remote_mode_enabled_ = true;
+   ESP_LOGI(TAG, "Remote mode enabled");
+   return true;
+ }
+ 
+ bool ControlService::disable_remote_mode() {
+   // Verify session is authenticated
+   if (session_.get_state() != core::SessionState::READY) {
+     ESP_LOGW(TAG, "Cannot disable remote mode: session not ready");
+     return false;
+   }
 
-bool ControlService::disable_remote_mode() {
-  // Verify session is authenticated
-  if (session_.get_state() != core::SessionState::READY) {
-    ESP_LOGW(TAG, "Cannot disable remote mode: session not ready");
-    return false;
-  }
+   ESP_LOGI(TAG, "Disabling remote mode (Auto)...");
 
-  ESP_LOGI(TAG, "Disabling remote mode (Auto)...");
+   // Class 3: 03 C1 06
+   // Reference: control.py lines 358-361
+   uint8_t apdu[3] = {0x03, 0xC1, 0x06};
+   
+   uint8_t packet_raw[32];
+   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
+   
+   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Class 3: 03 C1 06
-  // Reference: control.py lines 358-361
-  uint8_t apdu[3] = {0x03, 0xC1, 0x06};
-  
-  uint8_t packet_raw[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
-  
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  // Send command via transport queue
-  this->transport_.send_command(packet);
-  
-  ESP_LOGI(TAG, "Remote mode disabled (Auto)");
-  return true;
-}
+   // Send command via transport queue
+   this->transport_.send_command(packet);
+   
+   // Update state
+   this->is_remote_mode_enabled_ = false;
+   ESP_LOGI(TAG, "Remote mode disabled (Auto)");
+   return true;
+ }
 
 const char *ControlService::get_mode_name(ControlMode mode) {
   switch (mode) {

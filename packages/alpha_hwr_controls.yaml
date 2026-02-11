@@ -71,9 +71,9 @@ switch:
   - platform: template
     name: "Remote Mode"
     icon: "mdi:remote"
-    optimistic: true  # Assume state changes immediately
+    optimistic: false  # Read actual state from pump state tracking
     lambda: |-
-      return false;  // Always return false as initial state
+      return id(pump).get_remote_enabled();
     turn_on_action:
       - lambda: |-
           ESP_LOGI("switch", "Enabling remote mode...");
@@ -105,7 +105,7 @@ select:
     name: "Pump Control Mode"
     id: pump_mode_select
     icon: "mdi:tune"
-    optimistic: true
+    optimistic: false  # Read actual state from pump state tracking
     options:
       - "Constant Pressure"
       - "Proportional Pressure"
@@ -117,7 +117,33 @@ select:
       - "Auto Adapt Combined"
       - "DHW On/Off"
       - "Temperature Range"
-    initial_option: "Constant Speed"
+    lambda: |-
+      esphome::alpha_hwr::services::ControlMode mode = id(pump).get_control_mode();
+      std::string mode_str;
+      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
+        mode_str = "Constant Pressure";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
+        mode_str = "Proportional Pressure";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
+        mode_str = "Constant Speed";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT) {
+        mode_str = "Auto Adapt";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
+        mode_str = "Constant Flow";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_RADIATOR) {
+        mode_str = "Auto Adapt Radiator";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_UNDERFLOOR) {
+        mode_str = "Auto Adapt Underfloor";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_COMBINED) {
+        mode_str = "Auto Adapt Combined";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
+        mode_str = "DHW On/Off";
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
+        mode_str = "Temperature Range";
+      } else {
+        mode_str = "Unknown";
+      }
+      return mode_str;
     set_action:
       - lambda: |-
           ESP_LOGI("select", "Setting mode to: %s", x.c_str());

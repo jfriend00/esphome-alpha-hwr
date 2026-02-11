@@ -198,20 +198,35 @@ class ControlService {
    * Reference: control.py::disable_remote_mode() lines 335-362
    */
   bool disable_remote_mode();
-  
-  /**
-   * Get current control mode name as string.
-   * 
-   * @param mode Control mode value
-   * @return Human-readable mode name
-   */
-  static const char *get_mode_name(ControlMode mode);
-  
- private:
-  core::Transport &transport_;
-  core::Session &session_;
-  ControlMode current_mode_{ControlMode::CONSTANT_SPEED};
-  std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
+   
+   /**
+    * Get current control mode name as string.
+    * 
+    * @param mode Control mode value
+    * @return Human-readable mode name
+    */
+   static const char *get_mode_name(ControlMode mode);
+   
+   /**
+    * Get the current control mode.
+    * 
+    * @return Current ControlMode value
+    */
+   ControlMode get_current_mode() const { return current_mode_; }
+   
+   /**
+    * Get whether remote mode is enabled.
+    * 
+    * @return True if remote control is enabled, false if in auto mode
+    */
+   bool get_remote_enabled() const { return is_remote_mode_enabled_; }
+   
+  private:
+   core::Transport &transport_;
+   core::Session &session_;
+   ControlMode current_mode_{ControlMode::CONSTANT_SPEED};
+   bool is_remote_mode_enabled_{false};  // Track remote mode state
+   std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
   
   /**
    * Build GENI protocol packet with CRC.
