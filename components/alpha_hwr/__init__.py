@@ -8,6 +8,7 @@ from esphome.const import (
     DEVICE_CLASS_POWER,
     DEVICE_CLASS_TEMPERATURE,
     DEVICE_CLASS_VOLTAGE,
+    ENTITY_CATEGORY_DIAGNOSTIC,
     STATE_CLASS_MEASUREMENT,
     UNIT_CELSIUS,
     UNIT_WATT,
@@ -137,18 +138,23 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_SERIAL_NUMBER): text_sensor.text_sensor_schema(
             icon="mdi:barcode",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_SOFTWARE_VERSION): text_sensor.text_sensor_schema(
             icon="mdi:update",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_HARDWARE_VERSION): text_sensor.text_sensor_schema(
             icon="mdi:chip",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_BLE_VERSION): text_sensor.text_sensor_schema(
             icon="mdi:bluetooth",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_PRODUCT_NAME): text_sensor.text_sensor_schema(
             icon="mdi:information",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
 ).extend(cv.COMPONENT_SCHEMA)

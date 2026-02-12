@@ -106,16 +106,21 @@ alpha_hwr:
    schedule:
       name: "Weekly Schedule"
    
-   # Device Information
+   # Device Information (Diagnostic)
+   # These appear in the Device Info card's diagnostic section in Home Assistant
    serial_number:
       name: "Serial Number"
+      entity_category: diagnostic
    software_version:
-      name: "Software Version"
+      name: "Software Version"  
+      entity_category: diagnostic
    hardware_version:
       name: "Hardware Version"
+      entity_category: diagnostic
    ble_version:
       name: "BLE Version"
+      entity_category: diagnostic
    product_name:
       name: "Product Name"
-
+      entity_category: diagnostic
 

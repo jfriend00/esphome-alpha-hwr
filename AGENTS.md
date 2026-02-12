@@ -422,7 +422,7 @@ if (control_service_) {
 The feature is production-ready. The next natural authentication cycle (pump power cycle or BLE disconnect) will trigger the passive notification and populate the control mode automatically.
 
 
-### Session: 2026-02-11 - Part 5: Device Information Service Implementation (IN PROGRESS)
+### Session: 2026-02-11 - Part 5: Device Information Service Implementation (COMPLETE)
 
 **Goal:** Implement a DeviceInfoService to read device identification strings (serial number, software version, hardware version, BLE version, product name) using Class 7 string commands.
 
@@ -433,12 +433,12 @@ The feature is production-ready. The next natural authentication cycle (pump pow
    * Added `device_info_service.cpp` - Service implementation
    * Added `build_geni_packet()` to `frame_builder.h/cpp` for generic Class 7 packet building
    * Integrated service into `AlphaHwrComponent` constructor
-   * Added device info text sensors to `__init__.py` config schema
+   * Added device info text sensors to `__init__.py` config schema (with `ENTITY_CATEGORY_DIAGNOSTIC`)
    * Added text sensor setters to component header
    * Called `read_device_info()` after successful authentication (1 second delay)
 
 2. **Configuration Updates**
-   * Updated `packages/alpha_hwr_pairing.yaml` with 5 new text sensors:
+   * Updated `packages/alpha_hwr_pairing.yaml` with 5 new diagnostic text sensors:
      - Serial Number
      - Software Version
      - Hardware Version  
@@ -447,7 +447,7 @@ The feature is production-ready. The next natural authentication cycle (pump pow
 
 3. **Successfully Compiled and Deployed**
    * Both `hwr-pump-example.yaml` and `hwr-pump.yaml` compile successfully
-   * Flash usage: 75.7% (1,389,686 / 1,835,008 bytes) - Down from 75.5%!
+   * Flash usage: 75.8% (1,390,388 / 1,835,008 bytes)
    * Firmware uploaded to device (10.0.1.86)
    * Device is stable and running
 
@@ -457,7 +457,7 @@ Fixed the transport layer to match Class 7 responses by class byte only when `ex
 
 **What Was Fixed:**
 
-Modified `transport.cpp::try_dispatch_response()` (lines 337-356):
+Modified `transport.cpp::try_dispatch_response()`:
 - Added check for Class 7 packets (`data[4] == 0x07`)
 - When Object/Sub-ID are both 0, match by class byte only
 - This enables proper Class 7 response handling without breaking Class 10 matching
@@ -474,7 +474,7 @@ Modified `transport.cpp::try_dispatch_response()` (lines 337-356):
 ✅ **Automatic Read** - Triggers 1 second after authentication completes
 ✅ **Manual Trigger** - Added "Read Device Info" button for testing
 ✅ **Non-Blocking** - All 5 reads queued and processed without blocking telemetry
-✅ **Home Assistant Integration** - All 5 text sensors update correctly
+✅ **Home Assistant Integration** - All 5 text sensors update correctly as diagnostic entities
 
 **Flash Impact:**
 
@@ -482,6 +482,23 @@ Modified `transport.cpp::try_dispatch_response()` (lines 337-356):
 - After: 75.8% (1,390,388 bytes)
 - Increase: +702 bytes for full device info service
 
+**ESPHome Limitation Note:**
+
+Device information is displayed as diagnostic text sensors on the Home Assistant device page. ESPHome does not support dynamically updating the main Device Info card fields (Manufacturer/Model/Firmware Version) - those can only be set statically via `esphome.project` configuration at compile time. The diagnostic sensors provide full visibility into the pump's actual hardware/software details while maintaining ESPHome's native architecture.
+
+**Files Modified:**
+
+* `components/alpha_hwr/device_info_service.h/cpp` - New service for Class 7 string reading
+* `components/alpha_hwr/frame_builder.h/cpp` - Added `build_geni_packet()` for generic GENI packets
+* `components/alpha_hwr/transport.cpp` - Fixed Class 7 response matching (wildcard by class byte)
+* `components/alpha_hwr/alpha_hwr.h/cpp` - Integrated DeviceInfoService, calls `read_device_info()` after auth
+* `components/alpha_hwr/__init__.py` - Added 5 diagnostic text sensors to config schema
+* `packages/alpha_hwr_pairing.yaml` - Added device info sensor declarations
+* `packages/alpha_hwr_controls.yaml` - Added "Read Device Info" manual trigger button
+
 **Outcome:**
 
 ✅ **COMPLETE** - Device Information Service is production-ready and fully functional.
+✅ **ARCHITECTURE** - Follows Python reference implementation 1:1
+✅ **DEPLOYMENT** - Running on hardware, all values reading correctly
+✅ **INTEGRATION** - Diagnostic sensors visible in Home Assistant device page
