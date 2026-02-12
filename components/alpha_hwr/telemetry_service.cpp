@@ -12,6 +12,7 @@
 #include "frame_parser.h"
 #include "telemetry_decoder.h"
 #include "sensor_publisher.h"
+#include "control_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -23,6 +24,10 @@ TelemetryService::TelemetryService(core::Transport &transport) : transport_(tran
 
 void TelemetryService::set_sensor_publisher(SensorPublisher* publisher) {
   sensor_publisher_ = publisher;
+}
+
+void TelemetryService::set_control_service(ControlService* control_service) {
+  control_service_ = control_service;
 }
 
 void TelemetryService::start() {
@@ -231,6 +236,45 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
     protocol::TemperatureTelemetry temp = protocol::decode_passive_temperature(data, len);
     if (sensor_publisher_) {
       sensor_publisher_->publish_temperature(temp);
+    }
+  }
+  // Control Mode Status (OpSpec 0x0E, Sub 0x0001, Obj 0x2F01 = Decimal Sub 1, Obj 12033)
+  // This is the passive notification that contains control mode, operation mode, and setpoint
+  // Reference: Python test log shows pump sends this automatically after authentication
+  else if (sub_id == 0x0001 && obj_id == 0x2F01) {
+    ESP_LOGI(TAG, "Control mode notification received (Obj 0x2F01, Sub 1)");
+    
+    // Extract payload: skip header (10 bytes) and CRC (2 bytes)
+    if (len >= 20) {  // Need at least 20 bytes for full structure
+      const uint8_t* payload = data + 10;
+      size_t payload_len = len - 12;
+      
+      // Payload structure: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes float)]
+      // Skip 3-byte header if present
+      size_t offset = (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) ? 3 : 0;
+      
+      if (payload_len >= offset + 7) {
+        uint8_t control_source = payload[offset];
+        uint8_t operation_mode = payload[offset + 1];
+        uint8_t control_mode = payload[offset + 2];
+        
+        // Extract setpoint as big-endian float
+        float setpoint = protocol::decode_float_be(payload, offset + 3);
+        
+        ESP_LOGI(TAG, "Control Mode Status: mode=%d, op_mode=%d, setpoint=%.2f, source=%d",
+                 control_mode, operation_mode, setpoint, control_source);
+        
+        // Update ControlService with the mode from passive notification
+        if (control_service_) {
+          control_service_->update_mode_from_notification(control_mode, operation_mode, setpoint);
+        } else {
+          ESP_LOGW(TAG, "Control service not set, cannot update mode");
+        }
+      } else {
+        ESP_LOGW(TAG, "Control mode payload too short: %d bytes", payload_len);
+      }
+    } else {
+      ESP_LOGW(TAG, "Control mode packet too short: %d bytes", len);
     }
   }
   else {

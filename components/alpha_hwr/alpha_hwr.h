@@ -22,6 +22,7 @@
 #include "control_service.h"
 #include "schedule_service.h"
 #include "schedule_entry.h"
+#include "device_info_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -79,7 +80,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
       auth_(transport_),
       telemetry_service_(transport_),
       control_service_(transport_, session_),
-      schedule_service_(transport_, session_) {
+      schedule_service_(transport_, session_),
+      device_info_service_(transport_, session_) {
     parent->register_ble_node(this);
     parent_ = parent;
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
@@ -103,6 +105,11 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }
    void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_warnings_text_sensor(sensor); }
    void set_schedule_text_sensor(text_sensor::TextSensor *sensor) { schedule_text_sensor_ = sensor; }
+   void set_serial_number_text_sensor(text_sensor::TextSensor *sensor) { serial_number_sensor_ = sensor; }
+   void set_software_version_text_sensor(text_sensor::TextSensor *sensor) { software_version_sensor_ = sensor; }
+   void set_hardware_version_text_sensor(text_sensor::TextSensor *sensor) { hardware_version_sensor_ = sensor; }
+   void set_ble_version_text_sensor(text_sensor::TextSensor *sensor) { ble_version_sensor_ = sensor; }
+   void set_product_name_text_sensor(text_sensor::TextSensor *sensor) { product_name_sensor_ = sensor; }
 #endif
    void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
@@ -145,6 +152,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Schedule service (handles weekly schedule management)
   services::ScheduleService schedule_service_;
   
+  // Device information service (handles device identification strings)
+  services::DeviceInfoService device_info_service_;
+  
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
@@ -153,6 +163,12 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
 #ifdef USE_TEXT_SENSOR
    // Schedule display sensor
    text_sensor::TextSensor *schedule_text_sensor_{nullptr};
+   // Device information text sensors
+   text_sensor::TextSensor *serial_number_sensor_{nullptr};
+   text_sensor::TextSensor *software_version_sensor_{nullptr};
+   text_sensor::TextSensor *hardware_version_sensor_{nullptr};
+   text_sensor::TextSensor *ble_version_sensor_{nullptr};
+   text_sensor::TextSensor *product_name_sensor_{nullptr};
 #endif
   
  public:
@@ -188,21 +204,62 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
      return schedule_service_.clear_entry(day, layer);
    }
-    bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
-      return schedule_service_.get_schedule_display_string(entries, result);
-    }
+     bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
+       return schedule_service_.get_schedule_display_string(entries, result);
+     }
 
-    /**
-     * Asynchronously read the pump schedule and update the text sensor display.
-     * 
-     * This is a convenience method for displaying the current schedule in Home Assistant.
-     * It reads all schedule layers from the pump and formats them into a readable string,
-     * then publishes to the schedule_text_sensor if one is configured.
-     * 
-     * Usage in YAML button lambda:
-     *   on_press:
-     *     - lambda: id(pump).update_schedule_display();
-     */
+     /**
+      * Asynchronously read device information and update text sensors.
+      * 
+      * Reads device identification strings (serial, versions, product name) from
+      * the pump and publishes them to configured text sensors.
+      * 
+      * This is typically called once after authentication to populate device info.
+      * 
+      * Usage:
+      *   Called automatically in authenticate() after successful authentication
+      */
+     void read_device_info() {
+       ESP_LOGI(TAG, "Reading device information...");
+       device_info_service_.read_device_info_async([this](bool success) {
+         if (!success) {
+           ESP_LOGW(TAG, "Failed to read device information");
+           return;
+         }
+         
+#ifdef USE_TEXT_SENSOR
+         // Publish to text sensors if configured
+         if (serial_number_sensor_ && !device_info_service_.get_serial_number().empty()) {
+           serial_number_sensor_->publish_state(device_info_service_.get_serial_number());
+         }
+         if (software_version_sensor_ && !device_info_service_.get_software_version().empty()) {
+           software_version_sensor_->publish_state(device_info_service_.get_software_version());
+         }
+         if (hardware_version_sensor_ && !device_info_service_.get_hardware_version().empty()) {
+           hardware_version_sensor_->publish_state(device_info_service_.get_hardware_version());
+         }
+         if (ble_version_sensor_ && !device_info_service_.get_ble_version().empty()) {
+           ble_version_sensor_->publish_state(device_info_service_.get_ble_version());
+         }
+         if (product_name_sensor_ && !device_info_service_.get_product_name().empty()) {
+           product_name_sensor_->publish_state(device_info_service_.get_product_name());
+         }
+#endif
+         ESP_LOGI(TAG, "Device information read successfully");
+       });
+     }
+ 
+     /**
+      * Asynchronously read the pump schedule and update the text sensor display.
+      * 
+      * This is a convenience method for displaying the current schedule in Home Assistant.
+      * It reads all schedule layers from the pump and formats them into a readable string,
+      * then publishes to the schedule_text_sensor if one is configured.
+      * 
+      * Usage in YAML button lambda:
+      *   on_press:
+      *     - lambda: id(pump).update_schedule_display();
+      */
      void update_schedule_display() {
        ESP_LOGI(TAG, "update_schedule_display() called");
        // For now, just read layer 0 to test if reading works

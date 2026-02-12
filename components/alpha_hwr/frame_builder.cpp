@@ -136,6 +136,38 @@ size_t build_command_info(uint8_t class_byte, uint32_t register_addr,
   return crc_offset + 2;
 }
 
+// Build generic GENI packet with APDU
+// Reference: alpha_hwr/services/base.py::_build_geni_packet()
+size_t build_geni_packet(uint8_t service_id, uint8_t source,
+                          const uint8_t *apdu, size_t apdu_len,
+                          uint8_t *packet_out) {
+  // Calculate frame length: ServiceID (1) + Source (1) + APDU
+  size_t length = 1 + 1 + apdu_len;
+  
+  // Build frame header
+  packet_out[0] = FRAME_START;  // 0x27
+  packet_out[1] = length & 0xFF;
+  packet_out[2] = service_id;
+  packet_out[3] = source;
+  
+  // Copy APDU
+  for (size_t i = 0; i < apdu_len; i++) {
+    packet_out[4 + i] = apdu[i];
+  }
+  
+  // Calculate CRC over everything after start byte, before CRC
+  size_t crc_data_len = 1 + length;  // Length byte + ServiceID + Source + APDU
+  uint16_t crc = calc_crc16_read(&packet_out[1], crc_data_len);
+  
+  // Append CRC
+  size_t crc_offset = 1 + crc_data_len;
+  packet_out[crc_offset] = (crc >> 8) & 0xFF;     // CRC high byte
+  packet_out[crc_offset + 1] = crc & 0xFF;        // CRC low byte
+  
+  // Return total packet length (frame + CRC)
+  return crc_offset + 2;
+}
+
 }  // namespace protocol
 }  // namespace alpha_hwr
 }  // namespace esphome

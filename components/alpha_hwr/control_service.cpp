@@ -52,6 +52,14 @@ void ControlService::set_schedule_callback(std::function<void(std::function<void
    schedule_callback_ = callback;
  }
 
+void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operation_mode, float setpoint) {
+  // Update internal state
+  current_mode_ = static_cast<ControlMode>(mode);
+  
+  ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, setpoint=%.2f)",
+           get_mode_name(current_mode_), operation_mode, setpoint);
+}
+
 bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_complete) {
   // Verify session is authenticated
   if (session_.get_state() != core::SessionState::READY) {
@@ -67,6 +75,11 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
    // Build Class 10 READ request: [0x0A][0x03][Obj][Sub-H][Sub-L]
    // Object 86 (0x56), SubID 6 (0x0006)
    // Reference: control.py::_read_class10_object() lines 76-85
+   //
+   // IMPORTANT: The pump responds with a PASSIVE NOTIFICATION (OpSpec 0x0E), not a direct response!
+   // The Python reference accepts ANY Class 10 packet as the response (see base.py::match_class10_response).
+   // We need to do the same here - accept any Class 10 packet, not just exact Object/Sub ID matches.
+   //
    // Response format: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]
    uint8_t apdu[5];
    apdu[0] = 0x0A;  // Class 10
@@ -80,13 +93,13 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
 
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Send with response matching for Object 86 (0x0056), SubID 6 (0x0006)
-  // Reference: base.py::_read_class10_object() expects response with class 10
-  // Note: Using longer timeout (5 seconds) since Object 86 read may take longer
+  // Send with response matching - accept ANY Class 10 packet (Object ID 0 = wildcard match)
+  // Reference: base.py::_read_class10_object() uses match_class10_response which only checks p[4] == 0x0A
+  // The pump sends a passive notification (OpSpec 0x0E) with the control mode data, not a direct response
     this->transport_.send_command(
       packet, 
-      0x0056,  // Expect Object 86 (0x00 high byte, 0x56 low byte)
-      0x0006,  // Expect SubID 6 (0x00 high byte, 0x06 low byte)
+      0x0000,  // Accept ANY Class 10 packet (wildcard match)
+      0x0000,  // Accept ANY Sub-ID (wildcard match)
       [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
         if (!success) {
           ESP_LOGW(TAG, "Failed to read control mode (timeout)");

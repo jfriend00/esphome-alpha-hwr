@@ -116,6 +116,33 @@ size_t build_data_object_set(uint16_t sub_id, uint16_t obj_id,
 size_t build_command_info(uint8_t class_byte, uint32_t register_addr,
                            uint8_t *packet_out, uint8_t source = SOURCE_ADDRESS);
 
+/**
+ * Build generic GENI packet with APDU.
+ * 
+ * This is a general-purpose packet builder used for any GENI command
+ * that doesn't have a specialized builder function. It's particularly
+ * useful for Class 7 (device info) string reads.
+ * 
+ * Frame Structure:
+ * [27] [Length] [ServiceID] [Source] [APDU...] [CRC-H] [CRC-L]
+ * 
+ * @param service_id Service ID (typically 0xE7 for GENI commands)
+ * @param source Source address (typically 0xF8)
+ * @param apdu Application Protocol Data Unit (command payload)
+ * @param apdu_len Length of APDU
+ * @param packet_out Output buffer (must be large enough for header + APDU + CRC)
+ * @return Total packet length (including CRC)
+ * 
+ * Example - Class 7 string read:
+ *   uint8_t apdu[] = {0x07, 0x01, string_id};
+ *   build_geni_packet(0xE7, 0xF8, apdu, 3, packet_out);
+ * 
+ * Reference: alpha_hwr/services/base.py::_build_geni_packet()
+ */
+size_t build_geni_packet(uint8_t service_id, uint8_t source,
+                          const uint8_t *apdu, size_t apdu_len,
+                          uint8_t *packet_out);
+
 }  // namespace protocol
 }  // namespace alpha_hwr
 }  // namespace esphome

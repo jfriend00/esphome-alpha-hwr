@@ -34,8 +34,9 @@ class Transport;
 
 namespace services {
 
-// Forward declaration for SensorPublisher
+// Forward declarations
 class SensorPublisher;
+class ControlService;
 
 /**
  * Telemetry Service
@@ -58,6 +59,13 @@ class TelemetryService {
    * @param publisher Pointer to SensorPublisher instance
    */
   void set_sensor_publisher(SensorPublisher* publisher);
+
+  /**
+   * Set control service for updating control mode from passive notifications.
+   * 
+   * @param control_service Pointer to ControlService instance
+   */
+  void set_control_service(ControlService* control_service);
 
   /**
    * Start telemetry service.
@@ -115,6 +123,9 @@ class TelemetryService {
   
   // Sensor publisher (for publishing telemetry to ESPHome sensors)
   SensorPublisher* sensor_publisher_{nullptr};
+  
+  // Control service (for updating control mode from passive notifications)
+  ControlService* control_service_{nullptr};
 
   // State
   bool running_ = false;

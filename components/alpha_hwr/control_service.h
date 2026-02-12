@@ -233,6 +233,19 @@ class ControlService {
    ControlMode get_current_mode() const { return current_mode_; }
    
    /**
+    * Update control mode from passive notification.
+    * 
+    * Called by TelemetryService when it receives a passive notification
+    * (OpSpec 0x0E, Object 0x2F01, Sub 1) containing control mode data.
+    * The pump sends these notifications automatically during/after authentication.
+    * 
+    * @param mode Control mode byte from passive notification
+    * @param operation_mode Operation mode byte (AUTO/STOP/USER_DEFINED)
+    * @param setpoint Setpoint value from notification
+    */
+   void update_mode_from_notification(uint8_t mode, uint8_t operation_mode, float setpoint);
+   
+   /**
     * Get whether remote mode is enabled.
     * 
     * @return True if remote control is enabled, false if in auto mode

@@ -94,13 +94,10 @@ void AlphaHwrComponent::setup() {
       // Start telemetry service when authenticated
       this->telemetry_service_.start();
       
-      // Read actual control mode from pump
-      this->control_service_.get_mode_async([this](bool success, services::ControlMode mode) {
-        if (success) {
-          ESP_LOGI(TAG, "✓ Control mode synced: %s", services::ControlService::get_mode_name(mode));
-        } else {
-          ESP_LOGW(TAG, "Failed to read control mode from pump");
-        }
+      // Read device information strings
+      this->set_timeout(1000, [this]() {
+        ESP_LOGI(TAG, "Reading device information...");
+        this->read_device_info();
       });
       
       // Refresh schedule display on successful authentication
@@ -111,6 +108,9 @@ void AlphaHwrComponent::setup() {
     });
   
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
+  
+  // Set control service reference in telemetry service for passive mode notifications
+  telemetry_service_.set_control_service(&control_service_);
   
   // Initialize control service callbacks
   control_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {

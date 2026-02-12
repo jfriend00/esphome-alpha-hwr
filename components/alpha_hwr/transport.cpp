@@ -81,7 +81,8 @@ void Transport::loop() {
 
         if (cmd.bytes_sent >= cmd.packet.size()) {
           // Finished sending all chunks
-          if (cmd.expect_obj_id != 0) {
+          // If a callback is registered, we expect a response (including wildcard matches where obj_id=0)
+          if (cmd.callback) {
             this->state_ = State::AWAITING_RESPONSE;
             cmd.timestamp_ms = now;
             cmd.waiting_for_response = true;
@@ -89,9 +90,6 @@ void Transport::loop() {
                      cmd.expect_obj_id, cmd.expect_sub_id);
           } else {
             ESP_LOGD(TAG, "Command sent (no response expected)");
-            if (cmd.callback) {
-              cmd.callback(true, nullptr, 0);
-            }
             this->command_queue_.pop_front();
             this->state_ = State::IDLE;
           }
@@ -299,6 +297,11 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   if (this->state_ == State::AWAITING_RESPONSE && !this->command_queue_.empty()) {
     auto &cmd = this->command_queue_.front();
     if (len > 5) {
+      // Use LOGI for OpSpec 0x0E notifications (critical for Object 86 debugging)
+      if (opspec == 0x0E && data[4] == 0x0A) {
+        ESP_LOGI(TAG, "[AWAITING] ⚠️  Class 10 OpSpec 0x0E notification: Sub=%d (0x%04X), Obj=%d (0x%04X) - SHOULD MATCH WILDCARD!",
+                 packet_sub_id, packet_sub_id, packet_obj_id, packet_obj_id);
+      }
       ESP_LOGD(TAG, "[AWAITING] Packet received: len=%d, Class=%02X, OpSpec=%02X, Sub=%d, Obj=%d (waiting for Obj %d Sub %d)",
                len, (len > 4 ? data[4] : 0xFF), opspec, packet_sub_id, packet_obj_id, cmd.expect_obj_id, cmd.expect_sub_id);
     }
@@ -366,11 +369,23 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     }
     
     // Now check if this matches our expected Object/Sub ID
-    bool matched = (packet_obj_id == cmd.expect_obj_id && (packet_sub_id == cmd.expect_sub_id || packet_sub_id == 0));
+    bool matched = false;
     
-    // BACKUP MATCH: If ObjID doesn't match but SubID matches our expected ObjID (swapped)
-    if (!matched && packet_sub_id == cmd.expect_obj_id) {
+    // WILDCARD MATCH: If expect_obj_id == 0, accept ANY Class 10 packet
+    // This is used for Object 86 Sub 6 reads, which receive passive notifications (OpSpec 0x0E)
+    // Reference: Python base.py::match_class10_response only checks p[4] == 0x0A
+    if (cmd.expect_obj_id == 0x0000 && cmd.expect_sub_id == 0x0000) {
       matched = true;
+      ESP_LOGD(TAG, "Wildcard match: accepting any Class 10 packet (OpSpec=0x%02X, Obj=%d, Sub=%d)",
+               opspec, packet_obj_id, packet_sub_id);
+    } else {
+      // Exact match: check Object ID and Sub-ID
+      matched = (packet_obj_id == cmd.expect_obj_id && (packet_sub_id == cmd.expect_sub_id || packet_sub_id == 0));
+      
+      // BACKUP MATCH: If ObjID doesn't match but SubID matches our expected ObjID (swapped)
+      if (!matched && packet_sub_id == cmd.expect_obj_id) {
+        matched = true;
+      }
     }
 
     if (matched) {

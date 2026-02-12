@@ -39,6 +39,11 @@ CONF_ENABLE_PAIRING = "enable_pairing"
 CONF_ALARMS = "alarms"
 CONF_WARNINGS = "warnings"
 CONF_SCHEDULE = "schedule"
+CONF_SERIAL_NUMBER = "serial_number"
+CONF_SOFTWARE_VERSION = "software_version"
+CONF_HARDWARE_VERSION = "hardware_version"
+CONF_BLE_VERSION = "ble_version"
+CONF_PRODUCT_NAME = "product_name"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -130,6 +135,21 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCHEDULE): text_sensor.text_sensor_schema(
             icon="mdi:calendar-clock",
         ),
+        cv.Optional(CONF_SERIAL_NUMBER): text_sensor.text_sensor_schema(
+            icon="mdi:barcode",
+        ),
+        cv.Optional(CONF_SOFTWARE_VERSION): text_sensor.text_sensor_schema(
+            icon="mdi:update",
+        ),
+        cv.Optional(CONF_HARDWARE_VERSION): text_sensor.text_sensor_schema(
+            icon="mdi:chip",
+        ),
+        cv.Optional(CONF_BLE_VERSION): text_sensor.text_sensor_schema(
+            icon="mdi:bluetooth",
+        ),
+        cv.Optional(CONF_PRODUCT_NAME): text_sensor.text_sensor_schema(
+            icon="mdi:information",
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -209,3 +229,23 @@ async def to_code(config):
     if CONF_SCHEDULE in config:
         sens = await text_sensor.new_text_sensor(config[CONF_SCHEDULE])
         cg.add(var.set_schedule_text_sensor(sens))
+
+    if CONF_SERIAL_NUMBER in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SERIAL_NUMBER])
+        cg.add(var.set_serial_number_text_sensor(sens))
+
+    if CONF_SOFTWARE_VERSION in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SOFTWARE_VERSION])
+        cg.add(var.set_software_version_text_sensor(sens))
+
+    if CONF_HARDWARE_VERSION in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_HARDWARE_VERSION])
+        cg.add(var.set_hardware_version_text_sensor(sens))
+
+    if CONF_BLE_VERSION in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_BLE_VERSION])
+        cg.add(var.set_ble_version_text_sensor(sens))
+
+    if CONF_PRODUCT_NAME in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_PRODUCT_NAME])
+        cg.add(var.set_product_name_text_sensor(sens))

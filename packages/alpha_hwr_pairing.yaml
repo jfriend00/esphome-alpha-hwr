@@ -104,5 +104,18 @@ alpha_hwr:
    
    # Schedule Display
    schedule:
-     name: "Weekly Schedule"
+      name: "Weekly Schedule"
+   
+   # Device Information
+   serial_number:
+      name: "Serial Number"
+   software_version:
+      name: "Software Version"
+   hardware_version:
+      name: "Hardware Version"
+   ble_version:
+      name: "BLE Version"
+   product_name:
+      name: "Product Name"
+
 
