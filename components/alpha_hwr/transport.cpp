@@ -336,9 +336,25 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     // Check if this is a Class 10 packet (0x0A at byte 4)
     bool is_class10 = (data[4] == 0x0A);
     
+    // Check if this is a Class 7 packet (0x07 at byte 4)
+    bool is_class7 = (data[4] == 0x07);
+    
+    // Handle Class 7 responses (device info strings, etc.)
+    // Class 7 uses a different packet structure: [STX][LEN][DST][SRC][Class][Cmd][ID][...STRING...][CRC]
+    // When expect_obj_id == 0 && expect_sub_id == 0, we match by Class byte only
+    if (is_class7 && cmd.expect_obj_id == 0x0000 && cmd.expect_sub_id == 0x0000) {
+      ESP_LOGD(TAG, "Class 7 response matched (wildcard match by class byte)");
+      if (cmd.callback) {
+        cmd.callback(true, data, len);
+      }
+      this->command_queue_.pop_front();
+      this->state_ = State::IDLE;
+      return true;
+    }
+    
     if (!is_class10) {
       ESP_LOGV(TAG, "Not a Class 10 packet (class=0x%02X), discarding for command response matching", data[4]);
-      return false;  // Not Class 10, let it go to packet callback or discard
+      return false;  // Not Class 10 and not handled above, let it go to packet callback or discard
     }
     
     // This IS a Class 10 response. Now check if it matches our expected Object/Sub ID
