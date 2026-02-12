@@ -100,10 +100,35 @@ void AlphaHwrComponent::setup() {
         this->read_device_info();
       });
       
+      // Sync pump clock after authentication (first sync)
+      this->set_timeout(2000, [this]() {
+        ESP_LOGI(TAG, "Performing initial pump clock sync...");
+        this->time_service_.set_clock_async([this](bool success) {
+          if (success) {
+            ESP_LOGI(TAG, "✓ Initial pump clock sync successful");
+            this->last_time_sync_timestamp_ = millis();
+          } else {
+            ESP_LOGW(TAG, "Initial pump clock sync failed - will retry in 24 hours");
+          }
+        });
+      });
+      
       // Refresh schedule display on successful authentication
-      this->set_timeout(3000, [this]() {
+      this->set_timeout(4000, [this]() {
         ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
         this->update_schedule_display();
+      });
+      
+      // Query control mode after authentication (since passive notification may not come)
+      this->set_timeout(5000, [this]() {
+        ESP_LOGI(TAG, "Querying control mode from pump...");
+        this->control_service_.get_mode_async([this](bool success, services::ControlMode mode) {
+          if (success) {
+            ESP_LOGI(TAG, "✓ Control mode query successful: %s", services::ControlService::get_mode_name(mode));
+          } else {
+            ESP_LOGW(TAG, "Control mode query failed - will remain unknown until mode change");
+          }
+        });
       });
     });
   
@@ -115,6 +140,18 @@ void AlphaHwrComponent::setup() {
   // Initialize control service callbacks
   control_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
     this->set_timeout(delay_ms, std::move(callback));
+  });
+  
+  // Set control mode change callback to publish to text sensor
+  control_service_.set_mode_change_callback([this](services::ControlMode mode, uint8_t operation_mode, float setpoint) {
+#ifdef USE_TEXT_SENSOR
+    // Only publish if the control service has a valid mode from the pump
+    if (this->control_mode_sensor_ && this->control_service_.is_mode_valid()) {
+      const char* mode_name = services::ControlService::get_mode_name(mode);
+      this->control_mode_sensor_->publish_state(mode_name);
+      ESP_LOGI(TAG, "Published control mode to sensor: %s", mode_name);
+    }
+#endif
   });
   
    // Initialize schedule service callbacks
@@ -131,6 +168,9 @@ void AlphaHwrComponent::setup() {
    if (this->schedule_text_sensor_) {
      this->schedule_text_sensor_->publish_state("Loading schedule...");
    }
+   
+   // Control mode text sensor will be populated when we receive the passive notification
+   // from the pump during authentication. Do NOT publish a default/unknown value here.
 #endif
 }
 
@@ -156,10 +196,44 @@ void AlphaHwrComponent::update() {
       schedule_service_.poll_state();
     });
     
+    // Check and perform daily time sync if needed
+    check_and_sync_time();
+    
     // Check for timed-out response handlers (2 second timeout)
     transport_.check_timeouts(2000);
   } else {
     ESP_LOGW(TAG, "Skipping polls - not ready");
+  }
+}
+
+void AlphaHwrComponent::check_and_sync_time() {
+  // Check if we need to sync (once per day)
+  uint32_t now = millis();
+  
+  // Handle millis() rollover (every ~49 days)
+  if (now < last_time_sync_timestamp_) {
+    ESP_LOGD(TAG, "millis() rollover detected, resetting time sync tracking");
+    last_time_sync_timestamp_ = 0;
+  }
+  
+  // If never synced (0) or 24 hours have passed
+  if (last_time_sync_timestamp_ == 0 || (now - last_time_sync_timestamp_) >= TIME_SYNC_INTERVAL_MS) {
+    // Check if system time is available via SNTP
+    time_t current_time = ::time(nullptr);
+    if (current_time < 1609459200) {  // Before 2021-01-01 means time not synced
+      ESP_LOGD(TAG, "System time not synced via SNTP yet, skipping pump clock sync");
+      return;
+    }
+    
+    ESP_LOGI(TAG, "Daily time sync due - syncing pump clock...");
+    time_service_.set_clock_async([this](bool success) {
+      if (success) {
+        ESP_LOGI(TAG, "✓ Daily pump clock sync successful");
+        this->last_time_sync_timestamp_ = millis();
+      } else {
+        ESP_LOGW(TAG, "Daily pump clock sync failed - will retry next update");
+      }
+    });
   }
 }
 

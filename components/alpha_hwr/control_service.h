@@ -126,6 +126,15 @@ class ControlService {
     * @param callback Function to call set_timeout on the component
     */
    void set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback);
+   
+   /**
+    * Set callback for control mode change notifications.
+    * 
+    * Called whenever the control mode changes (from passive notification or command).
+    * 
+    * @param callback Function(ControlMode, operation_mode, setpoint) to call on mode change
+    */
+   void set_mode_change_callback(std::function<void(ControlMode, uint8_t, float)> callback);
   
   /**
    * Start the pump.
@@ -233,6 +242,13 @@ class ControlService {
    ControlMode get_current_mode() const { return current_mode_; }
    
    /**
+    * Check if the control mode is valid (received from pump).
+    * 
+    * @return True if we've received a real mode from the pump, false otherwise
+    */
+   bool is_mode_valid() const { return mode_valid_; }
+   
+   /**
     * Update control mode from passive notification.
     * 
     * Called by TelemetryService when it receives a passive notification
@@ -252,12 +268,92 @@ class ControlService {
     */
    bool get_remote_enabled() const { return is_remote_mode_enabled_; }
    
-  private:
-   core::Transport &transport_;
-   core::Session &session_;
-   ControlMode current_mode_{ControlMode::CONSTANT_SPEED};
-   bool is_remote_mode_enabled_{false};  // Track remote mode state
-   std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
+   // ========== Setpoint Configuration Methods ==========
+   
+   /**
+    * Set constant pressure mode with setpoint.
+    * 
+    * Switches to CONSTANT_PRESSURE mode (Mode 0) and sets the pressure setpoint.
+    * 
+    * @param value_m Pressure setpoint in meters of water column (0.5 - 10.0 m)
+    * @param callback Callback function(bool success)
+    * 
+    * Protocol Notes:
+    * - Sets mode first using set_mode()
+    * - Writes setpoint using Class 3 register 0x18
+    * - Value stored as 32-bit float big-endian
+    * - Sends configuration commit after write
+    * 
+    * Reference: control.py::set_constant_pressure() lines 591-629
+    */
+   void set_constant_pressure_async(float value_m, std::function<void(bool)> callback);
+   
+   /**
+    * Set constant speed mode with setpoint.
+    * 
+    * Switches to CONSTANT_SPEED mode (Mode 2) and sets the RPM setpoint.
+    * 
+    * @param value_rpm Speed setpoint in RPM (500 - 4500 RPM)
+    * @param callback Callback function(bool success)
+    * 
+    * Protocol Notes:
+    * - Sets mode first using set_mode()
+    * - Writes setpoint using Class 3 register 0x04
+    * - Value stored as 32-bit float big-endian
+    * - Sends configuration commit after write
+    * 
+    * Reference: control.py::set_constant_speed() lines 631-664
+    */
+   void set_constant_speed_async(float value_rpm, std::function<void(bool)> callback);
+   
+   /**
+    * Set constant flow mode with setpoint.
+    * 
+    * Switches to CONSTANT_FLOW mode (Mode 8) and sets the flow rate setpoint.
+    * 
+    * @param value_m3h Flow rate setpoint in cubic meters per hour
+    * @param callback Callback function(bool success)
+    * 
+    * Protocol Notes:
+    * - Sets mode first using set_mode()
+    * - Writes setpoint using Class 3 register 0x15
+    * - Value stored as 32-bit float big-endian
+    * - Sends configuration commit after write
+    * 
+    * Reference: control.py::set_constant_flow() lines 666-699
+    */
+   void set_constant_flow_async(float value_m3h, std::function<void(bool)> callback);
+   
+   /**
+    * Set temperature range control mode with min/max setpoints and AutoAdapt flag.
+    * 
+    * Switches to TEMPERATURE_RANGE mode (Mode 27) and configures temperature range.
+    * 
+    * @param min_temp Minimum temperature in Celsius
+    * @param max_temp Maximum temperature in Celsius
+    * @param autoadapt_enabled Enable AutoAdapt (DeltaTempEnabled flag)
+    * @param callback Callback function(bool success)
+    * 
+    * Protocol Notes:
+    * - Sets mode first using set_mode()
+    * - Writes config to Object 91, Sub-ID 430 (Type 1012)
+    * - Payload: [DeltaTempEnabled(1)][MinTemp(4BE)][MaxTemp(4BE)][TimeLimits(4)]
+    * - Total APDU: 19 bytes (OpSpec 0xB3 + 13-byte payload)
+    * - Sends configuration commit after write
+    * 
+    * Reference: control.py::set_temperature_range_control() lines 919-987
+    */
+   void set_temperature_range_async(float min_temp, float max_temp, bool autoadapt_enabled,
+                                     std::function<void(bool)> callback);
+   
+   private:
+    core::Transport &transport_;
+    core::Session &session_;
+    ControlMode current_mode_{ControlMode::NONE};
+    bool mode_valid_{false};  // Track if we've received a real mode from the pump
+    bool is_remote_mode_enabled_{false};  // Track remote mode state
+    std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
+    std::function<void(ControlMode, uint8_t, float)> mode_change_callback_;
   
   /**
    * Build GENI protocol packet with CRC.

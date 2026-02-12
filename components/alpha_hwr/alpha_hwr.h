@@ -23,6 +23,7 @@
 #include "schedule_service.h"
 #include "schedule_entry.h"
 #include "device_info_service.h"
+#include "time_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -81,7 +82,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
       telemetry_service_(transport_),
       control_service_(transport_, session_),
       schedule_service_(transport_, session_),
-      device_info_service_(transport_, session_) {
+      device_info_service_(transport_, session_),
+      time_service_(&transport_) {
     parent->register_ble_node(this);
     parent_ = parent;
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
@@ -105,6 +107,7 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }
    void set_warnings_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_warnings_text_sensor(sensor); }
    void set_schedule_text_sensor(text_sensor::TextSensor *sensor) { schedule_text_sensor_ = sensor; }
+   void set_control_mode_text_sensor(text_sensor::TextSensor *sensor) { control_mode_sensor_ = sensor; }
    void set_serial_number_text_sensor(text_sensor::TextSensor *sensor) { serial_number_sensor_ = sensor; }
    void set_software_version_text_sensor(text_sensor::TextSensor *sensor) { software_version_sensor_ = sensor; }
    void set_hardware_version_text_sensor(text_sensor::TextSensor *sensor) { hardware_version_sensor_ = sensor; }
@@ -155,6 +158,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Device information service (handles device identification strings)
   services::DeviceInfoService device_info_service_;
   
+  // Time service (handles pump RTC management)
+  services::TimeService time_service_;
+  
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
@@ -163,6 +169,8 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
 #ifdef USE_TEXT_SENSOR
    // Schedule display sensor
    text_sensor::TextSensor *schedule_text_sensor_{nullptr};
+   // Control mode display sensor
+   text_sensor::TextSensor *control_mode_sensor_{nullptr};
    // Device information text sensors
    text_sensor::TextSensor *serial_number_sensor_{nullptr};
    text_sensor::TextSensor *software_version_sensor_{nullptr};
@@ -170,6 +178,16 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    text_sensor::TextSensor *ble_version_sensor_{nullptr};
    text_sensor::TextSensor *product_name_sensor_{nullptr};
 #endif
+   
+   // Time synchronization tracking
+   uint32_t last_time_sync_timestamp_{0};  // millis() when last sync occurred
+   static constexpr uint32_t TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;  // 24 hours in milliseconds
+   
+   /**
+    * Check if daily time sync is due and perform it if needed.
+    * Called from update() to sync pump RTC with system time once per day.
+    */
+   void check_and_sync_time();
   
  public:
    // Control service access methods (for ESPHome switches/buttons)
@@ -179,9 +197,24 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    bool enable_remote() { return control_service_.enable_remote_mode(); }
    bool disable_remote() { return control_service_.disable_remote_mode(); }
    
+   // Setpoint configuration methods (for ESPHome number entities)
+   void set_constant_pressure(float value_m, std::function<void(bool)> callback) {
+     control_service_.set_constant_pressure_async(value_m, callback);
+   }
+   void set_constant_speed(float value_rpm, std::function<void(bool)> callback) {
+     control_service_.set_constant_speed_async(value_rpm, callback);
+   }
+   void set_constant_flow(float value_m3h, std::function<void(bool)> callback) {
+     control_service_.set_constant_flow_async(value_m3h, callback);
+   }
+   void set_temperature_range(float min_temp, float max_temp, bool autoadapt, std::function<void(bool)> callback) {
+     control_service_.set_temperature_range_async(min_temp, max_temp, autoadapt, callback);
+   }
+   
    // State tracking getters
-   services::ControlMode get_control_mode() const { return control_service_.get_current_mode(); }
-   bool get_remote_enabled() const { return control_service_.get_remote_enabled(); }
+  services::ControlMode get_control_mode() const { return control_service_.get_current_mode(); }
+  bool is_mode_valid() const { return control_service_.is_mode_valid(); }
+  bool get_remote_enabled() const { return control_service_.get_remote_enabled(); }
    static const char* get_control_mode_name(services::ControlMode mode) { return services::ControlService::get_mode_name(mode); }
    
    // Schedule service access methods (for ESPHome buttons/lambdas)
@@ -204,22 +237,59 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    bool clear_schedule_entry(const std::string &day, uint8_t layer = 0) {
      return schedule_service_.clear_entry(day, layer);
    }
-     bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
-       return schedule_service_.get_schedule_display_string(entries, result);
-     }
+      bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {
+        return schedule_service_.get_schedule_display_string(entries, result);
+      }
 
-     /**
-      * Asynchronously read device information and update text sensors.
-      * 
-      * Reads device identification strings (serial, versions, product name) from
-      * the pump and publishes them to configured text sensors.
-      * 
-      * This is typically called once after authentication to populate device info.
-      * 
-      * Usage:
-      *   Called automatically in authenticate() after successful authentication
-      */
-     void read_device_info() {
+      /**
+       * Asynchronously read pump's real-time clock.
+       * 
+       * Reads the current time from the pump's internal RTC (used for schedule execution).
+       * 
+       * @param callback Called with ESPTime representing pump time (invalid ESPTime on failure)
+       * 
+       * Usage:
+       *   component->read_pump_clock([](ESPTime pump_time) {
+       *     if (pump_time.is_valid()) {
+       *       // Time read successfully
+       *     }
+       *   });
+       */
+      void read_pump_clock(std::function<void(ESPTime)> callback) {
+        time_service_.get_clock_async(callback);
+      }
+
+      /**
+       * Asynchronously synchronize pump's real-time clock with system time.
+       * 
+       * Sets the pump's internal RTC to match the ESP32's current time (from SNTP).
+       * The pump clock is used for schedule execution and event logging.
+       * 
+       * @param callback Called with success status (true if clock was synchronized)
+       * 
+       * Usage:
+       *   component->sync_pump_clock([](bool success) {
+       *     if (success) {
+       *       // Clock synchronized successfully
+       *     }
+       *   });
+       */
+      void sync_pump_clock(std::function<void(bool)> callback) {
+        time_service_.set_clock_async(callback);
+      }
+
+      /**
+       * Asynchronously read device information and update text sensors.
+       * 
+       * Reads device identification strings (serial, versions, product name) from
+       * the pump and publishes them to configured text sensors.
+       * 
+       * This is typically called once after authentication to populate device info.
+       * 
+       * Usage:
+       *   Called automatically in authenticate() after successful authentication
+       */
+      void read_device_info() {
        ESP_LOGI(TAG, "Reading device information...");
        device_info_service_.read_device_info_async([this](bool success) {
          if (!success) {

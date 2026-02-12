@@ -85,6 +85,50 @@ switch:
           bool result = id(pump).disable_remote();
           ESP_LOGI("switch", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
 
+  # Temperature Range - AutoAdapt Toggle (Mode 27)
+  - platform: template
+    name: "Temperature AutoAdapt"
+    id: temp_autoadapt
+    icon: "mdi:auto-fix"
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in TEMPERATURE_RANGE mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual AutoAdapt state from pump (Object 91, Sub 430, byte 0)
+      return {};  // Return empty until we implement reading
+    turn_on_action:
+      - lambda: |-
+          // Get current temperature range (or use defaults)
+          float min_temp = 35.0f;  // TODO: Read from stored state
+          float max_temp = 45.0f;  // TODO: Read from stored state
+          
+          ESP_LOGI("switch", "Enabling Temperature AutoAdapt");
+          id(pump).set_temperature_range(min_temp, max_temp, true, [](bool success) {
+            if (success) {
+              ESP_LOGI("switch", "✓ AutoAdapt enabled successfully");
+            } else {
+              ESP_LOGW("switch", "Failed to enable AutoAdapt");
+            }
+          });
+    turn_off_action:
+      - lambda: |-
+          // Get current temperature range (or use defaults)
+          float min_temp = 35.0f;  // TODO: Read from stored state
+          float max_temp = 45.0f;  // TODO: Read from stored state
+          
+          ESP_LOGI("switch", "Disabling Temperature AutoAdapt");
+          id(pump).set_temperature_range(min_temp, max_temp, false, [](bool success) {
+            if (success) {
+              ESP_LOGI("switch", "✓ AutoAdapt disabled successfully");
+            } else {
+              ESP_LOGW("switch", "Failed to disable AutoAdapt");
+            }
+          });
+
 button:
   - platform: restart
     name: "Restart HWR Pump"
@@ -107,50 +151,51 @@ button:
           ESP_LOGI("button", "Manually triggering device info read...");
           id(pump).read_device_info();
 
+
 select:
-  # Pump Control Mode Selector
-  # Allows users to select between different pump operation modes
+  # Pump Control Mode Selector  
+  # Matches the Grundfos GO app's 5 main control modes for ALPHA HWR
+  # Note: This is separate from the Weekly Schedule feature (enable/disable via Object 82, Sub 104)
   - platform: template
     name: "Pump Control Mode"
     id: pump_mode_select
     icon: "mdi:tune"
     optimistic: false  # Read actual state from pump state tracking
     options:
-      - "Constant Pressure"
-      - "Proportional Pressure"
-      - "Constant Speed"
-      - "Auto Adapt"
+      - "Cycle Time Control"
+      - "Constant Curve"
+      - "Temperature Control"
       - "Constant Flow"
-      - "Auto Adapt Radiator"
-      - "Auto Adapt Underfloor"
-      - "Auto Adapt Combined"
-      - "DHW On/Off"
-      - "Temperature Range"
+      - "Constant Pressure"
     lambda: |-
+      // Check if mode is valid before trying to display it
+      if (!id(pump).is_mode_valid()) {
+        return {};  // Return empty optional - select will show no selection
+      }
+      
       esphome::alpha_hwr::services::ControlMode mode = id(pump).get_control_mode();
       std::string mode_str;
-      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
-        mode_str = "Constant Pressure";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
-        mode_str = "Proportional Pressure";
+      
+      // Map protocol modes to Grundfos GO app UI labels
+      // Reference: control.py lines 137-145, control_modes.md
+      if (mode == esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
+        mode_str = "Cycle Time Control";  // DHW On/Off Control (mode 25)
+        // Pump cycles: 5 min on, 15 min off (adjustable via Object/Sub-ID TBD)
       } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
-        mode_str = "Constant Speed";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT) {
-        mode_str = "Auto Adapt";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
-        mode_str = "Constant Flow";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_RADIATOR) {
-        mode_str = "Auto Adapt Radiator";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_UNDERFLOOR) {
-        mode_str = "Auto Adapt Underfloor";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_COMBINED) {
-        mode_str = "Auto Adapt Combined";
-      } else if (mode == esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
-        mode_str = "DHW On/Off";
+        mode_str = "Constant Curve";  // Constant Speed (mode 2)
+        // RPM setpoint (e.g., 3671 RPM)
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
+        mode_str = "Constant Curve";  // Proportional Pressure (mode 1) - also "Constant Curve"
       } else if (mode == esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
-        mode_str = "Temperature Range";
+        mode_str = "Temperature Control";  // Temperature Range Control (mode 27)
+        // Sub-settings in Object 91, Sub 430: AutoAdapt toggle, min/max temp
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
+        mode_str = "Constant Flow";  // Constant Flow (mode 8)
+      } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
+        mode_str = "Constant Pressure";  // Constant Pressure (mode 0)
       } else {
-        mode_str = "Unknown";
+        // For any other modes, return empty - use text sensor to see actual mode
+        return {};  // Return empty optional
       }
       return mode_str;
     set_action:
@@ -159,26 +204,17 @@ select:
           
           esphome::alpha_hwr::services::ControlMode mode;
           
-          if (x == "Constant Pressure") {
-            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE;
-          } else if (x == "Proportional Pressure") {
-            mode = esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE;
-          } else if (x == "Constant Speed") {
+          if (x == "Cycle Time Control") {
+            mode = esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF;
+          } else if (x == "Constant Curve") {
+            // Use Constant Speed (mode 2) as "Constant Curve" - has RPM setpoint
             mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED;
-          } else if (x == "Auto Adapt") {
-            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT;
+          } else if (x == "Temperature Control") {
+            mode = esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE;
           } else if (x == "Constant Flow") {
             mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW;
-          } else if (x == "Auto Adapt Radiator") {
-            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_RADIATOR;
-          } else if (x == "Auto Adapt Underfloor") {
-            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_UNDERFLOOR;
-          } else if (x == "Auto Adapt Combined") {
-            mode = esphome::alpha_hwr::services::ControlMode::AUTO_ADAPT_COMBINED;
-          } else if (x == "DHW On/Off") {
-            mode = esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF;
-          } else if (x == "Temperature Range") {
-            mode = esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE;
+          } else if (x == "Constant Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE;
           } else {
             ESP_LOGW("select", "Unknown mode: %s", x.c_str());
             return;
@@ -186,3 +222,171 @@ select:
           
           bool result = id(pump).set_control_mode(mode);
           ESP_LOGI("select", "Set mode result: %s", result ? "SUCCESS" : "FAILED");
+
+# ========== Control Mode Setpoints ==========
+# Each control mode has specific setpoint parameters
+# These number entities dynamically show/hide based on the active mode
+
+number:
+  # Constant Pressure Setpoint (Mode 0)
+  - platform: template
+    name: "Constant Pressure Setpoint"
+    id: constant_pressure_setpoint
+    icon: "mdi:gauge"
+    unit_of_measurement: "m"
+    min_value: 0.5
+    max_value: 10.0
+    step: 0.1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false  # Will be hidden via lambda
+    lambda: |-
+      // Only show when in CONSTANT_PRESSURE mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual setpoint from pump
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          ESP_LOGI("number", "Setting constant pressure setpoint to %.2f m", x);
+          id(pump).set_constant_pressure(x, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "✓ Pressure setpoint updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update pressure setpoint");
+            }
+          });
+
+  # Constant Speed (RPM) Setpoint (Mode 2)
+  - platform: template
+    name: "Constant Speed Setpoint"
+    id: constant_speed_setpoint
+    icon: "mdi:speedometer"
+    unit_of_measurement: "RPM"
+    min_value: 500
+    max_value: 4500
+    step: 100
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in CONSTANT_SPEED mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual setpoint from pump
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          ESP_LOGI("number", "Setting constant speed setpoint to %.0f RPM", x);
+          id(pump).set_constant_speed(x, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "✓ Speed setpoint updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update speed setpoint");
+            }
+          });
+
+  # Constant Flow Setpoint (Mode 8)
+  - platform: template
+    name: "Constant Flow Setpoint"
+    id: constant_flow_setpoint
+    icon: "mdi:water-pump"
+    unit_of_measurement: "m³/h"
+    min_value: 0.1
+    max_value: 5.0
+    step: 0.1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in CONSTANT_FLOW mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual setpoint from pump
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          ESP_LOGI("number", "Setting constant flow setpoint to %.2f m³/h", x);
+          id(pump).set_constant_flow(x, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "✓ Flow setpoint updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update flow setpoint");
+            }
+          });
+
+  # Temperature Range - Minimum Temperature (Mode 27)
+  - platform: template
+    name: "Temperature Range Min"
+    id: temp_range_min
+    icon: "mdi:thermometer-low"
+    unit_of_measurement: "°C"
+    min_value: 20
+    max_value: 70
+    step: 1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in TEMPERATURE_RANGE mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual min temp from pump (Object 91, Sub 430)
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          // Get the current max temp (or use default 45°C if not set)
+          float max_temp = 45.0f;  // TODO: Read from stored state
+          bool autoadapt = true;    // TODO: Read from stored state
+          
+          ESP_LOGI("number", "Setting temperature range min to %.1f°C", x);
+          id(pump).set_temperature_range(x, max_temp, autoadapt, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "✓ Temperature range updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update temperature range");
+            }
+          });
+
+  # Temperature Range - Maximum Temperature (Mode 27)
+  - platform: template
+    name: "Temperature Range Max"
+    id: temp_range_max
+    icon: "mdi:thermometer-high"
+    unit_of_measurement: "°C"
+    min_value: 20
+    max_value: 70
+    step: 1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in TEMPERATURE_RANGE mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
+        return {};  // Hide when not in this mode
+      }
+      // TODO: Read actual max temp from pump (Object 91, Sub 430)
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          // Get the current min temp (or use default 35°C if not set)
+          float min_temp = 35.0f;  // TODO: Read from stored state
+          bool autoadapt = true;    // TODO: Read from stored state
+          
+          ESP_LOGI("number", "Setting temperature range max to %.1f°C", x);
+          id(pump).set_temperature_range(min_temp, x, autoadapt, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "✓ Temperature range updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update temperature range");
+            }
+          });

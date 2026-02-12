@@ -240,25 +240,44 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
   }
   // Control Mode Status (OpSpec 0x0E, Sub 0x0001, Obj 0x2F01 = Decimal Sub 1, Obj 12033)
   // This is the passive notification that contains control mode, operation mode, and setpoint
-  // Reference: Python test log shows pump sends this automatically after authentication
+  // Reference: Python control.py lines 470-496 (checks full packet length, not just payload)
   else if (sub_id == 0x0001 && obj_id == 0x2F01) {
     ESP_LOGI(TAG, "Control mode notification received (Obj 0x2F01, Sub 1)");
     
-    // Extract payload: skip header (10 bytes) and CRC (2 bytes)
-    if (len >= 20) {  // Need at least 20 bytes for full structure
+    // Log full packet for debugging
+    ESP_LOGD(TAG, "Control mode packet length: %d bytes", len);
+    if (len <= 50) {  // Only log short packets to avoid spam
+      std::string hex;
+      for (size_t i = 0; i < len; i++) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%02X ", data[i]);
+        hex += buf;
+      }
+      ESP_LOGD(TAG, "Control mode packet: %s", hex.c_str());
+    }
+    
+    // Extract payload: skip GENI header (10 bytes), CRC is at end (2 bytes)
+    // Python reference (control.py:470): checks `len(data) >= 10` then `len(data) >= offset + 7`
+    // This means we check against FULL packet length (including header), not payload length
+    if (len >= 10) {  // Need at least header
       const uint8_t* payload = data + 10;
-      size_t payload_len = len - 12;
+      size_t payload_len = len - 12;  // Full packet minus header (10) and CRC (2)
       
       // Payload structure: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes float)]
-      // Skip 3-byte header if present
+      // Determine offset - Python checks the payload bytes at positions 0 and 1
       size_t offset = (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) ? 3 : 0;
       
-      if (payload_len >= offset + 7) {
+      ESP_LOGD(TAG, "Payload length: %d bytes, offset: %d bytes", payload_len, offset);
+      
+      // Python reference (control.py:482): checks `len(data) >= offset + 7`
+      // Since data includes the 10-byte header, this translates to:
+      // Full packet length >= 10 (header) + offset + 7 (data bytes) = 17 or 20 bytes
+      if (len >= 10 + offset + 7) {
         uint8_t control_source = payload[offset];
         uint8_t operation_mode = payload[offset + 1];
         uint8_t control_mode = payload[offset + 2];
         
-        // Extract setpoint as big-endian float
+        // Extract setpoint as big-endian float (4 bytes at offset+3)
         float setpoint = protocol::decode_float_be(payload, offset + 3);
         
         ESP_LOGI(TAG, "Control Mode Status: mode=%d, op_mode=%d, setpoint=%.2f, source=%d",
@@ -271,10 +290,10 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
           ESP_LOGW(TAG, "Control service not set, cannot update mode");
         }
       } else {
-        ESP_LOGW(TAG, "Control mode payload too short: %d bytes", payload_len);
+        ESP_LOGW(TAG, "Control mode packet too short for parsing: %d bytes (need %d)", len, 10 + offset + 7);
       }
     } else {
-      ESP_LOGW(TAG, "Control mode packet too short: %d bytes", len);
+      ESP_LOGW(TAG, "Control mode packet too short: %d bytes (need at least 10)", len);
     }
   }
   else {

@@ -40,6 +40,7 @@ CONF_ENABLE_PAIRING = "enable_pairing"
 CONF_ALARMS = "alarms"
 CONF_WARNINGS = "warnings"
 CONF_SCHEDULE = "schedule"
+CONF_CONTROL_MODE = "control_mode"
 CONF_SERIAL_NUMBER = "serial_number"
 CONF_SOFTWARE_VERSION = "software_version"
 CONF_HARDWARE_VERSION = "hardware_version"
@@ -135,6 +136,9 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_SCHEDULE): text_sensor.text_sensor_schema(
             icon="mdi:calendar-clock",
+        ),
+        cv.Optional(CONF_CONTROL_MODE): text_sensor.text_sensor_schema(
+            icon="mdi:cog",
         ),
         cv.Optional(CONF_SERIAL_NUMBER): text_sensor.text_sensor_schema(
             icon="mdi:barcode",
@@ -235,6 +239,10 @@ async def to_code(config):
     if CONF_SCHEDULE in config:
         sens = await text_sensor.new_text_sensor(config[CONF_SCHEDULE])
         cg.add(var.set_schedule_text_sensor(sens))
+
+    if CONF_CONTROL_MODE in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_CONTROL_MODE])
+        cg.add(var.set_control_mode_text_sensor(sens))
 
     if CONF_SERIAL_NUMBER in config:
         sens = await text_sensor.new_text_sensor(config[CONF_SERIAL_NUMBER])
