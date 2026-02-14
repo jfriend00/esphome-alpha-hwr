@@ -27,8 +27,8 @@ switch:
   - platform: template
     name: "Pump Running"
     icon: "mdi:pump"
-    optimistic: false
-    # Use Motor Speed sensor to determine actual state
+    optimistic: true
+    # Use Motor Speed sensor to determine actual state (overrides optimistic after update)
     lambda: |-
       if (id(motor_speed).has_state()) {
         return id(motor_speed).state > 0;
@@ -163,7 +163,8 @@ select:
     optimistic: false  # Read actual state from pump state tracking
     options:
       - "Cycle Time Control"
-      - "Constant Curve"
+      - "Constant Speed"
+      - "Proportional Pressure"
       - "Temperature Control"
       - "Constant Flow"
       - "Constant Pressure"
@@ -176,26 +177,21 @@ select:
       esphome::alpha_hwr::services::ControlMode mode = id(pump).get_control_mode();
       std::string mode_str;
       
-      // Map protocol modes to Grundfos GO app UI labels
-      // Reference: control.py lines 137-145, control_modes.md
+      // Map protocol modes to UI labels (must match get_mode_name() output)
       if (mode == esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
-        mode_str = "Cycle Time Control";  // DHW On/Off Control (mode 25)
-        // Pump cycles: 5 min on, 15 min off (adjustable via Object/Sub-ID TBD)
+        mode_str = "Cycle Time Control";
       } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
-        mode_str = "Constant Curve";  // Constant Speed (mode 2)
-        // RPM setpoint (e.g., 3671 RPM)
+        mode_str = "Constant Speed";
       } else if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
-        mode_str = "Constant Curve";  // Proportional Pressure (mode 1) - also "Constant Curve"
+        mode_str = "Proportional Pressure";
       } else if (mode == esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
-        mode_str = "Temperature Control";  // Temperature Range Control (mode 27)
-        // Sub-settings in Object 91, Sub 430: AutoAdapt toggle, min/max temp
+        mode_str = "Temperature Control";
       } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
-        mode_str = "Constant Flow";  // Constant Flow (mode 8)
+        mode_str = "Constant Flow";
       } else if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
-        mode_str = "Constant Pressure";  // Constant Pressure (mode 0)
+        mode_str = "Constant Pressure";
       } else {
-        // For any other modes, return empty - use text sensor to see actual mode
-        return {};  // Return empty optional
+        return {};  // Return empty optional for unknown modes
       }
       return mode_str;
     set_action:
@@ -206,9 +202,10 @@ select:
           
           if (x == "Cycle Time Control") {
             mode = esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF;
-          } else if (x == "Constant Curve") {
-            // Use Constant Speed (mode 2) as "Constant Curve" - has RPM setpoint
+          } else if (x == "Constant Speed") {
             mode = esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED;
+          } else if (x == "Proportional Pressure") {
+            mode = esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE;
           } else if (x == "Temperature Control") {
             mode = esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE;
           } else if (x == "Constant Flow") {
@@ -238,16 +235,8 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: false
-    disabled_by_default: false  # Will be hidden via lambda
-    lambda: |-
-      // Only show when in CONSTANT_PRESSURE mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
-        return {};  // Hide when not in this mode
-      }
-      // TODO: Read actual setpoint from pump
-      return {};  // Return empty until we implement reading
+    optimistic: true
+    disabled_by_default: false
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant pressure setpoint to %.2f m", x);
@@ -269,16 +258,8 @@ number:
     max_value: 4500
     step: 100
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in CONSTANT_SPEED mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
-        return {};  // Hide when not in this mode
-      }
-      // TODO: Read actual setpoint from pump
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant speed setpoint to %.0f RPM", x);
@@ -300,16 +281,8 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in CONSTANT_FLOW mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
-        return {};  // Hide when not in this mode
-      }
-      // TODO: Read actual setpoint from pump
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant flow setpoint to %.2f m³/h", x);
@@ -331,16 +304,8 @@ number:
     max_value: 70
     step: 1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in TEMPERATURE_RANGE mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
-        return {};  // Hide when not in this mode
-      }
-      // TODO: Read actual min temp from pump (Object 91, Sub 430)
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           // Get the current max temp (or use default 45°C if not set)
@@ -366,16 +331,8 @@ number:
     max_value: 70
     step: 1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in TEMPERATURE_RANGE mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
-        return {};  // Hide when not in this mode
-      }
-      // TODO: Read actual max temp from pump (Object 91, Sub 430)
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           // Get the current min temp (or use default 35°C if not set)
@@ -401,15 +358,8 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in PROPORTIONAL_PRESSURE mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
-        return {};  // Hide when not in this mode
-      }
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting proportional pressure setpoint to %.2f m", x);
@@ -431,15 +381,8 @@ number:
     max_value: 60
     step: 1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in DHW_ON_OFF mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
-        return {};  // Hide when not in this mode
-      }
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           uint8_t off_min = 15;  // TODO: Read from stored state
@@ -462,15 +405,8 @@ number:
     max_value: 60
     step: 1
     mode: slider
-    optimistic: false
+    optimistic: true
     disabled_by_default: false
-    lambda: |-
-      // Only show when in DHW_ON_OFF mode
-      if (!id(pump).is_mode_valid()) return {};
-      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
-        return {};  // Hide when not in this mode
-      }
-      return {};  // Return empty until we implement reading
     set_action:
       - lambda: |-
           uint8_t on_min = 5;  // TODO: Read from stored state

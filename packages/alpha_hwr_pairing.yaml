@@ -85,12 +85,14 @@ alpha_hwr:
      name: "Inlet Pressure"
    outlet_pressure:
      name: "Outlet Pressure"
+     disabled_by_default: true  # HWR models don't have outlet pressure sensor
    
    # Temperature Sensors (all)
    temp_media:
      name: "Water Temperature"
    temp_converter:
      name: "Converter Temperature"
+     disabled_by_default: true  # HWR models don't have converter temperature sensor
    temp_pcb:
      name: "PCB Temperature"
    temp_control_box:

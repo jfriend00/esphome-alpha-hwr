@@ -315,29 +315,29 @@ bool ControlService::enable_remote_mode() {
 const char *ControlService::get_mode_name(ControlMode mode) {
   switch (mode) {
     case ControlMode::CONSTANT_PRESSURE:
-      return "CONSTANT_PRESSURE";
+      return "Constant Pressure";
     case ControlMode::PROPORTIONAL_PRESSURE:
-      return "PROPORTIONAL_PRESSURE";
+      return "Proportional Pressure";
     case ControlMode::CONSTANT_SPEED:
-      return "CONSTANT_SPEED";
+      return "Constant Speed";
     case ControlMode::AUTO_ADAPT:
-      return "AUTO_ADAPT";
+      return "Auto Adapt";
     case ControlMode::CONSTANT_FLOW:
-      return "CONSTANT_FLOW";
+      return "Constant Flow";
     case ControlMode::AUTO_ADAPT_RADIATOR:
-      return "AUTO_ADAPT_RADIATOR";
+      return "Auto Adapt Radiator";
     case ControlMode::AUTO_ADAPT_UNDERFLOOR:
-      return "AUTO_ADAPT_UNDERFLOOR";
+      return "Auto Adapt Underfloor";
     case ControlMode::AUTO_ADAPT_COMBINED:
-      return "AUTO_ADAPT_COMBINED";
+      return "Auto Adapt Combined";
     case ControlMode::DHW_ON_OFF:
-      return "DHW_ON_OFF";
+      return "Cycle Time Control";
     case ControlMode::TEMPERATURE_RANGE:
-      return "TEMPERATURE_RANGE";
+      return "Temperature Control";
     case ControlMode::NONE:
       return "Unknown";
     default:
-      return "UNKNOWN";
+      return "Unknown";
   }
 }
 

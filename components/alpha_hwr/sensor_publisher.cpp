@@ -58,13 +58,11 @@ void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& m
     rpm_sensor_->publish_state(motor.speed_rpm);
   }
   
-  // Publish converter temperature (with range validation)
+  // Publish converter temperature (with NaN and range validation)
   if (motor.has_converter_temp && temp_converter_sensor_ != nullptr) {
-    // Validate temperature is in reasonable range (-20°C to 120°C)
-    if (motor.converter_temperature_c >= -20 && motor.converter_temperature_c <= 120) {
+    if (!std::isnan(motor.converter_temperature_c) &&
+        motor.converter_temperature_c >= -20 && motor.converter_temperature_c <= 120) {
       temp_converter_sensor_->publish_state(motor.converter_temperature_c);
-    } else {
-      ESP_LOGW(TAG, "Converter temperature out of range: %.1f°C", motor.converter_temperature_c);
     }
   }
 }
