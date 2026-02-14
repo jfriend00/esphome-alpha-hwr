@@ -74,6 +74,9 @@ void TelemetryService::poll() {
   
   ESP_LOGI(TAG, "Polling telemetry registers...");
   
+  // Reset alarm/warning response toggle (alarms queued first, then warnings)
+  next_09_is_warnings_ = false;
+  
   // Queue all read requests. The transport layer will pace them.
   send_read_request(0x570045); // Motor state
   send_read_request(0x5D0122); // Flow/pressure
@@ -122,16 +125,29 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
       handle_temperature_response(data, len);
       break;
     
-    case 0x13:  // Alarms/warnings response
+    case 0x09:  // Alarms/warnings register-read response (offset 13)
+    case 0x13:  // Alarms/warnings read response (offset 10)
       if (len >= 10) {
         uint16_t sub_id = (data[6] << 8) | data[7];
         uint16_t obj_id = (data[8] << 8) | data[9];
         
-        if (obj_id == 0x0058) {  // Obj 88
-          if (sub_id == 0x0000) {  // Alarms
-            handle_alarms_response(data, len);
-          } else if (sub_id == 0x000B) {  // Warnings
-            handle_warnings_response(data, len);
+        // For 0x13: sub_id/obj_id are actual Sub/Obj IDs
+        // For 0x09: sub_id is sequence number, obj_id is register ID
+        // Route alarms vs warnings by matching known patterns
+        if (opspec == 0x13 && obj_id == 0x0058) {
+          if (sub_id == 0x0000) {
+            handle_alarms_response(data, len, opspec);
+          } else if (sub_id == 0x000B) {
+            handle_warnings_response(data, len, opspec);
+          }
+        } else if (opspec == 0x09) {
+          // Register-read format: use ordering to distinguish alarms vs warnings
+          // Alarms register (0x580000) is always polled before warnings (0x58000B)
+          if (!next_09_is_warnings_) {
+            handle_alarms_response(data, len, opspec);
+            next_09_is_warnings_ = true;
+          } else {
+            handle_warnings_response(data, len, opspec);
           }
         }
       }
@@ -183,11 +199,11 @@ void TelemetryService::handle_temperature_response(const uint8_t* data, size_t l
   }
 }
 
-void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len) {
-  ESP_LOGI(TAG, "Alarms response (OpSpec 0x13, Obj 88, Sub 0)");
+void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len, uint8_t opspec) {
+  ESP_LOGI(TAG, "Alarms response (OpSpec 0x%02X)", opspec);
   
-  // Decode alarms using telemetry decoder
-  protocol::AlarmWarningTelemetry alarms = protocol::decode_alarms_warnings_response(data, len, 0x13);
+  // Decode alarms using telemetry decoder (opspec determines data offset)
+  protocol::AlarmWarningTelemetry alarms = protocol::decode_alarms_warnings_response(data, len, opspec);
   
   // Publish to sensors
   if (sensor_publisher_) {
@@ -195,11 +211,11 @@ void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len) {
   }
 }
 
-void TelemetryService::handle_warnings_response(const uint8_t* data, size_t len) {
-  ESP_LOGI(TAG, "Warnings response (OpSpec 0x13, Obj 88, Sub 11)");
+void TelemetryService::handle_warnings_response(const uint8_t* data, size_t len, uint8_t opspec) {
+  ESP_LOGI(TAG, "Warnings response (OpSpec 0x%02X)", opspec);
   
-  // Decode warnings using telemetry decoder
-  protocol::AlarmWarningTelemetry warnings = protocol::decode_alarms_warnings_response(data, len, 0x13);
+  // Decode warnings using telemetry decoder (opspec determines data offset)
+  protocol::AlarmWarningTelemetry warnings = protocol::decode_alarms_warnings_response(data, len, opspec);
   
   // Publish to sensors
   if (sensor_publisher_) {

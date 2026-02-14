@@ -134,12 +134,15 @@ class TelemetryService {
   void handle_motor_state_response(const uint8_t* data, size_t len);
   void handle_flow_pressure_response(const uint8_t* data, size_t len);
   void handle_temperature_response(const uint8_t* data, size_t len);
-  void handle_alarms_response(const uint8_t* data, size_t len);
-  void handle_warnings_response(const uint8_t* data, size_t len);
+  void handle_alarms_response(const uint8_t* data, size_t len, uint8_t opspec);
+  void handle_warnings_response(const uint8_t* data, size_t len, uint8_t opspec);
   void handle_passive_notification(const uint8_t* data, size_t len);
 
   // Helper to send read requests
   void send_read_request(uint32_t register_addr);
+
+  // Track 0x09 alarm/warning response ordering (alarms polled before warnings)
+  bool next_09_is_warnings_{false};
 
   // Logging tag
   static constexpr const char* TAG = "alpha_hwr.telemetry";
