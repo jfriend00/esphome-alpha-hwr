@@ -355,6 +355,11 @@ class ControlService {
     std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
     std::function<void(ControlMode, uint8_t, float)> mode_change_callback_;
   
+  // Sub-ID constants for setpoint registers (Reference: control.py lines 137-141)
+  static constexpr uint16_t SUB_SPEED_SETPOINT = 13;
+  static constexpr uint16_t SUB_PRESSURE_SETPOINT = 15;
+  static constexpr uint16_t SUB_FLOW_SETPOINT = 39;
+  
   /**
    * Build GENI protocol packet with CRC.
    * 
@@ -371,16 +376,40 @@ class ControlService {
   
   /**
    * Send configuration commit packet.
-   * 
    * Required after control operations to persist state changes.
-   * 
-   * Protocol Notes:
-   * - Sub 0x5400, Obj 0xDA01
-   * - Hex: 0A9354000100DA0100000A02050005000100000000
-   * 
    * Reference: control.py::_send_configuration_commit() lines 1038-1048
    */
   void send_configuration_commit();
+  
+  /**
+   * Send control request with optional setpoint (Class 10 method).
+   * 
+   * Payload: [2F 01 00 00 07 00][Flag][Mode][Suffix/Setpoint(4)]
+   * When setpoint is provided, suffix carries the float32 value.
+   * When not provided, uses default suffix from CLASS10_CONTROL_MAP.
+   * 
+   * @param mode Control mode
+   * @param start True for start/run (flag=0x00), false for stop (flag=0x01)
+   * @param setpoint Optional setpoint value (NAN = use default suffix)
+   * @return True if command was queued
+   * 
+   * Reference: control.py::_send_control_request() lines 233-284
+   */
+  bool send_control_request(ControlMode mode, bool start, float setpoint = NAN);
+  
+  /**
+   * Set a Class 10 setpoint value (OpSpec 0x84 = SET + 4 bytes).
+   * 
+   * APDU: [0x0A][0x84][SubH][SubL][ObjH][ObjL][Float32BE]
+   * Sends configuration commit after success.
+   * 
+   * @param value Float value to write
+   * @param sub_id Sub-ID to write to
+   * @param obj_id Object ID (default 86)
+   * 
+   * Reference: control.py::_set_class10_setpoint() lines 1100-1132
+   */
+  void set_class10_setpoint(float value, uint16_t sub_id, uint16_t obj_id = 86);
   
   /**
    * Class 10 Control Mode Mapping.

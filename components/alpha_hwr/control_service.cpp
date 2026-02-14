@@ -2,6 +2,7 @@
 #include "transport.h"
 #include "esphome/core/log.h"
 #include <cstring>
+#include <cmath>
 
 namespace esphome {
 namespace alpha_hwr {
@@ -12,16 +13,19 @@ static const char *TAG = "alpha_hwr.control";
 // Class 10 Control Mode Mapping
 // Maps ControlMode values to (ModeByte, SuffixBytes)
 // Based on protocol specification in control.py lines 137-145
+// Class 10 Control Mode Mapping
+// Maps ControlMode enum values (array index) to (ModeByte, SuffixBytes).
+// Reference: control.py _MODE_BYTE_MAP (lines 145-151) and _MODE_SUFFIX_MAP (lines 156-163)
 const ControlService::ControlModeMapping ControlService::CLASS10_CONTROL_MAP[] = {
     {0x00, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_PRESSURE (0)
-    {0x00, {0x00, 0x00, 0x00, 0x00}},  // PROPORTIONAL_PRESSURE (1) - not supported
+    {0x00, {0x00, 0x00, 0x00, 0x00}},  // PROPORTIONAL_PRESSURE (1) - not in _MODE_BYTE_MAP
     {0x02, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_SPEED (2)
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (3) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (4) - unused
-    {0x00, {0x00, 0x00, 0x00, 0x00}},  // AUTO_ADAPT (5) - not supported in Class 10
+    {0x00, {0x00, 0x00, 0x00, 0x00}},  // AUTO_ADAPT (5) - not in _MODE_BYTE_MAP
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (6) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (7) - unused
-    {0x00, {0x00, 0x00, 0x00, 0x00}},  // CONSTANT_FLOW (8) - not supported in Class 10
+    {0x08, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_FLOW (8) - mode_byte 0x08, suffix same as pressure
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (9) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (10) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (11) - unused
@@ -38,7 +42,7 @@ const ControlService::ControlModeMapping ControlService::CLASS10_CONTROL_MAP[] =
     {0x00, {0x00, 0x00, 0x00, 0x00}},
     {0x00, {0x00, 0x00, 0x00, 0x00}},
     {0x00, {0x00, 0x00, 0x00, 0x00}},
-    {0x19, {0x38, 0xC6, 0x70, 0x00}},  // DHW_ON_OFF (25)
+    {0x19, {0x38, 0xC6, 0x76, 0xEF}},  // DHW_ON_OFF (25) - suffix from app capture
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (26) - unused
     {0x1B, {0x39, 0x67, 0x70, 0x00}},  // TEMPERATURE_RANGE (27)
 };
@@ -175,69 +179,27 @@ bool ControlService::start(uint8_t mode) {
   ESP_LOGI(TAG, "Starting pump...");
 
   // Resolve target mode (255 = use current mode)
-  uint8_t target_mode = (mode == 255) ? static_cast<uint8_t>(current_mode_) : mode;
+  // Reference: control.py::start() lines 183-206
+  if (mode != 255) {
+    current_mode_ = static_cast<ControlMode>(mode);
+  }
   
-  // Get Class 10 mapping for this mode
-  ControlModeMapping mapping;
-  if (!get_class10_mapping(static_cast<ControlMode>(target_mode), mapping)) {
-    ESP_LOGE(TAG, "Mode %d not supported for Class 10 start", target_mode);
+  ControlMode target = current_mode_;
+  
+  if (!send_control_request(target, true)) {
+    ESP_LOGE(TAG, "Failed to send start command");
     return false;
   }
 
-  // Build payload: [Header] [00=Run] [Mode] [Suffix]
-  // Reference: control.py lines 210-216
-  uint8_t payload[12];
-  payload[0] = 0x2F;
-  payload[1] = 0x01;
-  payload[2] = 0x00;
-  payload[3] = 0x00;
-  payload[4] = 0x07;
-  payload[5] = 0x00;
-  payload[6] = 0x00;  // Flag: 0x00 = Start/Run
-  payload[7] = mapping.mode_byte;
-  memcpy(&payload[8], mapping.suffix, 4);
-
-  // Build Class 10 SET packet
-  // APDU: [0x0A][0x90][Sub-H][Sub-L][Obj-H][Obj-L][Payload...]
-  // Sub 0x5600, Obj 0x0601
-  // Reference: control.py lines 218-220
-  uint8_t apdu[18];
-  apdu[0] = 0x0A;  // Class 10
-  apdu[1] = 0x90;  // OpSpec: SET with length 16 (0x80 | 0x10)
-  apdu[2] = 0x56;  // Sub ID high
-  apdu[3] = 0x00;  // Sub ID low
-  apdu[4] = 0x06;  // Obj ID high
-  apdu[5] = 0x01;  // Obj ID low
-  memcpy(&apdu[6], payload, 12);
-
-  // Build GENI frame
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
-
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  // Send command via transport queue
-  this->transport_.send_command(packet);
-
-  // Schedule configuration commit (after 200ms delay)
-  // Reference: control.py lines 223-226
-  if (schedule_callback_) {
-    schedule_callback_([this]() { this->send_configuration_commit(); }, 200);
-  }
-
-  // Update current mode ONLY if a specific mode was requested (not default 255)
-  // Python reference only updates self._current_mode when mode is not None (lines 199-201)
+  // Update mode state if a specific mode was requested
   if (mode != 255) {
-    current_mode_ = static_cast<ControlMode>(target_mode);
     mode_valid_ = true;
-    
-    // Trigger callback to update UI
     if (mode_change_callback_) {
-      mode_change_callback_(current_mode_, 0, 0.0f);  // op_mode=0 (AUTO), no setpoint
+      mode_change_callback_(current_mode_, 0, 0.0f);
     }
   }
 
-  ESP_LOGI(TAG, "Pump start command sent (mode=%d)", target_mode);
+  ESP_LOGI(TAG, "Pump start command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }
 
@@ -251,61 +213,19 @@ bool ControlService::stop(uint8_t mode) {
   ESP_LOGI(TAG, "Stopping pump...");
 
   // Resolve target mode (255 = use current mode)
-  uint8_t target_mode = (mode == 255) ? static_cast<uint8_t>(current_mode_) : mode;
+  // Reference: control.py::stop() lines 208-231
+  ControlMode target = current_mode_;
+  if (mode != 255) {
+    target = static_cast<ControlMode>(mode);
+  }
   
-  // Get Class 10 mapping for this mode
-  ControlModeMapping mapping;
-  if (!get_class10_mapping(static_cast<ControlMode>(target_mode), mapping)) {
-    ESP_LOGE(TAG, "Mode %d not supported for Class 10 stop", target_mode);
+  if (!send_control_request(target, false)) {
+    ESP_LOGE(TAG, "Failed to send stop command");
     return false;
   }
 
-  // Build payload: [Header] [01=Stop] [Mode] [Suffix]
-  // Reference: control.py lines 275-280
-  uint8_t payload[12];
-  payload[0] = 0x2F;
-  payload[1] = 0x01;
-  payload[2] = 0x00;
-  payload[3] = 0x00;
-  payload[4] = 0x07;
-  payload[5] = 0x00;
-  payload[6] = 0x01;  // Flag: 0x01 = Stop
-  payload[7] = mapping.mode_byte;
-  memcpy(&payload[8], mapping.suffix, 4);
-
-  // Build Class 10 SET packet
-  // APDU: [0x0A][0x90][Sub-H][Sub-L][Obj-H][Obj-L][Payload...]
-  // Reference: control.py lines 282-285
-  uint8_t apdu[18];
-  apdu[0] = 0x0A;  // Class 10
-  apdu[1] = 0x90;  // OpSpec: SET with length 16 (0x80 | 0x10)
-  apdu[2] = 0x56;  // Sub ID high
-  apdu[3] = 0x00;  // Sub ID low
-  apdu[4] = 0x06;  // Obj ID high
-  apdu[5] = 0x01;  // Obj ID low
-  memcpy(&apdu[6], payload, 12);
-
-  // Build GENI frame
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
-
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  // Send command via transport queue
-  this->transport_.send_command(packet);
-
-  // Schedule configuration commit (after 200ms delay)
-  // Reference: control.py lines 290-293
-  if (schedule_callback_) {
-    schedule_callback_([this]() { this->send_configuration_commit(); }, 200);
-  }
-
-  // NOTE: Python reference does NOT update self._current_mode in stop() (lines 291-296)
-  // The mode doesn't change when stopping - the pump just stops running.
-  // Therefore, we do NOT set mode_valid_ or trigger the callback here.
-
-  ESP_LOGI(TAG, "Pump stop command sent (mode=%d)", target_mode);
-
+  // NOTE: Python reference does NOT update _current_mode in stop()
+  ESP_LOGI(TAG, "Pump stop command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }
 
@@ -319,47 +239,21 @@ bool ControlService::set_mode(ControlMode mode) {
   uint8_t mode_val = static_cast<uint8_t>(mode);
   ESP_LOGI(TAG, "Setting control mode to %d (%s)...", mode_val, get_mode_name(mode));
 
-  // Try Class 10 first
+  // Try Class 10 first via send_control_request (includes config commit)
   // Reference: control.py lines 388-408
   ControlModeMapping mapping;
   if (get_class10_mapping(mode, mapping)) {
-    // Build payload: [Header] [00=Run] [Mode] [Suffix]
-    uint8_t payload[12];
-    payload[0] = 0x2F;
-    payload[1] = 0x01;
-    payload[2] = 0x00;
-    payload[3] = 0x00;
-    payload[4] = 0x07;
-    payload[5] = 0x00;
-    payload[6] = 0x00;  // Flag: 0x00 = Run
-    payload[7] = mapping.mode_byte;
-    memcpy(&payload[8], mapping.suffix, 4);
-
-    // Build Class 10 SET packet
-    uint8_t apdu[18];
-    apdu[0] = 0x0A;  // Class 10
-    apdu[1] = 0x90;  // OpSpec: SET with length 16 (0x80 | 0x10)
-    apdu[2] = 0x56;  // Sub ID high
-    apdu[3] = 0x00;  // Sub ID low
-    apdu[4] = 0x06;  // Obj ID high
-    apdu[5] = 0x01;  // Obj ID low
-    memcpy(&apdu[6], payload, 12);
-
-  // Build GENI frame
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
-
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  // Send command via transport queue
-  this->transport_.send_command(packet);
+    if (!send_control_request(mode, true)) {
+      ESP_LOGW(TAG, "Failed to send Class 10 control request for mode %d", mode_val);
+      return false;
+    }
     
     current_mode_ = mode;
     mode_valid_ = true;
     
     // Trigger callback to update UI
     if (mode_change_callback_) {
-      mode_change_callback_(current_mode_, 0, 0.0f);  // op_mode=0 (AUTO), no setpoint
+      mode_change_callback_(current_mode_, 0, 0.0f);
     }
     
     ESP_LOGI(TAG, "Mode set to %s (Class 10)", get_mode_name(mode));
@@ -371,7 +265,6 @@ bool ControlService::set_mode(ControlMode mode) {
   ESP_LOGD(TAG, "Mode %d not in Class 10 map, trying Class 3...", mode_val);
 
   // Class 3 command ID mapping
-  // Reference: control.py lines 413-422
   uint8_t cmd_id = 0;
   switch (mode) {
     case ControlMode::CONSTANT_PRESSURE:
@@ -404,27 +297,22 @@ bool ControlService::set_mode(ControlMode mode) {
   }
 
   // Build Class 3 command: [0x03, 0xC1, cmd_id]
-  // Reference: control.py line 429 (uses FrameBuilder.build_command_info)
   uint8_t apdu[3];
   apdu[0] = 0x03;  // Class 3
   apdu[1] = 0xC1;  // WRITE command
   apdu[2] = cmd_id;
 
-  // Build GENI frame
   uint8_t packet_raw[32];
   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
-
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Send command via transport queue
   this->transport_.send_command(packet);
   
   current_mode_ = mode;
   mode_valid_ = true;
   
-  // Trigger callback to update UI
   if (mode_change_callback_) {
-    mode_change_callback_(current_mode_, 0, 0.0f);  // op_mode=0 (AUTO), no setpoint
+    mode_change_callback_(current_mode_, 0, 0.0f);
   }
   
   ESP_LOGI(TAG, "Mode set to %s (Class 3)", get_mode_name(mode));
@@ -560,6 +448,85 @@ void ControlService::send_configuration_commit() {
   this->transport_.send_command(packet);
 }
 
+bool ControlService::send_control_request(ControlMode mode, bool start, float setpoint) {
+  // Reference: control.py::_send_control_request() lines 233-284
+  // Payload: [2F 01 00 00 07 00][Flag][Mode][Suffix/Setpoint(4)]
+  uint8_t mode_val = static_cast<uint8_t>(mode);
+
+  ControlModeMapping mapping;
+  if (!get_class10_mapping(mode, mapping)) {
+    // Default to mode_byte 0x02 (CONSTANT_SPEED) like Python does
+    mapping.mode_byte = 0x02;
+    memcpy(mapping.suffix, "\x45\x65\x70\x00", 4);
+  }
+
+  uint8_t payload[12];
+  payload[0] = 0x2F;
+  payload[1] = 0x01;
+  payload[2] = 0x00;
+  payload[3] = 0x00;
+  payload[4] = 0x07;
+  payload[5] = 0x00;
+  payload[6] = start ? 0x00 : 0x01;  // 0=Start, 1=Stop
+  payload[7] = mapping.mode_byte;
+
+  if (!std::isnan(setpoint)) {
+    // Encode setpoint as float32 BE in suffix position
+    protocol::encode_float_be(setpoint, &payload[8]);
+  } else {
+    // Use default suffix bytes from mode map
+    memcpy(&payload[8], mapping.suffix, 4);
+  }
+
+  // OpSpec 0x90 = SET + 16 bytes (4 IDs + 12 payload)
+  uint8_t apdu[18];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x90;  // OpSpec: SET with length 16
+  apdu[2] = 0x56;  // Sub ID high (SUB_CONTROL = 0x5600)
+  apdu[3] = 0x00;  // Sub ID low
+  apdu[4] = 0x06;  // Obj ID high (OBJ_CONTROL = 0x0601)
+  apdu[5] = 0x01;  // Obj ID low
+  memcpy(&apdu[6], payload, 12);
+
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command and schedule configuration commit
+  this->transport_.send_command(packet);
+
+  if (schedule_callback_) {
+    schedule_callback_([this]() { this->send_configuration_commit(); }, 200);
+  }
+
+  return true;
+}
+
+void ControlService::set_class10_setpoint(float value, uint16_t sub_id, uint16_t obj_id) {
+  // Reference: control.py::_set_class10_setpoint() lines 1100-1132
+  // OpSpec 0x84 = SET + 4 bytes
+  // APDU: [0x0A][0x84][SubH][SubL][ObjH][ObjL][Float32BE]
+  uint8_t apdu[10];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x84;  // OpSpec: SET + 4 bytes
+  apdu[2] = (sub_id >> 8) & 0xFF;
+  apdu[3] = sub_id & 0xFF;
+  apdu[4] = (obj_id >> 8) & 0xFF;
+  apdu[5] = obj_id & 0xFF;
+  protocol::encode_float_be(value, &apdu[6]);
+
+  uint8_t packet_raw[64];
+  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 10, packet_raw);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  this->transport_.send_command(packet);
+
+  // Schedule configuration commit after setpoint write
+  if (schedule_callback_) {
+    schedule_callback_([this]() { this->send_configuration_commit(); }, 200);
+  }
+}
+
 bool ControlService::get_class10_mapping(ControlMode mode, ControlModeMapping &mapping) {
   uint8_t mode_val = static_cast<uint8_t>(mode);
   
@@ -580,159 +547,108 @@ bool ControlService::get_class10_mapping(ControlMode mode, ControlModeMapping &m
 }
 
 // ========== Setpoint Configuration Implementation ==========
+// All setpoint methods follow the Python reference two-step pattern:
+// 1. send_control_request(mode, setpoint=value) - Class 10 SET with float in suffix
+// 2. set_class10_setpoint(value, sub_id) - Class 10 SET to specific sub-ID
 
 void ControlService::set_constant_pressure_async(float value_m, std::function<void(bool)> callback) {
   ESP_LOGI(TAG, "Setting constant pressure to %.2f m...", value_m);
   
-  // Validate setpoint (0.5m to 10.0m for residential pumps)
+  // Validate setpoint (0.5m to 10.0m)
+  // Reference: control.py::set_constant_pressure() lines 550-555
   if (value_m < 0.5f || value_m > 10.0f) {
     ESP_LOGE(TAG, "Setpoint %.2f m is outside valid range (0.5-10.0 m)", value_m);
     if (callback) callback(false);
     return;
   }
   
-  // First, switch to CONSTANT_PRESSURE mode
-  if (!set_mode(ControlMode::CONSTANT_PRESSURE)) {
-    ESP_LOGE(TAG, "Failed to switch to CONSTANT_PRESSURE mode");
+  // Convert meters to Pascals (Python reference line 558)
+  float value_pa = value_m * 9806.65f;
+  
+  // Step 1: Update overall operation request (Sub 6)
+  if (!send_control_request(ControlMode::CONSTANT_PRESSURE, true, value_pa)) {
+    ESP_LOGE(TAG, "Failed to send control request for constant pressure");
     if (callback) callback(false);
     return;
   }
   
-  // Build Class 3 SET command for register 0x18
-  // Format: [Class][OpSpec][Register][Payload(4 bytes float BE)]
-  uint8_t apdu[7];
-  apdu[0] = 0x03;  // Class 3
-  apdu[1] = 0xC2;  // OpSpec for SET
-  apdu[2] = 0x18;  // Register 0x18 (Constant Pressure)
-  
-  // Encode setpoint as big-endian float
-  protocol::encode_float_be(value_m, &apdu[3]);
-  
-  // Build GENI packet
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 7, packet_raw);
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-  
-  // Send command with response handling
-  transport_.send_command(
-    packet,
-    0,  // Class 3 doesn't use Object ID
-    0,  // Class 3 doesn't use Sub-ID
-    [this, callback, value_m](bool success, const uint8_t *data, size_t len) {
-      if (success) {
-        ESP_LOGI(TAG, "✓ Constant pressure setpoint set to %.2f m", value_m);
-        // Send configuration commit to persist
-        send_configuration_commit();
-        if (callback) callback(true);
-      } else {
-        ESP_LOGW(TAG, "Failed to set constant pressure setpoint");
-        if (callback) callback(false);
-      }
-    },
-    3000  // 3 second timeout
-  );
+  // Step 2: Update specific pressure setpoint (Sub 15)
+  // Schedule after 400ms to allow control request + commit to complete
+  if (schedule_callback_) {
+    schedule_callback_([this, value_pa, value_m, callback]() {
+      set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+      ESP_LOGI(TAG, "✓ Constant pressure set to %.2f m (%.0f Pa)", value_m, value_pa);
+      if (callback) callback(true);
+    }, 400);
+  } else {
+    set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+    ESP_LOGI(TAG, "✓ Constant pressure set to %.2f m (%.0f Pa)", value_m, value_pa);
+    if (callback) callback(true);
+  }
 }
 
 void ControlService::set_constant_speed_async(float value_rpm, std::function<void(bool)> callback) {
   ESP_LOGI(TAG, "Setting constant speed to %.0f RPM...", value_rpm);
   
-  // Validate setpoint (500 to 4500 RPM for residential pumps)
+  // Validate setpoint (500 to 4500 RPM)
+  // Reference: control.py::set_constant_speed() lines 586-590
   if (value_rpm < 500.0f || value_rpm > 4500.0f) {
     ESP_LOGE(TAG, "Setpoint %.0f RPM is outside valid range (500-4500 RPM)", value_rpm);
     if (callback) callback(false);
     return;
   }
   
-  // First, switch to CONSTANT_SPEED mode
-  if (!set_mode(ControlMode::CONSTANT_SPEED)) {
-    ESP_LOGE(TAG, "Failed to switch to CONSTANT_SPEED mode");
+  // Step 1: Update overall operation request (Sub 6)
+  if (!send_control_request(ControlMode::CONSTANT_SPEED, true, value_rpm)) {
+    ESP_LOGE(TAG, "Failed to send control request for constant speed");
     if (callback) callback(false);
     return;
   }
   
-  // Build Class 3 SET command for register 0x04
-  uint8_t apdu[7];
-  apdu[0] = 0x03;  // Class 3
-  apdu[1] = 0xC2;  // OpSpec for SET
-  apdu[2] = 0x04;  // Register 0x04 (Constant Speed)
-  
-  // Encode setpoint as big-endian float
-  protocol::encode_float_be(value_rpm, &apdu[3]);
-  
-  // Build GENI packet
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 7, packet_raw);
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-  
-  // Send command with response handling
-  transport_.send_command(
-    packet,
-    0,  // Class 3 doesn't use Object ID
-    0,  // Class 3 doesn't use Sub-ID
-    [this, callback, value_rpm](bool success, const uint8_t *data, size_t len) {
-      if (success) {
-        ESP_LOGI(TAG, "✓ Constant speed setpoint set to %.0f RPM", value_rpm);
-        // Send configuration commit to persist
-        send_configuration_commit();
-        if (callback) callback(true);
-      } else {
-        ESP_LOGW(TAG, "Failed to set constant speed setpoint");
-        if (callback) callback(false);
-      }
-    },
-    3000  // 3 second timeout
-  );
+  // Step 2: Update specific speed setpoint (Sub 13)
+  if (schedule_callback_) {
+    schedule_callback_([this, value_rpm, callback]() {
+      set_class10_setpoint(value_rpm, SUB_SPEED_SETPOINT);
+      ESP_LOGI(TAG, "✓ Constant speed set to %.0f RPM", value_rpm);
+      if (callback) callback(true);
+    }, 400);
+  } else {
+    set_class10_setpoint(value_rpm, SUB_SPEED_SETPOINT);
+    ESP_LOGI(TAG, "✓ Constant speed set to %.0f RPM", value_rpm);
+    if (callback) callback(true);
+  }
 }
 
 void ControlService::set_constant_flow_async(float value_m3h, std::function<void(bool)> callback) {
   ESP_LOGI(TAG, "Setting constant flow to %.2f m³/h...", value_m3h);
   
-  // Validate setpoint (reasonable range for residential pumps: 0.1 to 5.0 m³/h)
-  if (value_m3h < 0.1f || value_m3h > 5.0f) {
-    ESP_LOGE(TAG, "Setpoint %.2f m³/h is outside valid range (0.1-5.0 m³/h)", value_m3h);
+  // Validate setpoint (0.1 to 10.0 m³/h)
+  // Reference: control.py::set_constant_flow() lines 618-622
+  if (value_m3h < 0.1f || value_m3h > 10.0f) {
+    ESP_LOGE(TAG, "Setpoint %.2f m³/h is outside valid range (0.1-10.0 m³/h)", value_m3h);
     if (callback) callback(false);
     return;
   }
   
-  // First, switch to CONSTANT_FLOW mode
-  if (!set_mode(ControlMode::CONSTANT_FLOW)) {
-    ESP_LOGE(TAG, "Failed to switch to CONSTANT_FLOW mode");
+  // Step 1: Update overall operation request (Sub 6)
+  if (!send_control_request(ControlMode::CONSTANT_FLOW, true, value_m3h)) {
+    ESP_LOGE(TAG, "Failed to send control request for constant flow");
     if (callback) callback(false);
     return;
   }
   
-  // Build Class 3 SET command for register 0x15
-  uint8_t apdu[7];
-  apdu[0] = 0x03;  // Class 3
-  apdu[1] = 0xC2;  // OpSpec for SET
-  apdu[2] = 0x15;  // Register 0x15 (Constant Flow)
-  
-  // Encode setpoint as big-endian float
-  protocol::encode_float_be(value_m3h, &apdu[3]);
-  
-  // Build GENI packet
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 7, packet_raw);
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-  
-  // Send command with response handling
-  transport_.send_command(
-    packet,
-    0,  // Class 3 doesn't use Object ID
-    0,  // Class 3 doesn't use Sub-ID
-    [this, callback, value_m3h](bool success, const uint8_t *data, size_t len) {
-      if (success) {
-        ESP_LOGI(TAG, "✓ Constant flow setpoint set to %.2f m³/h", value_m3h);
-        // Send configuration commit to persist
-        send_configuration_commit();
-        if (callback) callback(true);
-      } else {
-        ESP_LOGW(TAG, "Failed to set constant flow setpoint");
-        if (callback) callback(false);
-      }
-    },
-    3000  // 3 second timeout
-  );
+  // Step 2: Update specific flow setpoint (Sub 39)
+  if (schedule_callback_) {
+    schedule_callback_([this, value_m3h, callback]() {
+      set_class10_setpoint(value_m3h, SUB_FLOW_SETPOINT);
+      ESP_LOGI(TAG, "✓ Constant flow set to %.2f m³/h", value_m3h);
+      if (callback) callback(true);
+    }, 400);
+  } else {
+    set_class10_setpoint(value_m3h, SUB_FLOW_SETPOINT);
+    ESP_LOGI(TAG, "✓ Constant flow set to %.2f m³/h", value_m3h);
+    if (callback) callback(true);
+  }
 }
 
 void ControlService::set_temperature_range_async(float min_temp, float max_temp, bool autoadapt_enabled,
@@ -740,7 +656,7 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
   ESP_LOGI(TAG, "Setting Temperature Range Control: %.1f°C - %.1f°C (AutoAdapt: %s)...",
            min_temp, max_temp, autoadapt_enabled ? "ON" : "OFF");
   
-  // Validate temperature range (reasonable for DHW: 20°C to 70°C)
+  // Validate temperature range (20°C to 70°C)
   if (min_temp < 20.0f || min_temp > 70.0f || max_temp < 20.0f || max_temp > 70.0f) {
     ESP_LOGE(TAG, "Temperature range (%.1f-%.1f°C) is outside valid range (20-70°C)", min_temp, max_temp);
     if (callback) callback(false);
@@ -753,65 +669,62 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
     return;
   }
   
-  // First, switch to TEMPERATURE_RANGE mode
-  if (!set_mode(ControlMode::TEMPERATURE_RANGE)) {
+  // Step 1: Switch mode and set baseline (Sub 6) with min_temp as setpoint
+  // Reference: control.py::set_temperature_range_control() line 924
+  if (!send_control_request(ControlMode::TEMPERATURE_RANGE, true, min_temp)) {
     ESP_LOGE(TAG, "Failed to switch to TEMPERATURE_RANGE mode");
     if (callback) callback(false);
     return;
   }
   
-  // Build Class 10 APDU for Object 91, Sub-ID 430
+  // Step 2: Write temperature range to Object 91, Sub-ID 430
+  // Reference: control.py::set_temperature_range_control() lines 930-955
   // Payload format (Type 1012): [DeltaTempEnabled(1)][MinTemp(4)][MaxTemp(4)][TimeLimits(4)]
-  uint8_t struct_data[13];
-  struct_data[0] = autoadapt_enabled ? 0x01 : 0x00;  // DeltaTempEnabled (AutoAdapt toggle)
-  protocol::encode_float_be(min_temp, &struct_data[1]);
-  protocol::encode_float_be(max_temp, &struct_data[5]);
+  auto write_temp_range = [this, min_temp, max_temp, autoadapt_enabled, callback]() {
+    uint8_t struct_data[13];
+    struct_data[0] = autoadapt_enabled ? 0x01 : 0x00;
+    protocol::encode_float_be(min_temp, &struct_data[1]);
+    protocol::encode_float_be(max_temp, &struct_data[5]);
+    struct_data[9] = 0x05;
+    struct_data[10] = 0x3C;
+    struct_data[11] = 0x01;
+    struct_data[12] = 0x1E;
+    
+    // APDU: [Class][OpSpec][ObjID][SubH][SubL][Reserved][Type(3)][Size(2)][Data(13)]
+    uint8_t apdu[24];
+    apdu[0] = 0x0A;     // Class 10
+    apdu[1] = 0xB3;     // OpSpec 0xB3
+    apdu[2] = 91;       // Object 91
+    apdu[3] = 0x01;     // Sub-ID high (0x01AE = 430)
+    apdu[4] = 0xAE;     // Sub-ID low
+    apdu[5] = 0x00;     // Reserved
+    apdu[6] = 0xF4;     // Type 1012 byte 1
+    apdu[7] = 0x03;     // Type 1012 byte 2
+    apdu[8] = 0x00;     // Type 1012 byte 3
+    apdu[9] = 0x00;     // Size high byte
+    apdu[10] = 0x0D;    // Size low byte (13 bytes)
+    memcpy(&apdu[11], struct_data, 13);
+    
+    uint8_t packet_raw[64];
+    size_t packet_len = this->build_geni_packet(0xF8, 0xE7, apdu, 24, packet_raw);
+    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+    
+    this->transport_.send_command(packet);
+    
+    // Send configuration commit (transport queue handles ordering)
+    this->send_configuration_commit();
+    if (callback) callback(true);
+  };
   
-  // Time limits (typically 05 3C 01 1E from captures)
-  struct_data[9] = 0x05;
-  struct_data[10] = 0x3C;
-  struct_data[11] = 0x01;
-  struct_data[12] = 0x1E;
+  ESP_LOGI(TAG, "Temperature range write queued: %.1f-%.1f°C (AutoAdapt: %s)",
+           min_temp, max_temp, autoadapt_enabled ? "ON" : "OFF");
   
-  // Build APDU: [Class][OpSpec][Obj][SubH][SubL][Reserved][Type(3)][Size(2)][Data...]
-  uint8_t apdu[24];
-  apdu[0] = 0x0A;     // Class 10
-  apdu[1] = 0xB3;     // OpSpec 0xB3 (OpSpec 5, Length 19)
-  apdu[2] = 91;       // Object 91
-  apdu[3] = 0x01;     // Sub-ID high byte (0x01AE = 430)
-  apdu[4] = 0xAE;     // Sub-ID low byte
-  apdu[5] = 0x00;     // Reserved
-  apdu[6] = 0xF4;     // Type 1012 header byte 1 (0x03F4 = 1012)
-  apdu[7] = 0x03;     // Type 1012 header byte 2
-  apdu[8] = 0x00;     // Type 1012 header byte 3
-  apdu[9] = 0x00;     // Size high byte (0x0009 = 9 bytes)
-  apdu[10] = 0x09;    // Size low byte
-  memcpy(&apdu[11], struct_data, 13);
-  
-  // Build GENI packet
-  uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 24, packet_raw);
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-  
-  // Send command with response handling
-  transport_.send_command(
-    packet,
-    91,   // Object 91
-    430,  // Sub-ID 430
-    [this, callback, min_temp, max_temp, autoadapt_enabled](bool success, const uint8_t *data, size_t len) {
-      if (success) {
-        ESP_LOGI(TAG, "✓ Temperature range set to %.1f-%.1f°C (AutoAdapt: %s)",
-                 min_temp, max_temp, autoadapt_enabled ? "ON" : "OFF");
-        // Send configuration commit to persist
-        send_configuration_commit();
-        if (callback) callback(true);
-      } else {
-        ESP_LOGW(TAG, "Failed to set temperature range");
-        if (callback) callback(false);
-      }
-    },
-    5000  // 5 second timeout (complex write)
-  );
+  // Schedule step 2 after step 1 completes
+  if (schedule_callback_) {
+    schedule_callback_(write_temp_range, 400);
+  } else {
+    write_temp_range();
+  }
 }
 
 }  // namespace services
