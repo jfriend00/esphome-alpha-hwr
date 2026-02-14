@@ -239,83 +239,22 @@ bool ControlService::set_mode(ControlMode mode) {
   uint8_t mode_val = static_cast<uint8_t>(mode);
   ESP_LOGI(TAG, "Setting control mode to %d (%s)...", mode_val, get_mode_name(mode));
 
-  // Try Class 10 first via send_control_request (includes config commit)
-  // Reference: control.py lines 388-408
-  ControlModeMapping mapping;
-  if (get_class10_mapping(mode, mapping)) {
-    if (!send_control_request(mode, true)) {
-      ESP_LOGW(TAG, "Failed to send Class 10 control request for mode %d", mode_val);
-      return false;
-    }
-    
-    current_mode_ = mode;
-    mode_valid_ = true;
-    
-    // Trigger callback to update UI
-    if (mode_change_callback_) {
-      mode_change_callback_(current_mode_, 0, 0.0f);
-    }
-    
-    ESP_LOGI(TAG, "Mode set to %s (Class 10)", get_mode_name(mode));
-    return true;
+  // Always use send_control_request() which handles all modes via Class 10
+  // (defaults to mode_byte 0x02 for modes not in CLASS10_CONTROL_MAP)
+  // Reference: control.py::set_mode() lines 345-366
+  if (!send_control_request(mode, true)) {
+    ESP_LOGW(TAG, "Failed to send control request for mode %d", mode_val);
+    return false;
   }
 
-  // Fallback to Class 3 for unsupported modes
-  // Reference: control.py lines 410-434
-  ESP_LOGD(TAG, "Mode %d not in Class 10 map, trying Class 3...", mode_val);
-
-  // Class 3 command ID mapping
-  uint8_t cmd_id = 0;
-  switch (mode) {
-    case ControlMode::CONSTANT_PRESSURE:
-      cmd_id = 0x18;
-      break;
-    case ControlMode::PROPORTIONAL_PRESSURE:
-      cmd_id = 0x17;
-      break;
-    case ControlMode::CONSTANT_SPEED:
-      cmd_id = 0x04;
-      break;
-    case ControlMode::AUTO_ADAPT:
-      cmd_id = 0x06;
-      break;
-    case ControlMode::CONSTANT_FLOW:
-      cmd_id = 0x15;
-      break;
-    case ControlMode::AUTO_ADAPT_RADIATOR:
-      cmd_id = 0x1E;
-      break;
-    case ControlMode::AUTO_ADAPT_UNDERFLOOR:
-      cmd_id = 0x1F;
-      break;
-    case ControlMode::AUTO_ADAPT_COMBINED:
-      cmd_id = 0x20;
-      break;
-    default:
-      ESP_LOGE(TAG, "Unsupported control mode: %d", mode_val);
-      return false;
-  }
-
-  // Build Class 3 command: [0x03, 0xC1, cmd_id]
-  uint8_t apdu[3];
-  apdu[0] = 0x03;  // Class 3
-  apdu[1] = 0xC1;  // WRITE command
-  apdu[2] = cmd_id;
-
-  uint8_t packet_raw[32];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  this->transport_.send_command(packet);
-  
   current_mode_ = mode;
   mode_valid_ = true;
-  
+
   if (mode_change_callback_) {
     mode_change_callback_(current_mode_, 0, 0.0f);
   }
-  
-  ESP_LOGI(TAG, "Mode set to %s (Class 3)", get_mode_name(mode));
+
+  ESP_LOGI(TAG, "Mode set to %s", get_mode_name(mode));
   return true;
 }
 
