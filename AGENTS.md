@@ -736,3 +736,68 @@ To fully test all mode update paths:
 ✅ **DEPLOYMENT** - Firmware running on hardware (10.0.1.86)
 ✅ **NO FAKE DATA** - Only publishes real values from pump, never hardcoded defaults
 ✅ **IMMEDIATE FEEDBACK** - Updates instantly after user control commands
+
+
+### Session: 2026-02-14 - Code Review, Bug Fixes, and Control Method Completion
+
+**Goal:** Full code review against Python reference, fix bugs, implement missing control methods, fix time sync packet format.
+
+**What We Did:**
+
+1. **Code Review & 6 Bug Fixes (commit 555024b)**
+   * Fixed CONSTANT_FLOW mode_byte: 0x00 → 0x08
+   * Fixed DHW_ON_OFF suffix bytes: {0x38,0xC6,0x70,0x00} → {0x38,0xC6,0x76,0xEF}
+   * Fixed Temperature Range APDU size field: 0x09 → 0x0D (13 bytes)
+   * Fixed Constant Pressure: now converts meters to Pascals (m × 9806.65) per Python reference
+   * Fixed Constant Flow max range: 5.0 → 10.0 m³/h
+   * Added `send_control_request()` and `set_class10_setpoint()` helpers matching Python 1:1
+   * Refactored start/stop/set_mode to use send_control_request()
+
+2. **Simplified set_mode() & YAML Fix (commit 9843406)**
+   * Removed unnecessary 60-line Class 3 fallback from set_mode(); Python always uses Class 10
+   * Fixed flow setpoint max_value in YAML from 5.0 → 10.0
+   * Added SNTP time component to hwr-pump.yaml
+
+3. **Added Missing Control Methods (commit b59da77)**
+   * `set_proportional_pressure_async()` — Mode 1 with m→Pa conversion, 2-step Class 10
+   * `set_cycle_time_control_async()` — Object 91 Sub 430 structured write (Type 1012)
+   * Added YAML controls: proportional pressure slider, cycle time on/off sliders
+   * Added wrapper methods in alpha_hwr.h
+
+4. **Rewrote Time Sync Packet Format (commit 0fe295c)**
+   * Old format was completely wrong: raw Class 7 style `[0x07, 0x5E, 0x64, 0x70, datetime(19)]`
+   * New format uses proper Class 10 SET: `build_data_object_set(0x5E00, 0x6401, data(16))`
+   * Includes Type 322 header `[0x41, 0x02, 0x00, 0x00, 0x0B, 0x01]` before datetime
+   * Changed to fire-and-forget (pump ACK lacks Obj/Sub IDs for matching)
+   * Eliminates 5-second transport queue blocking every update cycle
+
+5. **Fixed OpSpec 0x09 Alarm/Warning Handling (commit 1848412)**
+   * Added handler for OpSpec 0x09 register-read response format
+   * Uses poll-order toggle to distinguish alarms (first) from warnings (second)
+   * Passes actual opspec to decoder for correct data offset (13 vs 10)
+   * Eliminates "Unhandled OpSpec: 0x09" warning spam
+
+**Debugging Notes:**
+
+* **WiFi "broken" issue** was NOT a code bug — 12+ orphaned `esphome logs` processes from prior sessions were flooding ESP32's API port. Always check `ps aux | grep "esphome logs"` before debugging.
+* **Device IP changed** from 10.0.1.86 to 10.0.0.235 during this session (DHCP lease renewal).
+
+**Verification Status:**
+
+✅ Both YAML configs compile successfully
+✅ OTA flash and device stable on 10.0.0.235
+✅ All telemetry streaming: Motor, Flow/Pressure, Temperature, Alarms, Warnings
+✅ Control mode detected from passive notifications (TEMPERATURE_RANGE)
+✅ Schedule polling working (disabled state)
+✅ No more OpSpec 0x09 warnings
+✅ No more time sync timeout blocking
+
+**Git Log (newest first):**
+```
+1848412 fix: handle OpSpec 0x09 alarm/warning responses
+0fe295c fix: rewrite time service SET packet to match Python reference
+b59da77 feat: add proportional pressure and cycle time control methods
+9843406 fix: simplify set_mode() and correct flow setpoint max
+555024b fix: align control service with Python reference implementation
+7d6a162 (origin/main) control mode fixes
+```
