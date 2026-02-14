@@ -119,16 +119,10 @@ void AlphaHwrComponent::setup() {
         this->update_schedule_display();
       });
       
-      // Query control mode after authentication (since passive notification may not come)
+      // Query control mode and setpoints after authentication
       this->set_timeout(5000, [this]() {
-        ESP_LOGI(TAG, "Querying control mode from pump...");
-        this->control_service_.get_mode_async([this](bool success, services::ControlMode mode) {
-          if (success) {
-            ESP_LOGI(TAG, "✓ Control mode query successful: %s", services::ControlService::get_mode_name(mode));
-          } else {
-            ESP_LOGW(TAG, "Control mode query failed - will remain unknown until mode change");
-          }
-        });
+        ESP_LOGI(TAG, "Reading control mode and setpoints from pump...");
+        this->control_service_.read_setpoints_from_pump();
       });
     });
   

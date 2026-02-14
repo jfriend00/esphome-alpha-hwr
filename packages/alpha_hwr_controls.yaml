@@ -155,6 +155,7 @@ select:
     id: pump_mode_select
     icon: "mdi:tune"
     optimistic: false  # Read actual state from pump state tracking
+    update_interval: 1s
     options:
       - "Cycle Time Control"
       - "Constant Speed"
@@ -229,8 +230,16 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      auto mode = id(pump).get_control_mode();
+      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
+        float sp = id(pump).get_cached_setpoint();
+        if (!std::isnan(sp)) return sp;
+      }
+      return {};
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant pressure setpoint to %.2f m", x);
@@ -252,8 +261,16 @@ number:
     max_value: 4500
     step: 100
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      auto mode = id(pump).get_control_mode();
+      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
+        float sp = id(pump).get_cached_setpoint();
+        if (!std::isnan(sp)) return sp;
+      }
+      return {};
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant speed setpoint to %.0f RPM", x);
@@ -275,8 +292,16 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      auto mode = id(pump).get_control_mode();
+      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
+        float sp = id(pump).get_cached_setpoint();
+        if (!std::isnan(sp)) return sp;
+      }
+      return {};
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant flow setpoint to %.2f m³/h", x);
@@ -298,15 +323,20 @@ number:
     max_value: 70
     step: 1
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      float val = id(pump).get_cached_temp_min();
+      if (!std::isnan(val)) return val;
+      return {};
     set_action:
       - lambda: |-
-          // Get the current max temp (or use default 45°C if not set)
-          float max_temp = 45.0f;  // TODO: Read from stored state
-          bool autoadapt = true;    // TODO: Read from stored state
+          float max_temp = id(pump).get_cached_temp_max();
+          if (std::isnan(max_temp)) max_temp = x + 10.0f;  // Reasonable default if max not yet read
+          bool autoadapt = true;
           
-          ESP_LOGI("number", "Setting temperature range min to %.1f°C", x);
+          ESP_LOGI("number", "Setting temperature range: %.1f°C - %.1f°C", x, max_temp);
           id(pump).set_temperature_range(x, max_temp, autoadapt, [](bool success) {
             if (success) {
               ESP_LOGI("number", "✓ Temperature range updated successfully");
@@ -325,15 +355,20 @@ number:
     max_value: 70
     step: 1
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      float val = id(pump).get_cached_temp_max();
+      if (!std::isnan(val)) return val;
+      return {};
     set_action:
       - lambda: |-
-          // Get the current min temp (or use default 35°C if not set)
-          float min_temp = 35.0f;  // TODO: Read from stored state
-          bool autoadapt = true;    // TODO: Read from stored state
+          float min_temp = id(pump).get_cached_temp_min();
+          if (std::isnan(min_temp)) min_temp = x - 10.0f;  // Reasonable default if min not yet read
+          bool autoadapt = true;
           
-          ESP_LOGI("number", "Setting temperature range max to %.1f°C", x);
+          ESP_LOGI("number", "Setting temperature range: %.1f°C - %.1f°C", min_temp, x);
           id(pump).set_temperature_range(min_temp, x, autoadapt, [](bool success) {
             if (success) {
               ESP_LOGI("number", "✓ Temperature range updated successfully");
@@ -352,8 +387,16 @@ number:
     max_value: 10.0
     step: 0.1
     mode: slider
-    optimistic: true
+    optimistic: false
+    update_interval: 5s
     disabled_by_default: false
+    lambda: |-
+      auto mode = id(pump).get_control_mode();
+      if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
+        float sp = id(pump).get_cached_setpoint();
+        if (!std::isnan(sp)) return sp;
+      }
+      return {};
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting proportional pressure setpoint to %.2f m", x);
@@ -379,7 +422,8 @@ number:
     disabled_by_default: false
     set_action:
       - lambda: |-
-          uint8_t off_min = 15;  // TODO: Read from stored state
+          float off_val = id(cycle_time_off).state;
+          uint8_t off_min = std::isnan(off_val) ? 15 : (uint8_t)off_val;
           ESP_LOGI("number", "Setting cycle time: %.0f min ON, %d min OFF", x, off_min);
           id(pump).set_cycle_time_control((uint8_t)x, off_min, [](bool success) {
             if (success) {
@@ -403,7 +447,8 @@ number:
     disabled_by_default: false
     set_action:
       - lambda: |-
-          uint8_t on_min = 5;  // TODO: Read from stored state
+          float on_val = id(cycle_time_on).state;
+          uint8_t on_min = std::isnan(on_val) ? 5 : (uint8_t)on_val;
           ESP_LOGI("number", "Setting cycle time: %d min ON, %.0f min OFF", on_min, x);
           id(pump).set_cycle_time_control(on_min, (uint8_t)x, [](bool success) {
             if (success) {

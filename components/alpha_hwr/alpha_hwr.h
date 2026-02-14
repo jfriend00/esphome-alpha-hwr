@@ -223,6 +223,11 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool get_remote_enabled() const { return control_service_.get_remote_enabled(); }
    static const char* get_control_mode_name(services::ControlMode mode) { return services::ControlService::get_mode_name(mode); }
    
+   // Cached setpoint getters (NAN = not yet read from pump)
+   float get_cached_setpoint() const { return control_service_.get_cached_setpoint(); }
+   float get_cached_temp_min() const { return control_service_.get_cached_temp_min(); }
+   float get_cached_temp_max() const { return control_service_.get_cached_temp_max(); }
+   
    // Schedule service access methods (for ESPHome buttons/lambdas)
    bool enable_schedule() { return schedule_service_.enable(); }
    bool disable_schedule() { return schedule_service_.disable(); }

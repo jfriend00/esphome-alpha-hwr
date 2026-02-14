@@ -268,6 +268,22 @@ class ControlService {
     */
    bool get_remote_enabled() const { return is_remote_mode_enabled_; }
    
+   /** Get cached setpoint for current mode (NAN if not yet read from pump). */
+   float get_cached_setpoint() const { return cached_setpoint_; }
+   /** Get cached temperature range min (NAN if not yet read). */
+   float get_cached_temp_min() const { return cached_temp_min_; }
+   /** Get cached temperature range max (NAN if not yet read). */
+   float get_cached_temp_max() const { return cached_temp_max_; }
+   /** Get cached operation mode (0xFF if not yet read). */
+   uint8_t get_cached_operation_mode() const { return cached_operation_mode_; }
+   
+   /**
+    * Read current mode, setpoint, and temperature range from pump.
+    * Queries Object 86 Sub 6 and (for temp range) Object 91 Sub 430.
+    * Results are cached and accessible via getters.
+    */
+   void read_setpoints_from_pump();
+
    // ========== Setpoint Configuration Methods ==========
    
    /**
@@ -371,6 +387,12 @@ class ControlService {
     bool is_remote_mode_enabled_{false};  // Track remote mode state
     std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
     std::function<void(ControlMode, uint8_t, float)> mode_change_callback_;
+    
+    // Cached setpoint values read from pump (NAN = not yet read)
+    float cached_setpoint_{NAN};           // Current mode's setpoint from passive notification
+    float cached_temp_min_{NAN};           // Temperature range min (Object 91 Sub 430)
+    float cached_temp_max_{NAN};           // Temperature range max (Object 91 Sub 430)
+    uint8_t cached_operation_mode_{0xFF};  // Operation mode from notification
   
   // Sub-ID constants for setpoint registers (Reference: control.py lines 137-141)
   static constexpr uint16_t SUB_SPEED_SETPOINT = 13;

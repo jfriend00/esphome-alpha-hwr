@@ -415,12 +415,8 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
       return true;
      } else {
        // This is a Class 10 DataObject response but doesn't match what we're waiting for
-       // This means the pump sent us a different object's response
-       // Log it but DON'T consume it - let it pass to registered handlers or telemetry processing
-       ESP_LOGD(TAG, "Class 10 DataObject received (Obj %d Sub %d) but doesn't match expected (Obj %d Sub %d), continuing to wait",
-                packet_obj_id, packet_sub_id, cmd.expect_obj_id, cmd.expect_sub_id);
-       // Return false so it can be processed by other handlers
-       // We stay in AWAITING_RESPONSE state and keep waiting
+       ESP_LOGD(TAG, "Class 10 DataObject MISMATCH: got Obj=0x%04X Sub=0x%04X, want Obj=0x%04X Sub=0x%04X, OpSpec=0x%02X",
+                packet_obj_id, packet_sub_id, cmd.expect_obj_id, cmd.expect_sub_id, opspec);
        return false;
      }
   }

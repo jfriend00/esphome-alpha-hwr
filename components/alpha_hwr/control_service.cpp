@@ -64,6 +64,8 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
   // Update internal state
   current_mode_ = static_cast<ControlMode>(mode);
   mode_valid_ = true;  // Mark mode as valid - we received it from the pump
+  cached_setpoint_ = setpoint;
+  cached_operation_mode_ = operation_mode;
   
   ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, setpoint=%.2f)",
            get_mode_name(current_mode_), operation_mode, setpoint);
@@ -72,6 +74,61 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
   if (mode_change_callback_) {
     mode_change_callback_(current_mode_, operation_mode, setpoint);
   }
+}
+
+void ControlService::read_setpoints_from_pump() {
+  // Read Object 86 Sub 6 to get current mode + setpoint
+  // Then for Temperature Range, also read Object 91 Sub 430 for min/max temps
+  // Reference: control.py::get_mode() lines 368-530
+  get_mode_async([this](bool success, ControlMode mode) {
+    if (!success) {
+      ESP_LOGW(TAG, "Failed to read setpoints from pump");
+      return;
+    }
+    
+    // For Temperature Range mode, also read Object 91 Sub 430 for min/max
+    if (mode == ControlMode::TEMPERATURE_RANGE) {
+      ESP_LOGI(TAG, "Reading temperature range from Object 91 Sub 430...");
+      
+      uint8_t apdu[5];
+      apdu[0] = 0x0A;  // Class 10
+      apdu[1] = 0x03;  // OpSpec: READ
+      apdu[2] = 91;    // Object 91
+      apdu[3] = 0x01;  // Sub 430 high byte (430 = 0x01AE)
+      apdu[4] = 0xAE;  // Sub 430 low byte
+      
+      uint8_t packet_raw[64];
+      size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+      std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+      
+      // Response should have type for Object 91
+      this->transport_.send_command(packet, 0, 0,
+        [this](bool ok, const uint8_t* payload, size_t payload_len) {
+          if (!ok || payload_len < 12) {
+            ESP_LOGW(TAG, "Failed to read temp range (success=%d, len=%zu)", ok, payload_len);
+            return;
+          }
+          
+          // Skip 3-byte header [00 00 XX] if present
+          int offset = 0;
+          if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+            offset = 3;
+          }
+          
+          if (payload_len >= (size_t)(offset + 9)) {
+            // [delta_enabled(1)][min_temp(4 float BE)][max_temp(4 float BE)]
+            cached_temp_min_ = protocol::decode_float_be(&payload[offset + 1]);
+            cached_temp_max_ = protocol::decode_float_be(&payload[offset + 5]);
+            ESP_LOGI(TAG, "Temperature range: min=%.1f°C, max=%.1f°C", cached_temp_min_, cached_temp_max_);
+            
+            // Trigger mode change callback to update UI
+            if (mode_change_callback_) {
+              mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
+            }
+          }
+        }, 5000);
+    }
+  });
 }
 
 bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_complete) {
@@ -143,8 +200,27 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
             // Validate control mode value
             if (control_mode_byte <= static_cast<uint8_t>(ControlMode::NONE)) {
               current_mode_ = static_cast<ControlMode>(control_mode_byte);
-              ESP_LOGI(TAG, "Control mode updated to %d (%s)", 
-                control_mode_byte, get_mode_name(current_mode_));
+              mode_valid_ = true;
+              cached_operation_mode_ = operation_mode;
+              
+              // Extract and cache setpoint (big-endian float at offset+3)
+              if (payload_len >= (size_t)(offset + 7)) {
+                cached_setpoint_ = protocol::decode_float_be(&payload[offset + 3]);
+                
+                // Convert pressure setpoints from Pascals to meters
+                if (current_mode_ == ControlMode::CONSTANT_PRESSURE || 
+                    current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
+                  cached_setpoint_ /= 9806.65f;
+                }
+              }
+              
+              ESP_LOGI(TAG, "Control mode updated to %d (%s), setpoint=%.2f", 
+                control_mode_byte, get_mode_name(current_mode_), cached_setpoint_);
+              
+              // Notify mode change
+              if (mode_change_callback_) {
+                mode_change_callback_(current_mode_, operation_mode, cached_setpoint_);
+              }
               
               if (on_complete) {
                 on_complete(true, current_mode_);
@@ -517,11 +593,13 @@ void ControlService::set_constant_pressure_async(float value_m, std::function<vo
   if (schedule_callback_) {
     schedule_callback_([this, value_pa, value_m, callback]() {
       set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+      cached_setpoint_ = value_m;
       ESP_LOGI(TAG, "✓ Constant pressure set to %.2f m (%.0f Pa)", value_m, value_pa);
       if (callback) callback(true);
     }, 400);
   } else {
     set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+    cached_setpoint_ = value_m;
     ESP_LOGI(TAG, "✓ Constant pressure set to %.2f m (%.0f Pa)", value_m, value_pa);
     if (callback) callback(true);
   }
@@ -549,11 +627,13 @@ void ControlService::set_constant_speed_async(float value_rpm, std::function<voi
   if (schedule_callback_) {
     schedule_callback_([this, value_rpm, callback]() {
       set_class10_setpoint(value_rpm, SUB_SPEED_SETPOINT);
+      cached_setpoint_ = value_rpm;
       ESP_LOGI(TAG, "✓ Constant speed set to %.0f RPM", value_rpm);
       if (callback) callback(true);
     }, 400);
   } else {
     set_class10_setpoint(value_rpm, SUB_SPEED_SETPOINT);
+    cached_setpoint_ = value_rpm;
     ESP_LOGI(TAG, "✓ Constant speed set to %.0f RPM", value_rpm);
     if (callback) callback(true);
   }
@@ -581,11 +661,13 @@ void ControlService::set_constant_flow_async(float value_m3h, std::function<void
   if (schedule_callback_) {
     schedule_callback_([this, value_m3h, callback]() {
       set_class10_setpoint(value_m3h, SUB_FLOW_SETPOINT);
+      cached_setpoint_ = value_m3h;
       ESP_LOGI(TAG, "✓ Constant flow set to %.2f m³/h", value_m3h);
       if (callback) callback(true);
     }, 400);
   } else {
     set_class10_setpoint(value_m3h, SUB_FLOW_SETPOINT);
+    cached_setpoint_ = value_m3h;
     ESP_LOGI(TAG, "✓ Constant flow set to %.2f m³/h", value_m3h);
     if (callback) callback(true);
   }
@@ -651,6 +733,11 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
     
     this->transport_.send_command(packet);
     
+    // Cache temperature range values
+    cached_temp_min_ = min_temp;
+    cached_temp_max_ = max_temp;
+    cached_setpoint_ = min_temp;
+    
     // Send configuration commit (transport queue handles ordering)
     this->send_configuration_commit();
     if (callback) callback(true);
@@ -692,13 +779,15 @@ void ControlService::set_proportional_pressure_async(float value_m, std::functio
   // Step 2: Update specific pressure setpoint (Sub 15)
   // Reference: control.py::set_proportional_pressure() lines 665-667
   if (schedule_callback_) {
-    schedule_callback_([this, value_pa, callback]() {
+    schedule_callback_([this, value_pa, value_m, callback]() {
       set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+      cached_setpoint_ = value_m;
       ESP_LOGI(TAG, "✓ Proportional pressure set to %.2f m (%.0f Pa)", value_pa / 9806.65f, value_pa);
       if (callback) callback(true);
     }, 400);
   } else {
     set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+    cached_setpoint_ = value_m;
     ESP_LOGI(TAG, "✓ Proportional pressure set to %.2f m (%.0f Pa)", value_pa / 9806.65f, value_pa);
     if (callback) callback(true);
   }

@@ -352,9 +352,10 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
-  // Use wildcard match (0, 0) for response — matches any Class 10 DataObject response
-  // This mirrors the Python reference which uses match_class10_response(p[4] == 0x0A)
-  this->transport_.send_command(packet, 0, 0, [this, on_complete, layer](bool success, const uint8_t* payload, size_t payload_len) {
+  // Match on ClockProgramEntry type (0xDE01 = 56833) in response Object ID field
+  // The pump responds with ObjID=0xDE01, SubID=0 (SubID 0 quirk handled by transport)
+  this->transport_.send_command(packet, 0xDE01, 0, [this, on_complete, layer](bool success, const uint8_t* payload, size_t payload_len) {
+    ESP_LOGI(TAG, "Schedule entry read callback: success=%d, payload_len=%zu", success, payload_len);
     std::vector<ScheduleEntry> entries;
     if (!success) {
       ESP_LOGW(TAG, "Failed to read schedule entries for layer %d (timeout)", layer);
