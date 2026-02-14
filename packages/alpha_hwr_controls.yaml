@@ -28,12 +28,6 @@ switch:
     name: "Pump Running"
     icon: "mdi:pump"
     optimistic: true
-    # Use Motor Speed sensor to determine actual state (overrides optimistic after update)
-    lambda: |-
-      if (id(motor_speed).has_state()) {
-        return id(motor_speed).state > 0;
-      }
-      return false;
     turn_on_action:
       - lambda: |-
           ESP_LOGI("switch", "Starting pump...");

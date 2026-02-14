@@ -356,7 +356,8 @@ size_t ControlService::build_geni_packet(uint8_t source, uint8_t service_id,
   memcpy(&packet_out[4], apdu, apdu_len);
   
   // Calculate CRC over [LEN][ServiceID][Source][APDU]
-  uint16_t crc = protocol::calc_crc16(&packet_out[1], length + 1);
+  // Must use calc_crc16_read() (XOR 0xFFFF finalization), matching Python reference
+  uint16_t crc = protocol::calc_crc16_read(&packet_out[1], length + 1);
   
   packet_out[4 + apdu_len] = (crc >> 8) & 0xFF;
   packet_out[5 + apdu_len] = crc & 0xFF;
