@@ -390,3 +390,95 @@ number:
               ESP_LOGW("number", "Failed to update temperature range");
             }
           });
+
+  # Proportional Pressure Setpoint (Mode 1)
+  - platform: template
+    name: "Proportional Pressure Setpoint"
+    id: proportional_pressure_setpoint
+    icon: "mdi:gauge"
+    unit_of_measurement: "m"
+    min_value: 0.5
+    max_value: 10.0
+    step: 0.1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in PROPORTIONAL_PRESSURE mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
+        return {};  // Hide when not in this mode
+      }
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          ESP_LOGI("number", "Setting proportional pressure setpoint to %.2f m", x);
+          id(pump).set_proportional_pressure(x, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "Proportional pressure setpoint updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update proportional pressure setpoint");
+            }
+          });
+
+  # Cycle Time ON Duration (Mode 25 - DHW Cycle Time Control)
+  - platform: template
+    name: "Cycle Time ON"
+    id: cycle_time_on
+    icon: "mdi:timer-play"
+    unit_of_measurement: "min"
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in DHW_ON_OFF mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
+        return {};  // Hide when not in this mode
+      }
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          uint8_t off_min = 15;  // TODO: Read from stored state
+          ESP_LOGI("number", "Setting cycle time: %.0f min ON, %d min OFF", x, off_min);
+          id(pump).set_cycle_time_control((uint8_t)x, off_min, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "Cycle time updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update cycle time");
+            }
+          });
+
+  # Cycle Time OFF Duration (Mode 25 - DHW Cycle Time Control)
+  - platform: template
+    name: "Cycle Time OFF"
+    id: cycle_time_off
+    icon: "mdi:timer-pause"
+    unit_of_measurement: "min"
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: slider
+    optimistic: false
+    disabled_by_default: false
+    lambda: |-
+      // Only show when in DHW_ON_OFF mode
+      if (!id(pump).is_mode_valid()) return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::DHW_ON_OFF) {
+        return {};  // Hide when not in this mode
+      }
+      return {};  // Return empty until we implement reading
+    set_action:
+      - lambda: |-
+          uint8_t on_min = 5;  // TODO: Read from stored state
+          ESP_LOGI("number", "Setting cycle time: %d min ON, %.0f min OFF", on_min, x);
+          id(pump).set_cycle_time_control(on_min, (uint8_t)x, [](bool success) {
+            if (success) {
+              ESP_LOGI("number", "Cycle time updated successfully");
+            } else {
+              ESP_LOGW("number", "Failed to update cycle time");
+            }
+          });

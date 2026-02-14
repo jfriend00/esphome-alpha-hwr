@@ -666,6 +666,117 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
   }
 }
 
+void ControlService::set_proportional_pressure_async(float value_m, std::function<void(bool)> callback) {
+  ESP_LOGI(TAG, "Setting proportional pressure to %.2f m...", value_m);
+  
+  // Validate setpoint (0.5 to 10.0 m)
+  // Reference: control.py::set_proportional_pressure() lines 649-654
+  if (value_m < 0.5f || value_m > 10.0f) {
+    ESP_LOGE(TAG, "Setpoint %.2f m is outside valid range (0.5-10.0 m)", value_m);
+    if (callback) callback(false);
+    return;
+  }
+  
+  // Convert meters to Pascals (same conversion as constant_pressure)
+  // Reference: control.py::set_proportional_pressure() line 657
+  float value_pa = value_m * 9806.65f;
+  
+  // Step 1: Update overall operation request (Sub 6) with Pa value
+  if (!send_control_request(ControlMode::PROPORTIONAL_PRESSURE, true, value_pa)) {
+    ESP_LOGE(TAG, "Failed to send control request for proportional pressure");
+    if (callback) callback(false);
+    return;
+  }
+  
+  // Step 2: Update specific pressure setpoint (Sub 15)
+  // Reference: control.py::set_proportional_pressure() lines 665-667
+  if (schedule_callback_) {
+    schedule_callback_([this, value_pa, callback]() {
+      set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+      ESP_LOGI(TAG, "✓ Proportional pressure set to %.2f m (%.0f Pa)", value_pa / 9806.65f, value_pa);
+      if (callback) callback(true);
+    }, 400);
+  } else {
+    set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
+    ESP_LOGI(TAG, "✓ Proportional pressure set to %.2f m (%.0f Pa)", value_pa / 9806.65f, value_pa);
+    if (callback) callback(true);
+  }
+}
+
+void ControlService::set_cycle_time_control_async(uint8_t on_minutes, uint8_t off_minutes,
+                                                    std::function<void(bool)> callback) {
+  ESP_LOGI(TAG, "Setting Cycle Time Control: %d min on, %d min off...", on_minutes, off_minutes);
+  
+  // Validate ranges (1-60 minutes)
+  // Reference: control.py::set_cycle_time_control() lines 1001-1003
+  if (on_minutes < 1 || on_minutes > 60 || off_minutes < 1 || off_minutes > 60) {
+    ESP_LOGE(TAG, "Cycle times must be between 1 and 60 minutes (got on=%d, off=%d)", on_minutes, off_minutes);
+    if (callback) callback(false);
+    return;
+  }
+  
+  // Step 1: Switch mode via send_control_request(DHW_ON_OFF)
+  // Reference: control.py::set_cycle_time_control() lines 1006-1007
+  if (!send_control_request(ControlMode::DHW_ON_OFF, true)) {
+    ESP_LOGE(TAG, "Failed to switch to DHW_ON_OFF mode");
+    if (callback) callback(false);
+    return;
+  }
+  
+  // Step 2: Write cycle time configuration to Object 91, Sub-ID 430
+  // Reference: control.py::set_cycle_time_control() lines 1010-1055
+  auto write_cycle_config = [this, on_minutes, off_minutes, callback]() {
+    // Payload: [00 00][OFF_min][01 42 02][ON_min][FB]  (8 bytes)
+    uint8_t struct_payload[8] = {
+      0x00, 0x00,           // Header
+      off_minutes,          // Byte 2: OFF time
+      0x01, 0x42, 0x02,     // Fixed magic bytes
+      on_minutes,           // Byte 6: ON time
+      0xFB                  // Fixed suffix
+    };
+    
+    // APDU: [Class][OpSpec][ObjID][SubH][SubL][Reserved][Type_H][Type_L][Size][Payload(8)]
+    // Object 91, Sub-ID 430 (0x01AE), Type 1012 (0x03F4)
+    // Using build_data_object_set equivalent format
+    uint8_t data[11];  // Type(2) + Size(1) + Payload(8)
+    data[0] = 0x03;    // Type high: 1012 = 0x03F4
+    data[1] = 0xF4;    // Type low
+    data[2] = 0x08;    // Size: 8 bytes
+    memcpy(&data[3], struct_payload, 8);
+    
+    // Build full APDU matching build_data_object_set format:
+    // [0x0A][OpSpec][SubH][SubL][ObjH][ObjL][data...]
+    // sub_id=0x01AE (430), obj_id=91 (0x005B)
+    // standard_len = 1(svc) + 1(src) + 1(class) + 1(opspec) + 4(IDs) + len(data) = 8 + 11 = 19
+    // op_bits = 19 - 4 = 15 => OpSpec = 0x80 | 15 = 0x8F
+    uint8_t apdu[17];  // class(1) + opspec(1) + IDs(4) + data(11)
+    apdu[0] = 0x0A;    // Class 10
+    apdu[1] = 0x8F;    // OpSpec: SET + 15 bytes (4 IDs + 11 data)
+    apdu[2] = 0x01;    // Sub-ID high (0x01AE = 430)
+    apdu[3] = 0xAE;    // Sub-ID low
+    apdu[4] = 0x00;    // Obj-ID high (91 = 0x005B)
+    apdu[5] = 0x5B;    // Obj-ID low
+    memcpy(&apdu[6], data, 11);
+    
+    uint8_t packet_raw[64];
+    size_t packet_len = this->build_geni_packet(0xF8, 0xE7, apdu, 17, packet_raw);
+    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+    
+    this->transport_.send_command(packet);
+    this->send_configuration_commit();
+    
+    ESP_LOGI(TAG, "✓ Cycle time set: %d min ON, %d min OFF", on_minutes, off_minutes);
+    if (callback) callback(true);
+  };
+  
+  // Schedule step 2 after step 1 completes
+  if (schedule_callback_) {
+    schedule_callback_(write_cycle_config, 400);
+  } else {
+    write_cycle_config();
+  }
+}
+
 }  // namespace services
 }  // namespace alpha_hwr
 }  // namespace esphome

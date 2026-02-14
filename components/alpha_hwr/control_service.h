@@ -346,6 +346,23 @@ class ControlService {
    void set_temperature_range_async(float min_temp, float max_temp, bool autoadapt_enabled,
                                      std::function<void(bool)> callback);
    
+   /**
+    * Set proportional pressure mode with setpoint.
+    * Converts meters to Pascals (m × 9806.65) before sending.
+    * Two-step pattern: send_control_request + set_class10_setpoint(Sub 15).
+    * Reference: control.py::set_proportional_pressure() lines 635-668
+    */
+   void set_proportional_pressure_async(float value_m, std::function<void(bool)> callback);
+   
+   /**
+    * Set cycle time control mode (Mode 25 / DHW_ON_OFF_CONTROL).
+    * Configures pump to cycle on/off at specified intervals.
+    * Writes config to Object 91, Sub-ID 430.
+    * Reference: control.py::set_cycle_time_control() lines 982-1061
+    */
+   void set_cycle_time_control_async(uint8_t on_minutes, uint8_t off_minutes,
+                                      std::function<void(bool)> callback);
+   
    private:
     core::Transport &transport_;
     core::Session &session_;

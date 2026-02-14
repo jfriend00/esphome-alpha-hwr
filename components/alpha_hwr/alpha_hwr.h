@@ -210,6 +210,12 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    void set_temperature_range(float min_temp, float max_temp, bool autoadapt, std::function<void(bool)> callback) {
      control_service_.set_temperature_range_async(min_temp, max_temp, autoadapt, callback);
    }
+   void set_proportional_pressure(float value_m, std::function<void(bool)> callback) {
+     control_service_.set_proportional_pressure_async(value_m, callback);
+   }
+   void set_cycle_time_control(uint8_t on_minutes, uint8_t off_minutes, std::function<void(bool)> callback) {
+     control_service_.set_cycle_time_control_async(on_minutes, off_minutes, callback);
+   }
    
    // State tracking getters
   services::ControlMode get_control_mode() const { return control_service_.get_current_mode(); }
