@@ -227,6 +227,7 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    float get_cached_setpoint() const { return control_service_.get_cached_setpoint(); }
    float get_cached_temp_min() const { return control_service_.get_cached_temp_min(); }
    float get_cached_temp_max() const { return control_service_.get_cached_temp_max(); }
+   int8_t get_cached_autoadapt() const { return control_service_.get_cached_autoadapt(); }
    
    // Schedule service access methods (for ESPHome buttons/lambdas)
    bool enable_schedule() { return schedule_service_.enable(); }

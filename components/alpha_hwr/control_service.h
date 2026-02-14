@@ -276,6 +276,8 @@ class ControlService {
    float get_cached_temp_max() const { return cached_temp_max_; }
    /** Get cached operation mode (0xFF if not yet read). */
    uint8_t get_cached_operation_mode() const { return cached_operation_mode_; }
+   /** Get cached autoadapt enabled state (-1=unknown, 0=off, 1=on). */
+   int8_t get_cached_autoadapt() const { return cached_autoadapt_; }
    
    /**
     * Read current mode, setpoint, and temperature range from pump.
@@ -393,6 +395,7 @@ class ControlService {
     float cached_temp_min_{NAN};           // Temperature range min (Object 91 Sub 430)
     float cached_temp_max_{NAN};           // Temperature range max (Object 91 Sub 430)
     uint8_t cached_operation_mode_{0xFF};  // Operation mode from notification
+    int8_t cached_autoadapt_{-1};           // AutoAdapt state (-1=unknown, 0=off, 1=on)
   
   // Sub-ID constants for setpoint registers (Reference: control.py lines 137-141)
   static constexpr uint16_t SUB_SPEED_SETPOINT = 13;

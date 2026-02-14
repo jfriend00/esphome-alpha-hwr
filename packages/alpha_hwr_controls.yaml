@@ -27,7 +27,11 @@ switch:
   - platform: template
     name: "Pump Running"
     icon: "mdi:pump"
-    optimistic: true
+    optimistic: false
+    lambda: |-
+      float speed = id(motor_speed).state;
+      if (std::isnan(speed)) return {};
+      return speed > 0;
     turn_on_action:
       - lambda: |-
           ESP_LOGI("switch", "Starting pump...");
@@ -87,18 +91,19 @@ switch:
     optimistic: false
     disabled_by_default: false
     lambda: |-
-      // Only show when in TEMPERATURE_RANGE mode
       if (!id(pump).is_mode_valid()) return {};
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE) {
-        return {};  // Hide when not in this mode
+        return {};
       }
-      // TODO: Read actual AutoAdapt state from pump (Object 91, Sub 430, byte 0)
-      return {};  // Return empty until we implement reading
+      int8_t aa = id(pump).get_cached_autoadapt();
+      if (aa < 0) return {};
+      return (bool)(aa == 1);
     turn_on_action:
       - lambda: |-
-          // Get current temperature range (or use defaults)
-          float min_temp = 35.0f;  // TODO: Read from stored state
-          float max_temp = 45.0f;  // TODO: Read from stored state
+          float min_temp = id(pump).get_cached_temp_min();
+          float max_temp = id(pump).get_cached_temp_max();
+          if (std::isnan(min_temp)) min_temp = 35.0f;
+          if (std::isnan(max_temp)) max_temp = 45.0f;
           
           ESP_LOGI("switch", "Enabling Temperature AutoAdapt");
           id(pump).set_temperature_range(min_temp, max_temp, true, [](bool success) {
@@ -110,9 +115,10 @@ switch:
           });
     turn_off_action:
       - lambda: |-
-          // Get current temperature range (or use defaults)
-          float min_temp = 35.0f;  // TODO: Read from stored state
-          float max_temp = 45.0f;  // TODO: Read from stored state
+          float min_temp = id(pump).get_cached_temp_min();
+          float max_temp = id(pump).get_cached_temp_max();
+          if (std::isnan(min_temp)) min_temp = 35.0f;
+          if (std::isnan(max_temp)) max_temp = 45.0f;
           
           ESP_LOGI("switch", "Disabling Temperature AutoAdapt");
           id(pump).set_temperature_range(min_temp, max_temp, false, [](bool success) {
@@ -419,6 +425,7 @@ number:
     step: 1
     mode: slider
     optimistic: true
+    initial_value: 5
     disabled_by_default: false
     set_action:
       - lambda: |-
@@ -444,6 +451,7 @@ number:
     step: 1
     mode: slider
     optimistic: true
+    initial_value: 15
     disabled_by_default: false
     set_action:
       - lambda: |-

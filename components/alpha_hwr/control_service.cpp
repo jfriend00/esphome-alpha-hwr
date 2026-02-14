@@ -64,71 +64,83 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
   // Update internal state
   current_mode_ = static_cast<ControlMode>(mode);
   mode_valid_ = true;  // Mark mode as valid - we received it from the pump
-  cached_setpoint_ = setpoint;
   cached_operation_mode_ = operation_mode;
   
-  ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, setpoint=%.2f)",
+  // Cache setpoint with appropriate unit conversion per mode
+  // For TEMPERATURE_RANGE, the notification setpoint is not meaningful (temps come from Object 91 Sub 430)
+  if (current_mode_ == ControlMode::TEMPERATURE_RANGE) {
+    // Don't cache — real min/max come from Object 91 Sub 430
+  } else if (current_mode_ == ControlMode::CONSTANT_PRESSURE || 
+             current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
+    // Notification setpoint is in Pascals, convert to meters
+    cached_setpoint_ = setpoint / 9806.65f;
+  } else {
+    cached_setpoint_ = setpoint;
+  }
+  
+  ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, raw_setpoint=%.4f)",
            get_mode_name(current_mode_), operation_mode, setpoint);
   
   // Notify callback if set
   if (mode_change_callback_) {
-    mode_change_callback_(current_mode_, operation_mode, setpoint);
+    mode_change_callback_(current_mode_, operation_mode, cached_setpoint_);
   }
 }
 
 void ControlService::read_setpoints_from_pump() {
-  // Read Object 86 Sub 6 to get current mode + setpoint
-  // Then for Temperature Range, also read Object 91 Sub 430 for min/max temps
-  // Reference: control.py::get_mode() lines 368-530
-  get_mode_async([this](bool success, ControlMode mode) {
-    if (!success) {
-      ESP_LOGW(TAG, "Failed to read setpoints from pump");
-      return;
-    }
+  // Use the mode already cached from the passive notification (no need to re-query Object 86 Sub 6).
+  // The passive notification provides mode + basic setpoint, and get_mode_async() uses wildcard
+  // matching (0,0) that can collide with telemetry responses.
+  if (!mode_valid_) {
+    ESP_LOGW(TAG, "Cannot read setpoints: mode not yet known");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Reading setpoints for mode: %s", get_mode_name(current_mode_));
+  
+  // For Temperature Range mode, read Object 91 Sub 430 for min/max temps + autoadapt
+  if (current_mode_ == ControlMode::TEMPERATURE_RANGE) {
+    ESP_LOGI(TAG, "Reading temperature range from Object 91 Sub 430...");
     
-    // For Temperature Range mode, also read Object 91 Sub 430 for min/max
-    if (mode == ControlMode::TEMPERATURE_RANGE) {
-      ESP_LOGI(TAG, "Reading temperature range from Object 91 Sub 430...");
-      
-      uint8_t apdu[5];
-      apdu[0] = 0x0A;  // Class 10
-      apdu[1] = 0x03;  // OpSpec: READ
-      apdu[2] = 91;    // Object 91
-      apdu[3] = 0x01;  // Sub 430 high byte (430 = 0x01AE)
-      apdu[4] = 0xAE;  // Sub 430 low byte
-      
-      uint8_t packet_raw[64];
-      size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
-      std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-      
-      // Response should have type for Object 91
-      this->transport_.send_command(packet, 0, 0,
-        [this](bool ok, const uint8_t* payload, size_t payload_len) {
-          if (!ok || payload_len < 12) {
-            ESP_LOGW(TAG, "Failed to read temp range (success=%d, len=%zu)", ok, payload_len);
-            return;
-          }
+    uint8_t apdu[5];
+    apdu[0] = 0x0A;  // Class 10
+    apdu[1] = 0x03;  // OpSpec: READ
+    apdu[2] = 91;    // Object 91
+    apdu[3] = 0x01;  // Sub 430 high byte (430 = 0x01AE)
+    apdu[4] = 0xAE;  // Sub 430 low byte
+    
+    uint8_t packet_raw[64];
+    size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+    
+    this->transport_.send_command(packet, 0, 0,
+      [this](bool ok, const uint8_t* payload, size_t payload_len) {
+        if (!ok || payload_len < 12) {
+          ESP_LOGW(TAG, "Failed to read temp range (success=%d, len=%zu)", ok, payload_len);
+          return;
+        }
+        
+        // Skip 3-byte header [00 00 XX] if present
+        int offset = 0;
+        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+          offset = 3;
+        }
+        
+        if (payload_len >= (size_t)(offset + 9)) {
+          // [delta_enabled(1)][min_temp(4 float BE)][max_temp(4 float BE)]
+          cached_autoadapt_ = payload[offset] ? 1 : 0;
+          cached_temp_min_ = protocol::decode_float_be(&payload[offset + 1]);
+          cached_temp_max_ = protocol::decode_float_be(&payload[offset + 5]);
+          ESP_LOGI(TAG, "Temperature range: min=%.1f°C, max=%.1f°C, autoadapt=%s", 
+                   cached_temp_min_, cached_temp_max_, cached_autoadapt_ ? "ON" : "OFF");
           
-          // Skip 3-byte header [00 00 XX] if present
-          int offset = 0;
-          if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
-            offset = 3;
+          // Trigger mode change callback to update UI
+          if (mode_change_callback_) {
+            mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
           }
-          
-          if (payload_len >= (size_t)(offset + 9)) {
-            // [delta_enabled(1)][min_temp(4 float BE)][max_temp(4 float BE)]
-            cached_temp_min_ = protocol::decode_float_be(&payload[offset + 1]);
-            cached_temp_max_ = protocol::decode_float_be(&payload[offset + 5]);
-            ESP_LOGI(TAG, "Temperature range: min=%.1f°C, max=%.1f°C", cached_temp_min_, cached_temp_max_);
-            
-            // Trigger mode change callback to update UI
-            if (mode_change_callback_) {
-              mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
-            }
-          }
-        }, 5000);
-    }
-  });
+        }
+      }, 5000);
+  }
 }
 
 bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_complete) {
@@ -737,6 +749,7 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
     cached_temp_min_ = min_temp;
     cached_temp_max_ = max_temp;
     cached_setpoint_ = min_temp;
+    cached_autoadapt_ = autoadapt_enabled ? 1 : 0;
     
     // Send configuration commit (transport queue handles ordering)
     this->send_configuration_commit();
