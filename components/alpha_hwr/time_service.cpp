@@ -120,8 +120,7 @@ std::vector<uint8_t> TimeService::build_set_clock_packet(const ESPTime &dt) {
   data[5] = 0x01;
   
   // Year as big-endian uint16
-  data[6] = (dt.year >> 8) & 0xFF;
-  data[7] = dt.year & 0xFF;
+  encode_uint16_be(dt.year, &data[6]);
   
   // Month, Day, Hour, Minute, Second
   data[8] = dt.month;
@@ -149,20 +148,10 @@ std::vector<uint8_t> TimeService::build_set_clock_packet(const ESPTime &dt) {
   apdu[5] = 0x01;    // Obj-ID low
   memcpy(&apdu[6], data, 16);
   
-  // Build GENI frame: [0x27][Length][ServiceID][Source][APDU][CRC]
-  uint8_t length = 1 + 1 + sizeof(apdu);  // ServiceID + Source + APDU = 24
-  
-  std::vector<uint8_t> frame;
-  frame.push_back(0x27);  // Frame start
-  frame.push_back(length);
-  frame.push_back(0xE7);  // Service ID
-  frame.push_back(0xF8);  // Source address
-  frame.insert(frame.end(), apdu, apdu + sizeof(apdu));
-  
-  // Calculate CRC over [Length][ServiceID][Source][APDU]
-  uint16_t crc = calc_crc16(frame.data() + 1, frame.size() - 1);
-  frame.push_back((crc >> 8) & 0xFF);
-  frame.push_back(crc & 0xFF);
+  // Build GENI frame using protocol layer
+  uint8_t frame_buf[64];
+  size_t frame_len = build_geni_packet(0xE7, 0xF8, apdu, sizeof(apdu), frame_buf);
+  std::vector<uint8_t> frame(frame_buf, frame_buf + frame_len);
   
   return frame;
 }
@@ -179,7 +168,7 @@ ESPTime TimeService::parse_clock_response(const uint8_t *data, size_t len) {
   ESP_LOGD(TAG, "Raw clock data: %s (%zu bytes)", format_hex_pretty(data, len).c_str(), len);
   
   // Parse Status (2 bytes)
-  uint16_t status = (data[0] << 8) | data[1];
+  uint16_t status = decode_uint16_be(data, 0);
   
   // Skip Status (2 bytes) and Length (1 byte), payload starts at byte 3
   const uint8_t *payload = data + 3;
@@ -191,7 +180,7 @@ ESPTime TimeService::parse_clock_response(const uint8_t *data, size_t len) {
   }
   
   // Year is big-endian uint16
-  uint16_t year = (payload[0] << 8) | payload[1];
+  uint16_t year = decode_uint16_be(payload, 0);
   uint8_t month = payload[2];
   uint8_t day = payload[3];
   uint8_t hour = payload[4];

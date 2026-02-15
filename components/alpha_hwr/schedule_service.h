@@ -484,8 +484,6 @@ class ScheduleService {
 
   bool write_class10_command(const uint8_t *apdu, size_t apdu_len);
   bool set_state(bool enable);
-  void build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu, size_t apdu_len, uint8_t *frame,
-                        size_t *frame_len);
   bool send_configuration_commit();
 
   /**

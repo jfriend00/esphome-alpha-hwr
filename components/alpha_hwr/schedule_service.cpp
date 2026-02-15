@@ -9,6 +9,7 @@
 
 #include "schedule_service.h"
 #include "codec.h"
+#include "frame_builder.h"
 #include "session.h"
 #include "transport.h"
 #include "esphome/core/log.h"
@@ -78,8 +79,8 @@ bool ScheduleService::poll_state() {
   apdu[0] = 0x0A; apdu[1] = 0x03; apdu[2] = 84; apdu[3] = 0x00; apdu[4] = 0x01;
 
   uint8_t frame[64];
-  size_t frame_len = 0;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  size_t frame_len;
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
@@ -260,7 +261,7 @@ bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int laye
 
   uint8_t frame[64];
   size_t frame_len;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
@@ -356,7 +357,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
 
   uint8_t frame[64];
   size_t frame_len;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
@@ -576,8 +577,8 @@ bool ScheduleService::write_entries_async(const std::vector<ScheduleEntry> &entr
 
   // Build GENI frame
   uint8_t frame[256];
-  size_t frame_len = 0;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 53, frame, &frame_len);
+  size_t frame_len;
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 53, frame);
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
@@ -739,8 +740,8 @@ bool ScheduleService::validate_entries(const std::vector<ScheduleEntry> &entries
 bool ScheduleService::write_class10_command(const uint8_t *apdu, size_t apdu_len) {
   // Build GENI frame
   uint8_t frame[256];
-  size_t frame_len = 0;
-  this->build_geni_frame(0xE7, 0xF8, apdu, apdu_len, frame, &frame_len);
+  size_t frame_len;
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, apdu_len, frame);
 
   ESP_LOGD(TAG, "Queueing Class 10 command (%zu bytes)", frame_len);
 
@@ -751,25 +752,6 @@ bool ScheduleService::write_class10_command(const uint8_t *apdu, size_t apdu_len
   this->transport_.send_command(packet);
 
   return true;
-}
-
-void ScheduleService::build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu, size_t apdu_len, uint8_t *frame,
-                                        size_t *frame_len) {
-  // Build GENI frame: [Start][Length][Dst][Src][APDU...][CRC_H][CRC_L]
-  uint8_t length = 1 + 1 + apdu_len;  // Dst + Src + APDU
-
-  frame[0] = 0x27;  // Start byte (request frame)
-  frame[1] = length;
-  frame[2] = dst;
-  frame[3] = src;
-  memcpy(frame + 4, apdu, apdu_len);
-
-  // Calculate CRC (excludes start byte, includes everything else)
-  uint16_t crc = protocol::calc_crc16_read(frame + 1, length + 1);
-  frame[4 + apdu_len] = (crc >> 8) & 0xFF;      // CRC high byte
-  frame[4 + apdu_len + 1] = crc & 0xFF;         // CRC low byte
-
-  *frame_len = 4 + apdu_len + 2;  // Start + Length + Dst + Src + APDU + CRC
 }
 
 // -------------------------------------------------------------------------
@@ -866,8 +848,8 @@ void ScheduleService::write_cached_layer_async(uint8_t layer, std::function<void
   memcpy(apdu + 11, cached_layer_data_[layer], 42);
 
   uint8_t frame[256];
-  size_t frame_len = 0;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 53, frame, &frame_len);
+  size_t frame_len;
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 53, frame);
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
@@ -918,7 +900,7 @@ void ScheduleService::read_single_events_async(
 
     uint8_t frame[64];
     size_t frame_len;
-    this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+    frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
     std::vector<uint8_t> packet(frame, frame + frame_len);
 
     this->transport_.send_command(packet, 0xDC01, 0,
@@ -967,8 +949,8 @@ void ScheduleService::write_single_event_async(const SingleEvent &event,
   event.to_bytes(apdu + 11);
 
   uint8_t frame[256];
-  size_t frame_len = 0;
-  this->build_geni_frame(0xE7, 0xF8, apdu, 21, frame, &frame_len);
+  size_t frame_len;
+  frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 21, frame);
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
   this->transport_.send_command(packet, 0xDC01, 0,

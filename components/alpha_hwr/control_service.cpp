@@ -1,5 +1,6 @@
 #include "control_service.h"
 #include "transport.h"
+#include "frame_builder.h"
 #include "esphome/core/log.h"
 #include <cstring>
 #include <cmath>
@@ -105,7 +106,7 @@ void ControlService::read_setpoints_from_pump() {
     apdu[4] = 0xAE;  // Sub 430 low byte
     
     uint8_t packet_raw[64];
-    size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, packet_raw);
     std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
     
     this->transport_.send_command(packet, 91, 430,
@@ -210,7 +211,7 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
    apdu[4] = 0x06;  // SubID 6 low byte
    
    uint8_t packet_raw[64];
-   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+   size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, packet_raw);
 
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
@@ -404,7 +405,7 @@ bool ControlService::enable_remote_mode() {
    uint8_t apdu[3] = {0x03, 0xC1, 0x07};
    
    uint8_t packet_raw[32];
-   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
+   size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
    
    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
@@ -431,7 +432,7 @@ bool ControlService::enable_remote_mode() {
    uint8_t apdu[3] = {0x03, 0xC1, 0x06};
    
    uint8_t packet_raw[32];
-   size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 3, packet_raw);
+   size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
    
    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
@@ -473,30 +474,6 @@ const char *ControlService::get_mode_name(ControlMode mode) {
   }
 }
 
-size_t ControlService::build_geni_packet(uint8_t source, uint8_t service_id,
-                                          const uint8_t *apdu, size_t apdu_len,
-                                          uint8_t *packet_out) {
-  // Frame format: [STX][LEN][ServiceID][Source][APDU][CRC-H][CRC-L]
-  // Reference: base.py::_build_geni_packet() lines 181-214
-  
-  size_t length = 1 + 1 + apdu_len;  // ServiceID + Source + APDU
-  
-  packet_out[0] = 0x27;  // STX (FRAME_START)
-  packet_out[1] = static_cast<uint8_t>(length);
-  packet_out[2] = service_id;
-  packet_out[3] = source;
-  memcpy(&packet_out[4], apdu, apdu_len);
-  
-  // Calculate CRC over [LEN][ServiceID][Source][APDU]
-  // Must use calc_crc16_read() (XOR 0xFFFF finalization), matching Python reference
-  uint16_t crc = protocol::calc_crc16_read(&packet_out[1], length + 1);
-  
-  packet_out[4 + apdu_len] = (crc >> 8) & 0xFF;
-  packet_out[5 + apdu_len] = crc & 0xFF;
-  
-  return 4 + apdu_len + 2;  // STX + LEN + ServiceID + Source + APDU + CRC
-}
-
 void ControlService::send_configuration_commit() {
   // Sub 0x5400, Obj 0xDA01
   // Reference: control.py lines 1038-1048
@@ -512,7 +489,7 @@ void ControlService::send_configuration_commit() {
   memcpy(apdu, commit_data, 21);
   
   uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 21, packet_raw);
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 21, packet_raw);
   
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
@@ -561,7 +538,7 @@ bool ControlService::send_control_request(ControlMode mode, bool start, float se
   memcpy(&apdu[6], payload, 12);
 
   uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 18, packet_raw);
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 18, packet_raw);
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
   // Send command and schedule configuration commit
@@ -588,7 +565,7 @@ void ControlService::set_class10_setpoint(float value, uint16_t sub_id, uint16_t
   protocol::encode_float_be(value, &apdu[6]);
 
   uint8_t packet_raw[64];
-  size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 10, packet_raw);
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 10, packet_raw);
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
   this->transport_.send_command(packet);
@@ -784,7 +761,7 @@ void ControlService::set_temperature_range_async(float min_temp, float max_temp,
     memcpy(&apdu[11], struct_data, 13);
     
     uint8_t packet_raw[64];
-    size_t packet_len = this->build_geni_packet(0xF8, 0xE7, apdu, 24, packet_raw);
+    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 24, packet_raw);
     std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
     
     this->transport_.send_command(packet);
@@ -906,7 +883,7 @@ void ControlService::set_cycle_time_control_async(uint8_t on_minutes, uint8_t of
     memcpy(&apdu[6], data, 11);
     
     uint8_t packet_raw[64];
-    size_t packet_len = this->build_geni_packet(0xF8, 0xE7, apdu, 17, packet_raw);
+    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 17, packet_raw);
     std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
     
     this->transport_.send_command(packet);

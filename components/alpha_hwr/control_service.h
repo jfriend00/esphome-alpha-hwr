@@ -403,20 +403,6 @@ class ControlService {
   static constexpr uint16_t SUB_FLOW_SETPOINT = 39;
   
   /**
-   * Build GENI protocol packet with CRC.
-   * 
-   * @param source Source address (typically 0xF8)
-   * @param service_id Service ID (typically 0xE7)
-   * @param apdu Application Protocol Data Unit
-   * @param apdu_len Length of APDU
-   * @param packet_out Output buffer
-   * @return Total packet length including CRC
-   */
-  size_t build_geni_packet(uint8_t source, uint8_t service_id, 
-                           const uint8_t *apdu, size_t apdu_len,
-                           uint8_t *packet_out);
-  
-  /**
    * Send configuration commit packet.
    * Required after control operations to persist state changes.
    * Reference: control.py::_send_configuration_commit() lines 1038-1048

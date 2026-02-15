@@ -92,9 +92,6 @@ class HistoryService {
   std::vector<TrendSeries> cached_trends_;
   bool trends_cached_{false};
 
-  void build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu, size_t apdu_len,
-                        uint8_t *frame, size_t *frame_len);
-
   static constexpr const char *TAG = "alpha_hwr.history";
 };
 

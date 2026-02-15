@@ -8,6 +8,7 @@
 
 #include "telemetry_service.h"
 #include "transport.h"
+#include "codec.h"
 #include "frame_builder.h"
 #include "frame_parser.h"
 #include "telemetry_decoder.h"
@@ -128,8 +129,8 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
     case 0x09:  // Alarms/warnings register-read response (offset 13)
     case 0x13:  // Alarms/warnings read response (offset 10)
       if (len >= 10) {
-        uint16_t sub_id = (data[6] << 8) | data[7];
-        uint16_t obj_id = (data[8] << 8) | data[9];
+        uint16_t sub_id = protocol::decode_uint16_be(data, 6);
+        uint16_t obj_id = protocol::decode_uint16_be(data, 8);
         
         // For 0x13: sub_id/obj_id are actual Sub/Obj IDs
         // For 0x09: sub_id is sequence number, obj_id is register ID
@@ -141,8 +142,9 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
             handle_warnings_response(data, len, opspec);
           }
         } else if (opspec == 0x09) {
-          // Register-read format: use ordering to distinguish alarms vs warnings
-          // Alarms register (0x580000) is always polled before warnings (0x58000B)
+          // Register-read format: opspec 0x09 response only carries 2-byte register ID,
+          // which is identical for alarms (0x580000) and warnings (0x58000B).
+          // We use polling order to distinguish: alarms are always queued first.
           if (!next_09_is_warnings_) {
             handle_alarms_response(data, len, opspec);
             next_09_is_warnings_ = true;
@@ -228,8 +230,8 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
     return;
   }
   
-  uint16_t sub_id = (data[6] << 8) | data[7];
-  uint16_t obj_id = (data[8] << 8) | data[9];
+  uint16_t sub_id = protocol::decode_uint16_be(data, 6);
+  uint16_t obj_id = protocol::decode_uint16_be(data, 8);
   
   ESP_LOGD(TAG, "Passive telemetry notification: Sub=0x%04X, Obj=0x%04X", sub_id, obj_id);
   

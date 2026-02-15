@@ -25,11 +25,6 @@ static constexpr uint16_t SUBID_ENTRY_BASE = 10200;
 EventLogService::EventLogService(core::Transport &transport, core::Session &session)
     : transport_(transport), session_(session) {}
 
-void EventLogService::build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu,
-                                        size_t apdu_len, uint8_t *frame, size_t *frame_len) {
-  *frame_len = protocol::build_geni_packet(dst, src, apdu, apdu_len, frame);
-}
-
 void EventLogService::read_metadata_async(
     std::function<void(bool, const EventLogMetadata &)> on_complete) {
   if (!session_.is_ready()) {
@@ -48,8 +43,7 @@ void EventLogService::read_metadata_async(
   apdu[4] = SUBID_METADATA & 0xFF;
 
   uint8_t frame[64];
-  size_t frame_len;
-  build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  size_t frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
   // Type 243 (EventLogInfo) → response bytes 6-7 = 0xF301
@@ -127,8 +121,7 @@ void EventLogService::read_entries_async(
       apdu[4] = sub_id & 0xFF;
 
       uint8_t frame[64];
-      size_t frame_len;
-      this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+      size_t frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
       std::vector<uint8_t> packet(frame, frame + frame_len);
 
       // Entry responses use OpSpec 0x14 with bytes 6-7=0x0000, 8-9=0xF402

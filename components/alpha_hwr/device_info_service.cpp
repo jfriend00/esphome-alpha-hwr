@@ -17,9 +17,6 @@ namespace esphome {
 namespace alpha_hwr {
 namespace services {
 
-using namespace esphome::alpha_hwr::protocol;
-using namespace esphome::alpha_hwr::core;
-
 static const char* TAG = "alpha_hwr.device_info";
 
 // String IDs (from Python reference device_info.py)
@@ -29,7 +26,7 @@ static const uint8_t STRING_ID_SOFTWARE_VERSION = 50;
 static const uint8_t STRING_ID_HARDWARE_VERSION = 52;
 static const uint8_t STRING_ID_BLE_VERSION = 58;
 
-DeviceInfoService::DeviceInfoService(Transport &transport, Session &session)
+DeviceInfoService::DeviceInfoService(core::Transport &transport, core::Session &session)
     : transport_(transport), session_(session) {
   ESP_LOGD(TAG, "Device Info Service initialized");
 }
@@ -122,7 +119,7 @@ bool DeviceInfoService::read_class7_string_async(uint8_t string_id,
   
   // Build GENI packet
   uint8_t packet[20];  // Max needed: 4 (header) + 3 (APDU) + 2 (CRC) = 9 bytes
-  size_t packet_len = build_geni_packet(0xE7, 0xF8, apdu, 3, packet);
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet);
   
   ESP_LOGD(TAG, "Reading Class 7 String ID %d", string_id);
   
@@ -164,7 +161,7 @@ bool DeviceInfoService::read_class7_string_async(uint8_t string_id,
       size_t string_len = len - 9;  // Total - header (7) - CRC (2)
       
       // Create null-terminated C string (strip trailing nulls)
-      static char string_buffer[128];
+      char string_buffer[128];
       size_t actual_len = 0;
       for (size_t i = 0; i < string_len && i < 127; i++) {
         if (string_data[i] == 0) break;  // Stop at first null
@@ -207,7 +204,7 @@ void DeviceInfoService::read_statistics_async(std::function<void(bool, uint32_t,
   // APDU: [Class=0x0A][OpSpec=0x03][ObjID=0x5D][SubH=0x00][SubL=0x01]
   uint8_t apdu[] = {0x0A, 0x03, 0x5D, 0x00, 0x01};  // Object 93 = 0x5D, Sub 1
   uint8_t packet[20];
-  size_t packet_len = build_geni_packet(0xE7, 0xF8, apdu, sizeof(apdu), packet);
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, sizeof(apdu), packet);
 
   std::vector<uint8_t> packet_vec(packet, packet + packet_len);
 

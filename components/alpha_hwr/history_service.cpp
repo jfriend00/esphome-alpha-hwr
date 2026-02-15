@@ -50,11 +50,6 @@ TrendData TrendData::from_bytes(const uint8_t *data) {
 HistoryService::HistoryService(core::Transport &transport, core::Session &session)
     : transport_(transport), session_(session) {}
 
-void HistoryService::build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu,
-                                       size_t apdu_len, uint8_t *frame, size_t *frame_len) {
-  *frame_len = protocol::build_geni_packet(dst, src, apdu, apdu_len, frame);
-}
-
 void HistoryService::read_trends_async(
     std::function<void(bool, const std::vector<TrendSeries> &)> on_complete) {
   if (!session_.is_ready()) {
@@ -89,8 +84,7 @@ void HistoryService::read_trends_async(
     apdu[4] = sub_id & 0xFF;
 
     uint8_t frame[64];
-    size_t frame_len;
-    build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+    size_t frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
     std::vector<uint8_t> packet(frame, frame + frame_len);
 
     // Use wildcard response matching — accept any non-register Class 10 response
@@ -180,8 +174,7 @@ void HistoryService::read_cycle_timestamps_async(
   apdu[4] = sub_id & 0xFF;
 
   uint8_t frame[64];
-  size_t frame_len;
-  build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  size_t frame_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, frame);
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
   // Use wildcard matching for Object 88 responses
