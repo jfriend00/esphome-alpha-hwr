@@ -1,5 +1,5 @@
 /**
- * Alpha HWR Schedule Card
+ * Alpha HWR Schedule Card — v3
  *
  * Custom Lovelace card for managing the Grundfos ALPHA HWR pump's weekly schedule.
  * Reads schedule JSON from an ESPHome text sensor and writes changes via ESPHome services.
@@ -8,6 +8,7 @@
  *   type: custom:alpha-hwr-schedule-card
  *   entity: text_sensor.alpha_hwr_schedule
  *   device: hwr_pump                         # ESPHome device name (for service calls)
+ *   single_events_entity: text_sensor.hwr_pump_single_events  # Optional
  *   title: Pump Schedule                     # Optional
  *
  * Schedule JSON format (from ESPHome text sensor):
@@ -17,17 +18,30 @@
  *   - Each layer: array of 7 entries (Mon=0..Sun=6)
  *   - Entry: [start_minutes, end_minutes] or 0 (disabled)
  *
- * ESPHome services used:
- *   esphome.<device>_set_schedule_entry   data: "layer,day,sh,sm,eh,em"
- *   esphome.<device>_clear_schedule_entry data: "layer,day"
- *   esphome.<device>_refresh_schedule
+ * Single Events text sensor format:
+ *   [slot] YYYY-MM-DD HH:MM - HH:MM
+ *   (one line per active event)
+ *
+ * v3 Changes:
+ *   - Quick Run panel for one-time schedules (single events)
+ *   - Green overlay bars on today's timeline for active events
+ *   - Duration presets (30m, 1h, 2h, 4h) + custom datetime pickers
+ *   - Active single events list with clear buttons
  */
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DAYS_FULL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MINUTES_IN_DAY = 1440;
 const HOUR_LABELS = [0, 3, 6, 9, 12, 15, 18, 21, 24];
-const SNAP_MINUTES = 15; // Snap drag to 15-min intervals
+const SNAP_MINUTES = 15;
 const MIN_BLOCK_MINUTES = 15;
+const MAX_LAYERS = 5; // pump supports layers 0-4
+const QUICK_RUN_PRESETS = [
+  { label: '30m', minutes: 30 },
+  { label: '1h', minutes: 60 },
+  { label: '2h', minutes: 120 },
+  { label: '4h', minutes: 240 },
+];
 
 class AlphaHwrScheduleCard extends HTMLElement {
   constructor() {
@@ -35,11 +49,20 @@ class AlphaHwrScheduleCard extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this._config = {};
     this._hass = null;
-    this._schedule = null; // parsed JSON
-    this._activeLayer = 0;
-    this._selectedDay = -1;
-    this._dragging = null; // { day, edge: 'start'|'end', startX }
-    this._pendingChanges = new Map(); // day -> {start, end} or null (cleared)
+    this._schedule = null;
+    this._selectedBlock = null; // { day, layer }
+    this._dragging = null;
+    this._hoverBlock = null; // { day, layer } for tooltip
+    this._pendingChanges = new Map(); // "day,layer" -> [start,end] or null
+    this._showApplyTo = false;
+    this._applyDays = new Set();
+    this._editingTime = false; // inline time editor open
+    this._nowInterval = null;
+    // Quick Run (single events) state
+    this._showQuickRun = false;
+    this._quickRunCustom = false;
+    this._singleEvents = []; // parsed: [{slot, begin, end}]
+    this._lastSingleEventsState = '';
   }
 
   setConfig(config) {
@@ -49,47 +72,130 @@ class AlphaHwrScheduleCard extends HTMLElement {
       entity: config.entity,
       device: config.device,
       title: config.title || 'Pump Schedule',
+      single_events_entity: config.single_events_entity || `text_sensor.${config.device}_single_events`,
     };
+    this._render();
+  }
+
+  connectedCallback() {
+    if (this._config.entity) this._render();
+    // Update current-time line every minute
+    this._nowInterval = setInterval(() => {
+      const line = this.shadowRoot?.querySelector('.now-line');
+      if (line) {
+        const now = new Date();
+        const mins = now.getHours() * 60 + now.getMinutes();
+        line.style.left = `${(mins / MINUTES_IN_DAY) * 100}%`;
+      }
+    }, 60000);
+  }
+
+  disconnectedCallback() {
+    if (this._nowInterval) clearInterval(this._nowInterval);
   }
 
   set hass(hass) {
     this._hass = hass;
+    let needRender = false;
     const state = hass.states[this._config.entity];
-    if (state && state.state !== this._lastState) {
-      this._lastState = state.state;
-      this._parseSchedule(state.state);
-      this._render();
+    const newState = state ? state.state : '';
+    if (newState !== this._lastState) {
+      this._lastState = newState;
+      this._parseSchedule(newState);
+      needRender = true;
     }
+    // Watch single events text sensor
+    const seState = hass.states[this._config.single_events_entity];
+    const newSE = seState ? seState.state : '';
+    if (newSE !== this._lastSingleEventsState) {
+      this._lastSingleEventsState = newSE;
+      this._parseSingleEvents(newSE);
+      needRender = true;
+    }
+    if (needRender) this._render();
   }
 
   _parseSchedule(stateStr) {
     try {
-      if (stateStr.startsWith('{')) {
+      if (stateStr && stateStr.startsWith('{')) {
         this._schedule = JSON.parse(stateStr);
       } else {
-        this._schedule = null; // Not JSON (loading, error, etc.)
+        this._schedule = null;
       }
     } catch (e) {
       this._schedule = null;
     }
   }
 
-  /** Get the 7-entry array for the active layer, merging pending changes */
-  _getLayerData() {
-    if (!this._schedule) return [0, 0, 0, 0, 0, 0, 0];
-    const layers = this._schedule.s || {};
-    const data = layers[String(this._activeLayer)] || [0, 0, 0, 0, 0, 0, 0];
-    // Ensure we have 7 entries
-    const result = [];
-    for (let i = 0; i < 7; i++) {
-      if (this._pendingChanges.has(i)) {
-        const pending = this._pendingChanges.get(i);
-        result.push(pending); // null = cleared, [s,e] = modified
-      } else {
-        result.push(data[i] || 0);
+  /** Parse single events text sensor: "[slot] YYYY-MM-DD HH:MM - HH:MM" per line */
+  _parseSingleEvents(stateStr) {
+    this._singleEvents = [];
+    if (!stateStr || stateStr === 'No single events' || stateStr === 'unavailable' || stateStr === 'unknown') return;
+    const lines = stateStr.split('\n');
+    const re = /^\[(\d+)\]\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})$/;
+    for (const line of lines) {
+      const m = line.trim().match(re);
+      if (m) {
+        const slot = parseInt(m[1]);
+        const begin = new Date(parseInt(m[2]), parseInt(m[3]) - 1, parseInt(m[4]), parseInt(m[5]), parseInt(m[6]));
+        const end = new Date(parseInt(m[2]), parseInt(m[3]) - 1, parseInt(m[4]), parseInt(m[7]), parseInt(m[8]));
+        this._singleEvents.push({ slot, begin, end });
       }
     }
-    return result;
+  }
+
+  /** Get single events that overlap with today, as minute ranges */
+  _getTodaySingleEvents() {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86400000);
+    const events = [];
+    for (const ev of this._singleEvents) {
+      if (ev.end > todayStart && ev.begin < todayEnd) {
+        const startMins = Math.max(0, (ev.begin - todayStart) / 60000);
+        const endMins = Math.min(MINUTES_IN_DAY, (ev.end - todayStart) / 60000);
+        events.push({ slot: ev.slot, start: Math.round(startMins), end: Math.round(endMins) });
+      }
+    }
+    return events;
+  }
+
+  /* ─── Data helpers ─── */
+
+  /** Get all blocks for a given day across all layers, merged with pending changes.
+   *  Returns array of { layer, start, end, pending } */
+  _getDayBlocks(day) {
+    const blocks = [];
+    const layers = (this._schedule && this._schedule.s) || {};
+
+    for (let l = 0; l < MAX_LAYERS; l++) {
+      const key = `${day},${l}`;
+      let entry;
+      if (this._pendingChanges.has(key)) {
+        entry = this._pendingChanges.get(key); // null = deleted, [s,e] = set
+      } else {
+        const layerData = layers[String(l)];
+        entry = layerData ? (layerData[day] || 0) : 0;
+      }
+      if (entry && Array.isArray(entry)) {
+        blocks.push({
+          layer: l,
+          start: entry[0],
+          end: entry[1],
+          pending: this._pendingChanges.has(key),
+        });
+      }
+    }
+    return blocks;
+  }
+
+  /** Find the first available layer slot for a day */
+  _findFreeLayer(day) {
+    const used = new Set(this._getDayBlocks(day).map(b => b.layer));
+    for (let l = 0; l < MAX_LAYERS; l++) {
+      if (!used.has(l)) return l;
+    }
+    return -1;
   }
 
   _minutesToTime(mins) {
@@ -99,365 +205,1015 @@ class AlphaHwrScheduleCard extends HTMLElement {
   }
 
   _snapMinutes(mins) {
-    return Math.round(mins / SNAP_MINUTES) * SNAP_MINUTES;
+    return Math.max(0, Math.min(MINUTES_IN_DAY, Math.round(mins / SNAP_MINUTES) * SNAP_MINUTES));
   }
 
-  _render() {
-    const data = this._getLayerData();
-    const enabled = this._schedule ? this._schedule.e : 0;
-    const hasPending = this._pendingChanges.size > 0;
+  _hasPendingChanges() {
+    return this._pendingChanges.size > 0;
+  }
 
-    // Build available layers from schedule data
-    const availableLayers = new Set([0]);
-    if (this._schedule && this._schedule.s) {
-      Object.keys(this._schedule.s).forEach(k => availableLayers.add(parseInt(k)));
+  /* ─── Render ─── */
+
+  _render() {
+    const enabled = this._schedule ? this._schedule.e : 0;
+    const hasPending = this._hasPendingChanges();
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const nowPct = (nowMins / MINUTES_IN_DAY) * 100;
+
+    // Count scheduled days
+    let scheduledDays = 0;
+    for (let d = 0; d < 7; d++) {
+      if (this._getDayBlocks(d).length > 0) scheduledDays++;
     }
 
     this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: block;
-          --primary-color: var(--ha-card-header-color, #03a9f4);
-          --block-color: #039be5;
-          --block-hover: #0288d1;
-          --block-selected: #ff9800;
-          --bg-bar: var(--secondary-background-color, #e0e0e0);
-          --text-color: var(--primary-text-color, #212121);
-          --text-secondary: var(--secondary-text-color, #757575);
-          --card-bg: var(--ha-card-background, var(--card-background-color, white));
-          --pending-color: #ff9800;
-        }
-        ha-card {
-          padding: 16px;
-        }
-        .header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 12px;
-        }
-        .title {
-          font-size: 1.1em;
-          font-weight: 500;
-          color: var(--text-color);
-        }
-        .layer-tabs {
-          display: flex;
-          gap: 4px;
-        }
-        .layer-tab {
-          padding: 4px 10px;
-          border: 1px solid var(--divider-color, #e0e0e0);
-          border-radius: 4px;
-          font-size: 0.8em;
-          cursor: pointer;
-          background: transparent;
-          color: var(--text-secondary);
-          transition: all 0.15s;
-        }
-        .layer-tab.active {
-          background: var(--primary-color);
-          color: white;
-          border-color: var(--primary-color);
-        }
-        .layer-tab:hover:not(.active) {
-          background: var(--bg-bar);
-        }
-        .hour-labels {
-          display: flex;
-          margin-left: 48px;
-          margin-bottom: 2px;
-          position: relative;
-          height: 16px;
-        }
-        .hour-label {
-          position: absolute;
-          font-size: 0.7em;
-          color: var(--text-secondary);
-          transform: translateX(-50%);
-        }
-        .day-row {
-          display: flex;
-          align-items: center;
-          margin-bottom: 4px;
-          height: 32px;
-        }
-        .day-label {
-          width: 40px;
-          font-size: 0.85em;
-          color: var(--text-secondary);
-          flex-shrink: 0;
-          text-align: right;
-          padding-right: 8px;
-          user-select: none;
-        }
-        .timeline-bar {
-          flex: 1;
-          height: 28px;
-          background: var(--bg-bar);
-          border-radius: 4px;
-          position: relative;
-          cursor: pointer;
-          overflow: visible;
-        }
-        .timeline-bar:hover {
-          background: color-mix(in srgb, var(--bg-bar) 85%, var(--primary-color));
-        }
-        .time-block {
-          position: absolute;
-          top: 2px;
-          bottom: 2px;
-          background: var(--block-color);
-          border-radius: 3px;
-          cursor: pointer;
-          transition: background 0.1s;
-          min-width: 4px;
-        }
-        .time-block:hover {
-          background: var(--block-hover);
-        }
-        .time-block.selected {
-          background: var(--block-selected);
-          box-shadow: 0 0 0 2px var(--block-selected), 0 0 0 4px rgba(255,152,0,0.3);
-        }
-        .time-block.pending {
-          background: repeating-linear-gradient(
-            45deg,
-            var(--block-color),
-            var(--block-color) 4px,
-            var(--pending-color) 4px,
-            var(--pending-color) 8px
-          );
-        }
-        .drag-handle {
-          position: absolute;
-          top: -2px;
-          bottom: -2px;
-          width: 10px;
-          cursor: col-resize;
-          z-index: 10;
-        }
-        .drag-handle.start { left: -5px; }
-        .drag-handle.end { right: -5px; }
-        .drag-handle::after {
-          content: '';
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          width: 4px;
-          height: 16px;
-          background: rgba(255,255,255,0.7);
-          border-radius: 2px;
-        }
-        .time-tooltip {
-          position: absolute;
-          top: -22px;
-          background: var(--text-color);
-          color: var(--card-bg);
-          font-size: 0.7em;
-          padding: 2px 5px;
-          border-radius: 3px;
-          white-space: nowrap;
-          pointer-events: none;
-          z-index: 20;
-        }
-        .time-tooltip.start { left: 0; }
-        .time-tooltip.end { right: 0; }
-        .footer {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-top: 12px;
-          padding-top: 8px;
-          border-top: 1px solid var(--divider-color, #e0e0e0);
-        }
-        .status {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 0.85em;
-          color: var(--text-secondary);
-        }
-        .status-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background: ${enabled ? '#4caf50' : '#9e9e9e'};
-        }
-        .actions {
-          display: flex;
-          gap: 6px;
-        }
-        .btn {
-          padding: 6px 14px;
-          border: none;
-          border-radius: 4px;
-          font-size: 0.8em;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .btn-primary {
-          background: var(--primary-color);
-          color: white;
-        }
-        .btn-primary:hover { opacity: 0.85; }
-        .btn-primary:disabled { opacity: 0.4; cursor: default; }
-        .btn-outline {
-          background: transparent;
-          border: 1px solid var(--divider-color, #e0e0e0);
-          color: var(--text-secondary);
-        }
-        .btn-outline:hover { background: var(--bg-bar); }
-        .btn-danger {
-          background: transparent;
-          border: 1px solid #ef5350;
-          color: #ef5350;
-        }
-        .btn-danger:hover { background: rgba(239,83,80,0.08); }
-        .selection-info {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-top: 8px;
-          padding: 8px 12px;
-          background: var(--bg-bar);
-          border-radius: 4px;
-          font-size: 0.85em;
-        }
-        .selection-info .day-name { font-weight: 500; color: var(--text-color); }
-        .selection-info .time-range { color: var(--text-secondary); }
-        .loading {
-          text-align: center;
-          padding: 24px;
-          color: var(--text-secondary);
-        }
-      </style>
+      <style>${this._getStyles(enabled)}</style>
       <ha-card>
-        ${this._schedule ? this._renderSchedule(data, enabled, availableLayers, hasPending) : '<div class="loading">Waiting for schedule data...</div>'}
+        <div class="header">
+          <div class="title-row">
+            <ha-icon icon="mdi:pump" style="--mdc-icon-size:20px;color:var(--primary-color);margin-right:8px;"></ha-icon>
+            <span class="title">${this._config.title}</span>
+          </div>
+          <div class="header-actions">
+            <span class="schedule-summary">${scheduledDays} of 7 days</span>
+            <button class="quick-run-chip ${this._showQuickRun ? 'active' : ''}" data-action="toggle-quick-run">
+              <ha-icon icon="mdi:flash" style="--mdc-icon-size:14px;margin-right:3px"></ha-icon>Quick Run
+            </button>
+            ${hasPending ? '<span class="unsaved-badge">unsaved</span>' : ''}
+          </div>
+        </div>
+
+        <div class="grid-container">
+          <div class="hour-labels">
+            ${HOUR_LABELS.map(h => {
+      const pct = (h / 24) * 100;
+      const label = h === 24 ? '' : (h === 0 ? '12a' : h < 12 ? `${h}a` : h === 12 ? '12p' : `${h - 12}p`);
+      return `<span class="hour-label" style="left:${pct}%">${label}</span>`;
+    }).join('')}
+          </div>
+
+          ${DAYS.map((day, i) => this._renderDayRow(day, i, nowPct)).join('')}
+        </div>
+
+        ${this._renderSelectionPanel()}
+        ${this._renderQuickRunPanel()}
+
+        <div class="footer">
+          <div class="status">
+            <span class="status-dot ${enabled ? 'active' : ''}"></span>
+            <button class="btn ${enabled ? 'btn-outline' : 'btn-primary'}" data-action="toggle-schedule">
+              ${enabled ? 'Disable' : 'Enable'} Schedule
+            </button>
+          </div>
+          <div class="actions">
+            <button class="btn btn-icon" data-action="refresh" title="Refresh from pump">
+              <ha-icon icon="mdi:refresh" style="--mdc-icon-size:18px"></ha-icon>
+            </button>
+            ${hasPending ? `
+              <button class="btn btn-outline" data-action="discard">Discard</button>
+              <button class="btn btn-primary btn-save" data-action="save">
+                <ha-icon icon="mdi:content-save" style="--mdc-icon-size:16px;margin-right:4px"></ha-icon>
+                Save
+              </button>
+            ` : ''}
+          </div>
+        </div>
       </ha-card>
     `;
 
-    if (this._schedule) {
-      this._attachEvents();
-    }
+    this._attachEvents();
   }
 
-  _renderSchedule(data, enabled, availableLayers, hasPending) {
-    const layerTabs = [...availableLayers].sort().map(l =>
-      `<button class="layer-tab ${l === this._activeLayer ? 'active' : ''}" data-layer="${l}">L${l}</button>`
+  _renderDayRow(day, dayIdx, nowPct) {
+    const blocks = this._getDayBlocks(dayIdx);
+    const isToday = new Date().getDay() === (dayIdx + 1) % 7; // JS: 0=Sun, card: 0=Mon
+
+    const blocksHtml = blocks.map(b => {
+      const leftPct = (b.start / MINUTES_IN_DAY) * 100;
+      const widthPct = ((b.end - b.start) / MINUTES_IN_DAY) * 100;
+      const sel = this._selectedBlock && this._selectedBlock.day === dayIdx && this._selectedBlock.layer === b.layer;
+      const hov = this._hoverBlock && this._hoverBlock.day === dayIdx && this._hoverBlock.layer === b.layer;
+
+      return `
+        <div class="time-block ${sel ? 'selected' : ''} ${b.pending ? 'pending' : ''}"
+             style="left:${leftPct}%;width:${Math.max(widthPct, 0.7)}%"
+             data-day="${dayIdx}" data-layer="${b.layer}">
+          <div class="drag-handle start" data-day="${dayIdx}" data-layer="${b.layer}" data-edge="start"></div>
+          <div class="drag-handle end" data-day="${dayIdx}" data-layer="${b.layer}" data-edge="end"></div>
+          ${(hov || sel) ? `<div class="block-tooltip">${this._minutesToTime(b.start)} – ${this._minutesToTime(b.end)}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    // Single event overlays (green bars on today)
+    let singleEventHtml = '';
+    if (isToday) {
+      const todayEvents = this._getTodaySingleEvents();
+      singleEventHtml = todayEvents.map(ev => {
+        const leftPct = (ev.start / MINUTES_IN_DAY) * 100;
+        const widthPct = ((ev.end - ev.start) / MINUTES_IN_DAY) * 100;
+        return `<div class="single-event-bar" style="left:${leftPct}%;width:${Math.max(widthPct, 0.5)}%" title="One-time event (slot ${ev.slot})"></div>`;
+      }).join('');
+    }
+
+    return `
+      <div class="day-row ${isToday ? 'today' : ''}">
+        <div class="day-label ${isToday ? 'today-label' : ''}">${day}</div>
+        <div class="timeline-bar" data-day="${dayIdx}">
+          ${isToday ? `<div class="now-line" style="left:${nowPct}%"></div>` : ''}
+          ${singleEventHtml}
+          ${blocksHtml}
+        </div>
+      </div>`;
+  }
+
+  _renderSelectionPanel() {
+    if (!this._selectedBlock) return '';
+    const { day, layer } = this._selectedBlock;
+    const blocks = this._getDayBlocks(day);
+    const block = blocks.find(b => b.layer === layer);
+
+    if (!block) {
+      // Selected day but the block was deleted — show add button
+      return `
+        <div class="selection-panel">
+          <div class="sel-header">
+            <span class="sel-day">${DAYS_FULL[day]}</span>
+            <span class="sel-hint">No schedule</span>
+            <button class="btn btn-primary btn-sm" data-action="add" data-day="${day}" style="margin-left:auto">
+              <ha-icon icon="mdi:plus" style="--mdc-icon-size:16px;margin-right:2px"></ha-icon> Add
+            </button>
+          </div>
+        </div>`;
+    }
+
+    const timeDisplay = this._editingTime ? this._renderTimeEditor(block) : `
+      <button class="time-display" data-action="edit-time" title="Click to edit times">
+        ${this._minutesToTime(block.start)} – ${this._minutesToTime(block.end)}
+        <ha-icon icon="mdi:pencil" style="--mdc-icon-size:14px;margin-left:4px;opacity:0.5"></ha-icon>
+      </button>`;
+
+    const applyToHtml = this._showApplyTo ? `
+      <div class="apply-to-section">
+        <div class="apply-to-label">Apply this schedule to:</div>
+        <div class="apply-to-days">
+          ${DAYS.map((d, i) => {
+      if (i === day) return '';
+      const checked = this._applyDays.has(i);
+      return `<label class="day-check ${checked ? 'checked' : ''}">
+              <input type="checkbox" data-apply-day="${i}" ${checked ? 'checked' : ''}/>${d}
+            </label>`;
+    }).join('')}
+        </div>
+        <div class="apply-to-actions">
+          <button class="btn btn-sm btn-outline" data-action="select-weekdays">Weekdays</button>
+          <button class="btn btn-sm btn-outline" data-action="select-all-days">All</button>
+          <button class="btn btn-sm btn-primary" data-action="confirm-apply" ${this._applyDays.size === 0 ? 'disabled' : ''}>
+            Apply to ${this._applyDays.size} day${this._applyDays.size !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>` : '';
+
+    return `
+      <div class="selection-panel">
+        <div class="sel-header">
+          <span class="sel-day">${DAYS_FULL[day]}</span>
+          ${timeDisplay}
+          <div class="sel-actions">
+            <button class="btn btn-sm btn-outline" data-action="apply-to" title="Copy to other days">
+              <ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px;margin-right:2px"></ha-icon> Apply to…
+            </button>
+            <button class="btn btn-sm btn-danger" data-action="delete" data-day="${day}" data-layer="${layer}" title="Remove this block">
+              <ha-icon icon="mdi:delete-outline" style="--mdc-icon-size:16px"></ha-icon>
+            </button>
+          </div>
+        </div>
+        ${applyToHtml}
+      </div>`;
+  }
+
+  _renderTimeEditor(block) {
+    const startH = Math.floor(block.start / 60);
+    const startM = block.start % 60;
+    const endH = Math.floor(block.end / 60);
+    const endM = block.end % 60;
+
+    const hourOpts = (sel) => Array.from({ length: 25 }, (_, i) =>
+      `<option value="${i}" ${i === sel ? 'selected' : ''}>${String(i).padStart(2, '0')}</option>`
+    ).join('');
+    const minOpts = (sel) => [0, 15, 30, 45].map(m =>
+      `<option value="${m}" ${m === sel ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`
     ).join('');
 
-    const hourLabels = HOUR_LABELS.map(h => {
-      const pct = (h / 24) * 100;
-      return `<span class="hour-label" style="left:${pct}%">${h}</span>`;
-    }).join('');
+    return `
+      <div class="time-editor">
+        <select class="time-sel" data-field="startH">${hourOpts(startH)}</select>
+        <span class="time-colon">:</span>
+        <select class="time-sel" data-field="startM">${minOpts(startM)}</select>
+        <span class="time-dash">–</span>
+        <select class="time-sel" data-field="endH">${hourOpts(endH)}</select>
+        <span class="time-colon">:</span>
+        <select class="time-sel" data-field="endM">${minOpts(endM)}</select>
+        <button class="btn btn-sm btn-primary" data-action="save-time">OK</button>
+      </div>`;
+  }
 
-    const dayRows = DAYS.map((day, i) => {
-      const entry = data[i];
-      let blockHtml = '';
-      if (entry && Array.isArray(entry)) {
-        const [start, end] = entry;
-        const isPending = this._pendingChanges.has(i);
-        // Handle midnight-crossing: show as single block wrapping
-        let leftPct, widthPct;
-        if (end > start) {
-          leftPct = (start / MINUTES_IN_DAY) * 100;
-          widthPct = ((end - start) / MINUTES_IN_DAY) * 100;
-        } else {
-          // Midnight crossing — show from start to 24:00
-          leftPct = (start / MINUTES_IN_DAY) * 100;
-          widthPct = ((MINUTES_IN_DAY - start) / MINUTES_IN_DAY) * 100;
-        }
-        const selected = this._selectedDay === i;
-        blockHtml = `
-          <div class="time-block ${selected ? 'selected' : ''} ${isPending ? 'pending' : ''}"
-               style="left:${leftPct}%;width:${widthPct}%"
-               data-day="${i}">
-            <div class="drag-handle start" data-day="${i}" data-edge="start"></div>
-            <div class="drag-handle end" data-day="${i}" data-edge="end"></div>
-            ${selected ? `
-              <span class="time-tooltip start">${this._minutesToTime(start)}</span>
-              <span class="time-tooltip end">${this._minutesToTime(end)}</span>
-            ` : ''}
+  _renderQuickRunPanel() {
+    if (!this._showQuickRun) return '';
+    const now = new Date();
+
+    // Custom time picker defaults
+    const defStartH = now.getHours();
+    const defStartM = Math.ceil(now.getMinutes() / 15) * 15;
+    const defEndH = Math.min(23, defStartH + 1);
+    const defEndM = defStartM;
+
+    const hourOpts = (sel) => Array.from({ length: 24 }, (_, i) =>
+      `<option value="${i}" ${i === sel ? 'selected' : ''}>${String(i).padStart(2, '0')}</option>`
+    ).join('');
+    const minOpts = (sel) => [0, 15, 30, 45].map(m =>
+      `<option value="${m}" ${m === (sel % 60) ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`
+    ).join('');
+
+    const dateStr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+    // Active single events list
+    const eventsHtml = this._singleEvents.length > 0 ? `
+      <div class="qr-events">
+        <div class="qr-events-label">Active one-time events:</div>
+        ${this._singleEvents.map(ev => {
+      const bStr = `${String(ev.begin.getHours()).padStart(2, '0')}:${String(ev.begin.getMinutes()).padStart(2, '0')}`;
+      const eStr = `${String(ev.end.getHours()).padStart(2, '0')}:${String(ev.end.getMinutes()).padStart(2, '0')}`;
+      const dStr = `${String(ev.begin.getMonth() + 1).padStart(2, '0')}/${String(ev.begin.getDate()).padStart(2, '0')}`;
+      return `<div class="qr-event-row">
+            <span class="qr-event-time">${dStr} ${bStr}–${eStr}</span>
+            <button class="qr-event-clear" data-action="clear-single-event" data-slot="${ev.slot}" title="Remove">
+              <ha-icon icon="mdi:close" style="--mdc-icon-size:14px"></ha-icon>
+            </button>
           </div>`;
+    }).join('')}
+      </div>` : '';
+
+    const customPicker = this._quickRunCustom ? `
+      <div class="qr-custom-section">
+        <div class="qr-custom-row">
+          <span class="qr-custom-label">Start</span>
+          <input type="date" class="qr-date-input" data-field="qr-start-date" value="${dateStr(now)}">
+          <select class="time-sel" data-field="qrStartH">${hourOpts(defStartH)}</select>
+          <span class="time-colon">:</span>
+          <select class="time-sel" data-field="qrStartM">${minOpts(defStartM)}</select>
+        </div>
+        <div class="qr-custom-row">
+          <span class="qr-custom-label">End</span>
+          <input type="date" class="qr-date-input" data-field="qr-end-date" value="${dateStr(now)}">
+          <select class="time-sel" data-field="qrEndH">${hourOpts(defEndH)}</select>
+          <span class="time-colon">:</span>
+          <select class="time-sel" data-field="qrEndM">${minOpts(defEndM)}</select>
+        </div>
+        <button class="btn btn-sm btn-primary" data-action="schedule-custom-run" style="margin-top:6px">
+          <ha-icon icon="mdi:calendar-plus" style="--mdc-icon-size:15px;margin-right:4px"></ha-icon> Schedule
+        </button>
+      </div>` : '';
+
+    return `
+      <div class="quick-run-panel">
+        <div class="qr-header">
+          <ha-icon icon="mdi:flash" style="--mdc-icon-size:18px;color:var(--qr-color)"></ha-icon>
+          <span class="qr-title">Quick Run</span>
+          <span class="qr-subtitle">One-time pump activation</span>
+        </div>
+        <div class="qr-presets">
+          ${QUICK_RUN_PRESETS.map(p => `
+            <button class="qr-preset" data-action="quick-run-preset" data-minutes="${p.minutes}">${p.label}</button>
+          `).join('')}
+          <button class="qr-preset qr-preset-custom ${this._quickRunCustom ? 'active' : ''}" data-action="toggle-quick-run-custom">
+            <ha-icon icon="mdi:clock-edit-outline" style="--mdc-icon-size:15px;margin-right:3px"></ha-icon>Custom
+          </button>
+        </div>
+        ${customPicker}
+        ${eventsHtml}
+      </div>`;
+  }
+
+  /* ─── Styles ─── */
+
+  _getStyles(enabled) {
+    return `
+      :host {
+        display: block;
+        --primary-color: var(--ha-card-header-color, #4fc3f7);
+        --block-gradient-start: #29b6f6;
+        --block-gradient-end: #0288d1;
+        --block-hover: #039be5;
+        --block-selected: #ff9800;
+        --bg-bar: var(--secondary-background-color, #f5f5f5);
+        --text-color: var(--primary-text-color, #212121);
+        --text-secondary: var(--secondary-text-color, #757575);
+        --card-bg: var(--ha-card-background, var(--card-background-color, white));
+        --pending-stripe: #ffb74d;
+        --danger: #ef5350;
+        --radius: 8px;
+        --qr-color: #66bb6a;
       }
-      return `
-        <div class="day-row">
-          <div class="day-label">${day}</div>
-          <div class="timeline-bar" data-day="${i}">${blockHtml}</div>
-        </div>`;
-    }).join('');
+      ha-card {
+        padding: 16px;
+        overflow: visible;
+      }
 
-    const selectionInfo = this._selectedDay >= 0 ? this._renderSelectionInfo(data) : '';
+      /* ─ Header ─ */
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      .title-row {
+        display: flex;
+        align-items: center;
+      }
+      .title {
+        font-size: 1.1em;
+        font-weight: 600;
+        color: var(--text-color);
+        letter-spacing: 0.01em;
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .schedule-summary {
+        font-size: 0.8em;
+        color: var(--text-secondary);
+        background: var(--bg-bar);
+        padding: 3px 10px;
+        border-radius: 12px;
+      }
+      .unsaved-badge {
+        font-size: 0.72em;
+        font-weight: 600;
+        color: white;
+        background: var(--block-selected);
+        padding: 2px 8px;
+        border-radius: 10px;
+        animation: pulse-badge 2s infinite;
+      }
+      @keyframes pulse-badge {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
 
-    return `
-      <div class="header">
-        <span class="title">${this._config.title}</span>
-        <div class="layer-tabs">${layerTabs}</div>
-      </div>
-      <div class="hour-labels">${hourLabels}</div>
-      ${dayRows}
-      ${selectionInfo}
-      <div class="footer">
-        <div class="status">
-          <span class="status-dot"></span>
-          Schedule ${enabled ? 'Active' : 'Inactive'}
-        </div>
-        <div class="actions">
-          <button class="btn btn-outline" data-action="refresh">↻ Refresh</button>
-          ${hasPending ? `<button class="btn btn-outline" data-action="discard">Discard</button>` : ''}
-          ${hasPending ? `<button class="btn btn-primary" data-action="save">Save Changes</button>` : ''}
-        </div>
-      </div>`;
+      /* ─ Grid ─ */
+      .grid-container {
+        position: relative;
+      }
+      .hour-labels {
+        display: flex;
+        margin-left: 44px;
+        margin-bottom: 2px;
+        position: relative;
+        height: 18px;
+      }
+      .hour-label {
+        position: absolute;
+        font-size: 0.68em;
+        font-weight: 500;
+        color: var(--text-secondary);
+        transform: translateX(-50%);
+        letter-spacing: 0.02em;
+      }
+
+      /* ─ Day Row ─ */
+      .day-row {
+        display: flex;
+        align-items: center;
+        margin-bottom: 3px;
+        height: 34px;
+        transition: background 0.15s;
+        border-radius: 4px;
+        padding: 0 2px;
+      }
+      .day-row:hover {
+        background: color-mix(in srgb, var(--bg-bar) 50%, transparent);
+      }
+      .day-row.today {
+        background: color-mix(in srgb, var(--primary-color) 6%, transparent);
+      }
+      .day-label {
+        width: 36px;
+        font-size: 0.82em;
+        font-weight: 500;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+        text-align: right;
+        padding-right: 8px;
+        user-select: none;
+      }
+      .today-label {
+        color: var(--primary-color);
+        font-weight: 700;
+      }
+      .timeline-bar {
+        flex: 1;
+        height: 28px;
+        background: var(--bg-bar);
+        border-radius: 6px;
+        position: relative;
+        cursor: pointer;
+        overflow: visible;
+        touch-action: none;
+        transition: box-shadow 0.15s;
+      }
+      .timeline-bar:hover {
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 30%, transparent);
+      }
+
+      /* ─ Now Line ─ */
+      .now-line {
+        position: absolute;
+        top: -2px;
+        bottom: -2px;
+        width: 2px;
+        background: var(--danger);
+        border-radius: 1px;
+        z-index: 15;
+        pointer-events: none;
+      }
+      .now-line::before {
+        content: '';
+        position: absolute;
+        top: -3px;
+        left: -3px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--danger);
+      }
+
+      /* ─ Single Event Overlay ─ */
+      .single-event-bar {
+        position: absolute;
+        top: 1px;
+        bottom: 1px;
+        background: linear-gradient(135deg, rgba(76,175,80,0.55), rgba(56,142,60,0.55));
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 4;
+        border: 1px solid rgba(76,175,80,0.4);
+      }
+
+      /* ─ Time Block ─ */
+      .time-block {
+        position: absolute;
+        top: 3px;
+        bottom: 3px;
+        background: linear-gradient(135deg, var(--block-gradient-start), var(--block-gradient-end));
+        border-radius: 4px;
+        cursor: pointer;
+        transition: filter 0.12s, box-shadow 0.12s;
+        min-width: 4px;
+        touch-action: none;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      }
+      .time-block:hover {
+        filter: brightness(1.1);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      }
+      .time-block.selected {
+        background: linear-gradient(135deg, #ffa726, #f57c00);
+        box-shadow: 0 0 0 2px var(--block-selected), 0 2px 8px rgba(255,152,0,0.35);
+      }
+      .time-block.pending {
+        background: repeating-linear-gradient(
+          -45deg,
+          var(--block-gradient-start),
+          var(--block-gradient-start) 4px,
+          var(--pending-stripe) 4px,
+          var(--pending-stripe) 8px
+        );
+      }
+      .time-block.selected.pending {
+        background: repeating-linear-gradient(
+          -45deg,
+          #ffa726,
+          #ffa726 4px,
+          #fff176 4px,
+          #fff176 8px
+        );
+        box-shadow: 0 0 0 2px var(--block-selected), 0 2px 8px rgba(255,152,0,0.35);
+      }
+
+      /* ─ Drag Handles ─ */
+      .drag-handle {
+        position: absolute;
+        top: -2px;
+        bottom: -2px;
+        width: 18px;
+        cursor: col-resize;
+        z-index: 10;
+        touch-action: none;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      .time-block:hover .drag-handle,
+      .time-block.selected .drag-handle {
+        opacity: 1;
+      }
+      .drag-handle.start { left: -6px; }
+      .drag-handle.end { right: -6px; }
+      .drag-handle::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 3px;
+        height: 14px;
+        background: rgba(255,255,255,0.8);
+        border-radius: 2px;
+        box-shadow: 0 0 2px rgba(0,0,0,0.2);
+      }
+
+      /* ─ Tooltip ─ */
+      .block-tooltip {
+        position: absolute;
+        top: -28px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--text-color);
+        color: var(--card-bg);
+        font-size: 0.72em;
+        font-weight: 500;
+        padding: 3px 8px;
+        border-radius: 4px;
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 25;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        letter-spacing: 0.03em;
+      }
+      .block-tooltip::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 4px solid transparent;
+        border-top-color: var(--text-color);
+      }
+
+      /* ─ Drag Tooltip (floating) ─ */
+      .drag-tooltip {
+        position: fixed;
+        background: var(--text-color);
+        color: var(--card-bg);
+        font-size: 0.78em;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 6px;
+        pointer-events: none;
+        z-index: 1000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        letter-spacing: 0.02em;
+        transition: none;
+      }
+
+      /* ─ Selection Panel ─ */
+      .selection-panel {
+        margin-top: 10px;
+        padding: 10px 14px;
+        background: var(--bg-bar);
+        border-radius: var(--radius);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        animation: slideDown 0.15s ease-out;
+      }
+      @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .sel-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .sel-day {
+        font-weight: 600;
+        font-size: 0.9em;
+        color: var(--text-color);
+      }
+      .sel-hint {
+        font-size: 0.85em;
+        color: var(--text-secondary);
+      }
+      .sel-actions {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .time-display {
+        display: flex;
+        align-items: center;
+        background: var(--card-bg);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 0.88em;
+        font-weight: 500;
+        color: var(--text-color);
+        cursor: pointer;
+        transition: border-color 0.15s, box-shadow 0.15s;
+        font-family: inherit;
+      }
+      .time-display:hover {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 1px var(--primary-color);
+      }
+
+      /* ─ Time Editor ─ */
+      .time-editor {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .time-sel {
+        appearance: none;
+        -webkit-appearance: none;
+        background: var(--card-bg);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 0.85em;
+        font-weight: 500;
+        color: var(--text-color);
+        cursor: pointer;
+        text-align: center;
+        min-width: 42px;
+        font-family: inherit;
+      }
+      .time-sel:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 1px var(--primary-color);
+      }
+      .time-colon, .time-dash {
+        font-weight: 600;
+        color: var(--text-secondary);
+        padding: 0 2px;
+      }
+
+      /* ─ Apply To ─ */
+      .apply-to-section {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+        animation: slideDown 0.15s ease-out;
+      }
+      .apply-to-label {
+        font-size: 0.8em;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+      }
+      .apply-to-days {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .day-check {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        padding: 4px 10px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 6px;
+        font-size: 0.8em;
+        cursor: pointer;
+        transition: all 0.12s;
+        user-select: none;
+        background: var(--card-bg);
+        color: var(--text-secondary);
+      }
+      .day-check:hover {
+        border-color: var(--primary-color);
+      }
+      .day-check.checked {
+        background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+        border-color: var(--primary-color);
+        color: var(--primary-color);
+        font-weight: 600;
+      }
+      .day-check input {
+        display: none;
+      }
+      .apply-to-actions {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      /* ─ Footer ─ */
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 14px;
+        padding-top: 10px;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #9e9e9e;
+        transition: background 0.2s;
+      }
+      .status-dot.active {
+        background: #4caf50;
+        box-shadow: 0 0 6px rgba(76,175,80,0.4);
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      /* ─ Buttons ─ */
+      .btn {
+        padding: 6px 14px;
+        border: none;
+        border-radius: 6px;
+        font-size: 0.8em;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.12s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: inherit;
+      }
+      .btn-sm { padding: 4px 10px; font-size: 0.78em; }
+      .btn-primary {
+        background: var(--primary-color);
+        color: white;
+      }
+      .btn-primary:hover { filter: brightness(0.9); }
+      .btn-primary:disabled { opacity: 0.35; cursor: default; filter: none; }
+      .btn-outline {
+        background: transparent;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        color: var(--text-secondary);
+      }
+      .btn-outline:hover { background: var(--bg-bar); }
+      .btn-danger {
+        background: transparent;
+        border: 1px solid var(--danger);
+        color: var(--danger);
+      }
+      .btn-danger:hover { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+      .btn-icon {
+        background: transparent;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        padding: 5px 8px;
+        border-radius: 6px;
+        color: var(--text-secondary);
+      }
+      .btn-icon:hover { background: var(--bg-bar); }
+      .btn-save {
+        animation: pulse-save 1.5s ease-in-out infinite;
+      }
+      @keyframes pulse-save {
+        0%, 100% { box-shadow: none; }
+        50% { box-shadow: 0 0 8px rgba(79,195,247,0.5); }
+      }
+
+      /* ─ Quick Run ─ */
+      .quick-run-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 10px;
+        border-radius: 14px;
+        font-size: 0.76em;
+        font-weight: 600;
+        border: 1px solid var(--qr-color);
+        color: var(--qr-color);
+        background: transparent;
+        cursor: pointer;
+        transition: all 0.15s;
+        font-family: inherit;
+      }
+      .quick-run-chip:hover {
+        background: color-mix(in srgb, var(--qr-color) 10%, transparent);
+      }
+      .quick-run-chip.active {
+        background: var(--qr-color);
+        color: white;
+      }
+      .quick-run-panel {
+        margin-top: 10px;
+        padding: 12px 14px;
+        background: color-mix(in srgb, var(--qr-color) 6%, var(--bg-bar));
+        border-radius: var(--radius);
+        border: 1px solid color-mix(in srgb, var(--qr-color) 30%, var(--divider-color, #e0e0e0));
+        animation: slideDown 0.15s ease-out;
+      }
+      .qr-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .qr-title {
+        font-weight: 600;
+        font-size: 0.9em;
+        color: var(--text-color);
+      }
+      .qr-subtitle {
+        font-size: 0.78em;
+        color: var(--text-secondary);
+        margin-left: auto;
+      }
+      .qr-presets {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .qr-preset {
+        padding: 6px 16px;
+        border: 1px solid color-mix(in srgb, var(--qr-color) 40%, var(--divider-color, #e0e0e0));
+        border-radius: 8px;
+        background: var(--card-bg);
+        color: var(--text-color);
+        font-size: 0.84em;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.12s;
+        font-family: inherit;
+        display: inline-flex;
+        align-items: center;
+      }
+      .qr-preset:hover {
+        border-color: var(--qr-color);
+        background: color-mix(in srgb, var(--qr-color) 8%, var(--card-bg));
+      }
+      .qr-preset:active {
+        background: var(--qr-color);
+        color: white;
+      }
+      .qr-preset.active {
+        background: color-mix(in srgb, var(--qr-color) 12%, var(--card-bg));
+        border-color: var(--qr-color);
+      }
+      .qr-custom-section {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+        animation: slideDown 0.15s ease-out;
+      }
+      .qr-custom-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .qr-custom-label {
+        font-size: 0.8em;
+        font-weight: 500;
+        color: var(--text-secondary);
+        width: 36px;
+        flex-shrink: 0;
+      }
+      .qr-date-input {
+        appearance: none;
+        -webkit-appearance: none;
+        background: var(--card-bg);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 0.82em;
+        color: var(--text-color);
+        font-family: inherit;
+      }
+      .qr-date-input:focus {
+        outline: none;
+        border-color: var(--qr-color);
+        box-shadow: 0 0 0 1px var(--qr-color);
+      }
+      .qr-events {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+      }
+      .qr-events-label {
+        font-size: 0.78em;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+      }
+      .qr-event-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 8px;
+        margin-bottom: 3px;
+        background: var(--card-bg);
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+      }
+      .qr-event-time {
+        font-size: 0.84em;
+        font-weight: 500;
+        color: var(--text-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .qr-event-clear {
+        background: transparent;
+        border: none;
+        color: var(--danger);
+        cursor: pointer;
+        padding: 2px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        transition: background 0.12s;
+      }
+      .qr-event-clear:hover {
+        background: color-mix(in srgb, var(--danger) 10%, transparent);
+      }
+    `;
   }
 
-  _renderSelectionInfo(data) {
-    const i = this._selectedDay;
-    const entry = data[i];
-    if (!entry || !Array.isArray(entry)) {
-      return `
-        <div class="selection-info">
-          <span class="day-name">${DAYS[i]}</span>
-          <span class="time-range">No schedule</span>
-          <button class="btn btn-primary" data-action="add" data-day="${i}" style="margin-left:auto">+ Add</button>
-        </div>`;
-    }
-    return `
-      <div class="selection-info">
-        <span class="day-name">${DAYS[i]}</span>
-        <span class="time-range">${this._minutesToTime(entry[0])} – ${this._minutesToTime(entry[1])}</span>
-        <button class="btn btn-danger" data-action="delete" data-day="${i}" style="margin-left:auto">✕ Remove</button>
-      </div>`;
-  }
+  /* ─── Events ─── */
 
   _attachEvents() {
     const root = this.shadowRoot;
 
-    // Layer tabs
-    root.querySelectorAll('.layer-tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        this._activeLayer = parseInt(tab.dataset.layer);
-        this._selectedDay = -1;
-        this._pendingChanges.clear();
-        this._render();
-      });
-    });
-
-    // Timeline bar clicks (add block or select)
+    // Timeline bar clicks
     root.querySelectorAll('.timeline-bar').forEach(bar => {
       bar.addEventListener('click', (e) => {
         if (e.target.classList.contains('drag-handle')) return;
         const day = parseInt(bar.dataset.day);
-        if (e.target.classList.contains('time-block')) {
-          // Select/deselect block
-          this._selectedDay = this._selectedDay === day ? -1 : day;
+
+        if (e.target.closest('.time-block')) {
+          const block = e.target.closest('.time-block');
+          const layer = parseInt(block.dataset.layer);
+          const isSame = this._selectedBlock &&
+            this._selectedBlock.day === day && this._selectedBlock.layer === layer;
+          this._selectedBlock = isSame ? null : { day, layer };
+          this._showApplyTo = false;
+          this._applyDays.clear();
+          this._editingTime = false;
           this._render();
           return;
         }
-        // Click on empty bar — select the day (shows add button)
-        this._selectedDay = day;
+
+        // Click on empty bar — add a new block
+        const rect = bar.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const clickMins = this._snapMinutes(Math.round((x / rect.width) * MINUTES_IN_DAY));
+        const freeLayer = this._findFreeLayer(day);
+        if (freeLayer >= 0) {
+          const start = Math.max(0, clickMins - 60);
+          const end = Math.min(MINUTES_IN_DAY, clickMins + 60);
+          this._pendingChanges.set(`${day},${freeLayer}`, [start, end]);
+          this._selectedBlock = { day, layer: freeLayer };
+          this._showApplyTo = false;
+          this._editingTime = false;
+        }
         this._render();
+      });
+    });
+
+    // Block hover for tooltips
+    root.querySelectorAll('.time-block').forEach(block => {
+      block.addEventListener('mouseenter', () => {
+        const day = parseInt(block.dataset.day);
+        const layer = parseInt(block.dataset.layer);
+        this._hoverBlock = { day, layer };
+        // Update just this block's tooltip without full re-render
+        const blocks = this._getDayBlocks(day);
+        const b = blocks.find(b => b.layer === layer);
+        if (b) {
+          let tooltip = block.querySelector('.block-tooltip');
+          if (!tooltip) {
+            tooltip = document.createElement('div');
+            tooltip.className = 'block-tooltip';
+            block.appendChild(tooltip);
+          }
+          tooltip.textContent = `${this._minutesToTime(b.start)} – ${this._minutesToTime(b.end)}`;
+        }
+      });
+      block.addEventListener('mouseleave', () => {
+        this._hoverBlock = null;
+        const tooltip = block.querySelector('.block-tooltip');
+        const sel = this._selectedBlock &&
+          parseInt(block.dataset.day) === this._selectedBlock.day &&
+          parseInt(block.dataset.layer) === this._selectedBlock.layer;
+        if (tooltip && !sel) tooltip.remove();
       });
     });
 
@@ -466,39 +1222,67 @@ class AlphaHwrScheduleCard extends HTMLElement {
       handle.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        handle.setPointerCapture(e.pointerId);
         const day = parseInt(handle.dataset.day);
+        const layer = parseInt(handle.dataset.layer);
         const edge = handle.dataset.edge;
         const bar = handle.closest('.timeline-bar');
         const rect = bar.getBoundingClientRect();
-        this._dragging = { day, edge, bar, rect };
-        this._selectedDay = day;
+        const block = handle.closest('.time-block');
+
+        this._selectedBlock = { day, layer };
+
+        const data = this._getDayBlocks(day);
+        const entry = data.find(b => b.layer === layer);
+        if (!entry) return;
+        let curStart = entry.start, curEnd = entry.end;
+
+        // Create floating drag tooltip
+        const dragTip = document.createElement('div');
+        dragTip.className = 'drag-tooltip';
+        dragTip.style.cssText = `position:fixed;z-index:10000;`;
+        document.body.appendChild(dragTip);
+
+        const updateDragTip = (me) => {
+          dragTip.textContent = edge === 'start' ? this._minutesToTime(curStart) : this._minutesToTime(curEnd);
+          dragTip.style.left = `${me.clientX + 12}px`;
+          dragTip.style.top = `${me.clientY - 30}px`;
+        };
+        updateDragTip(e);
 
         const onMove = (me) => {
-          if (!this._dragging) return;
-          const curRect = this._dragging.rect;
-          const x = Math.max(0, Math.min(me.clientX - curRect.left, curRect.width));
-          const mins = this._snapMinutes(Math.round((x / curRect.width) * MINUTES_IN_DAY));
-          const data = this._getLayerData();
-          const entry = data[day];
-          if (!Array.isArray(entry)) return;
-          let [start, end] = entry;
+          const x = Math.max(0, Math.min(me.clientX - rect.left, rect.width));
+          const mins = this._snapMinutes(Math.round((x / rect.width) * MINUTES_IN_DAY));
+
           if (edge === 'start') {
-            start = Math.min(mins, end - MIN_BLOCK_MINUTES);
+            curStart = Math.max(0, Math.min(mins, curEnd - MIN_BLOCK_MINUTES));
           } else {
-            end = Math.max(mins, start + MIN_BLOCK_MINUTES);
+            curEnd = Math.min(MINUTES_IN_DAY, Math.max(mins, curStart + MIN_BLOCK_MINUTES));
           }
-          start = Math.max(0, Math.min(start, MINUTES_IN_DAY - MIN_BLOCK_MINUTES));
-          end = Math.max(MIN_BLOCK_MINUTES, Math.min(end, MINUTES_IN_DAY));
-          this._pendingChanges.set(day, [start, end]);
-          this._render();
-          // Re-attach drag after re-render
-          this._reattachDrag(onMove, onUp);
+
+          // Direct DOM update
+          const leftPct = (curStart / MINUTES_IN_DAY) * 100;
+          const widthPct = ((curEnd - curStart) / MINUTES_IN_DAY) * 100;
+          block.style.left = leftPct + '%';
+          block.style.width = widthPct + '%';
+
+          // Update block tooltip
+          const tooltip = block.querySelector('.block-tooltip');
+          if (tooltip) tooltip.textContent = `${this._minutesToTime(curStart)} – ${this._minutesToTime(curEnd)}`;
+
+          // Update selection panel time
+          const timeBtn = root.querySelector('.time-display');
+          if (timeBtn) timeBtn.childNodes[0].textContent = `${this._minutesToTime(curStart)} – ${this._minutesToTime(curEnd)} `;
+
+          updateDragTip(me);
         };
 
         const onUp = () => {
-          this._dragging = null;
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
+          if (dragTip.parentNode) dragTip.remove();
+          this._pendingChanges.set(`${day},${layer}`, [curStart, curEnd]);
+          this._render();
         };
 
         document.addEventListener('pointermove', onMove);
@@ -508,58 +1292,151 @@ class AlphaHwrScheduleCard extends HTMLElement {
 
     // Action buttons
     root.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
         const action = btn.dataset.action;
-        if (action === 'refresh') this._callRefresh();
-        else if (action === 'save') this._saveChanges();
-        else if (action === 'discard') this._discardChanges();
-        else if (action === 'add') this._addBlock(parseInt(btn.dataset.day));
-        else if (action === 'delete') this._deleteBlock(parseInt(btn.dataset.day));
+        switch (action) {
+          case 'refresh': this._callRefresh(); break;
+          case 'save': this._saveChanges(); break;
+          case 'discard': this._discardChanges(); break;
+          case 'add': this._addBlock(parseInt(btn.dataset.day)); break;
+          case 'delete':
+            this._deleteBlock(parseInt(btn.dataset.day), parseInt(btn.dataset.layer));
+            break;
+          case 'toggle-schedule': this._toggleSchedule(); break;
+          case 'edit-time':
+            this._editingTime = true;
+            this._render();
+            break;
+          case 'save-time':
+            this._saveInlineTime();
+            break;
+          case 'apply-to':
+            this._showApplyTo = !this._showApplyTo;
+            this._applyDays.clear();
+            this._render();
+            break;
+          case 'select-weekdays':
+            this._applyDays.clear();
+            for (let i = 0; i < 5; i++) {
+              if (this._selectedBlock && i !== this._selectedBlock.day) this._applyDays.add(i);
+            }
+            this._render();
+            break;
+          case 'select-all-days':
+            this._applyDays.clear();
+            for (let i = 0; i < 7; i++) {
+              if (this._selectedBlock && i !== this._selectedBlock.day) this._applyDays.add(i);
+            }
+            this._render();
+            break;
+          case 'confirm-apply':
+            this._applyToSelectedDays();
+            break;
+          case 'toggle-quick-run':
+            this._showQuickRun = !this._showQuickRun;
+            this._quickRunCustom = false;
+            if (this._showQuickRun) {
+              // Refresh single events when opening
+              this._callRefreshSingleEvents();
+            }
+            this._render();
+            break;
+          case 'quick-run-preset':
+            this._scheduleQuickRun(parseInt(btn.dataset.minutes));
+            break;
+          case 'toggle-quick-run-custom':
+            this._quickRunCustom = !this._quickRunCustom;
+            this._render();
+            break;
+          case 'schedule-custom-run':
+            this._scheduleCustomRun();
+            break;
+          case 'clear-single-event':
+            this._clearSingleEvent(parseInt(btn.dataset.slot));
+            break;
+        }
+      });
+    });
+
+    // Apply-to checkboxes
+    root.querySelectorAll('[data-apply-day]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const day = parseInt(cb.dataset.applyDay);
+        if (cb.checked) this._applyDays.add(day);
+        else this._applyDays.delete(day);
+        this._render();
       });
     });
   }
 
-  _reattachDrag(onMove, onUp) {
-    // After re-render, reattach the active drag handle events
-    if (!this._dragging) return;
-    const { day, edge } = this._dragging;
-    const handle = this.shadowRoot.querySelector(
-      `.drag-handle.${edge}[data-day="${day}"]`
-    );
-    if (handle) {
-      const bar = handle.closest('.timeline-bar');
-      this._dragging.bar = bar;
-      this._dragging.rect = bar.getBoundingClientRect();
-    }
-    // onMove/onUp are still attached to document
-  }
+  /* ─── Actions ─── */
 
   _addBlock(day) {
-    // Add a default 2-hour block at 06:00-08:00
-    this._pendingChanges.set(day, [360, 480]);
-    this._selectedDay = day;
+    const freeLayer = this._findFreeLayer(day);
+    if (freeLayer < 0) return;
+    this._pendingChanges.set(`${day},${freeLayer}`, [360, 480]); // 06:00 – 08:00
+    this._selectedBlock = { day, layer: freeLayer };
+    this._showApplyTo = false;
+    this._editingTime = false;
     this._render();
   }
 
-  _deleteBlock(day) {
-    this._pendingChanges.set(day, null);
-    this._selectedDay = -1;
+  _deleteBlock(day, layer) {
+    this._pendingChanges.set(`${day},${layer}`, null);
+    this._selectedBlock = null;
+    this._showApplyTo = false;
+    this._render();
+  }
+
+  _saveInlineTime() {
+    if (!this._selectedBlock) return;
+    const root = this.shadowRoot;
+    const sH = parseInt(root.querySelector('[data-field="startH"]').value);
+    const sM = parseInt(root.querySelector('[data-field="startM"]').value);
+    const eH = parseInt(root.querySelector('[data-field="endH"]').value);
+    const eM = parseInt(root.querySelector('[data-field="endM"]').value);
+    const start = sH * 60 + sM;
+    const end = eH * 60 + eM;
+    if (end <= start) return; // invalid range
+    const { day, layer } = this._selectedBlock;
+    this._pendingChanges.set(`${day},${layer}`, [start, end]);
+    this._editingTime = false;
+    this._render();
+  }
+
+  _applyToSelectedDays() {
+    if (!this._selectedBlock) return;
+    const { day: srcDay, layer: srcLayer } = this._selectedBlock;
+    const blocks = this._getDayBlocks(srcDay);
+    const srcBlock = blocks.find(b => b.layer === srcLayer);
+    if (!srcBlock) return;
+
+    for (const targetDay of this._applyDays) {
+      const freeLayer = this._findFreeLayer(targetDay);
+      if (freeLayer >= 0) {
+        this._pendingChanges.set(`${targetDay},${freeLayer}`, [srcBlock.start, srcBlock.end]);
+      }
+    }
+    this._showApplyTo = false;
+    this._applyDays.clear();
     this._render();
   }
 
   _discardChanges() {
     this._pendingChanges.clear();
-    this._selectedDay = -1;
+    this._selectedBlock = null;
+    this._showApplyTo = false;
+    this._editingTime = false;
     this._render();
   }
 
   _saveChanges() {
     const device = this._config.device;
-    const layer = this._activeLayer;
 
-    for (const [day, entry] of this._pendingChanges) {
+    for (const [key, entry] of this._pendingChanges) {
+      const [day, layer] = key.split(',').map(Number);
       if (entry === null) {
-        // Clear entry
         this._hass.callService('esphome', `${device}_clear_schedule_entry`, {
           data: `${layer},${day}`,
         });
@@ -576,16 +1453,82 @@ class AlphaHwrScheduleCard extends HTMLElement {
     }
 
     this._pendingChanges.clear();
-    this._selectedDay = -1;
+    this._selectedBlock = null;
+    this._showApplyTo = false;
+    this._editingTime = false;
 
-    // Schedule a refresh after the pump processes the writes
     setTimeout(() => this._callRefresh(), 3000);
     this._render();
+  }
+
+  _toggleSchedule() {
+    const device = this._config.device;
+    const enabled = this._schedule ? this._schedule.e : 0;
+    this._hass.callService('esphome', `${device}_set_schedule_enabled`, {
+      data: enabled ? '0' : '1',
+    });
+    setTimeout(() => this._callRefresh(), 2000);
   }
 
   _callRefresh() {
     const device = this._config.device;
     this._hass.callService('esphome', `${device}_refresh_schedule`, {});
+  }
+
+  /* ─── Quick Run Actions ─── */
+
+  _scheduleQuickRun(durationMinutes) {
+    const now = Math.floor(Date.now() / 1000);
+    const begin = now + 60; // start 1 minute from now
+    const end = begin + durationMinutes * 60;
+    const device = this._config.device;
+    this._hass.callService('esphome', `${device}_set_single_event`, {
+      data: `${begin},${end}`,
+    });
+    // Refresh after a delay to see the new event
+    setTimeout(() => this._callRefreshSingleEvents(), 3000);
+  }
+
+  _scheduleCustomRun() {
+    const root = this.shadowRoot;
+    const startDate = root.querySelector('[data-field="qr-start-date"]')?.value;
+    const startH = parseInt(root.querySelector('[data-field="qrStartH"]')?.value || '0');
+    const startM = parseInt(root.querySelector('[data-field="qrStartM"]')?.value || '0');
+    const endDate = root.querySelector('[data-field="qr-end-date"]')?.value;
+    const endH = parseInt(root.querySelector('[data-field="qrEndH"]')?.value || '0');
+    const endM = parseInt(root.querySelector('[data-field="qrEndM"]')?.value || '0');
+
+    if (!startDate || !endDate) return;
+
+    const [sy, smo, sd] = startDate.split('-').map(Number);
+    const [ey, emo, ed] = endDate.split('-').map(Number);
+    const beginTs = Math.floor(new Date(sy, smo - 1, sd, startH, startM).getTime() / 1000);
+    const endTs = Math.floor(new Date(ey, emo - 1, ed, endH, endM).getTime() / 1000);
+
+    if (endTs <= beginTs) return;
+
+    const device = this._config.device;
+    this._hass.callService('esphome', `${device}_set_single_event`, {
+      data: `${beginTs},${endTs}`,
+    });
+    this._quickRunCustom = false;
+    setTimeout(() => this._callRefreshSingleEvents(), 3000);
+  }
+
+  _clearSingleEvent(slot) {
+    const device = this._config.device;
+    this._hass.callService('esphome', `${device}_clear_single_event`, {
+      data: `${slot}`,
+    });
+    // Optimistic removal from local state
+    this._singleEvents = this._singleEvents.filter(e => e.slot !== slot);
+    this._render();
+    setTimeout(() => this._callRefreshSingleEvents(), 3000);
+  }
+
+  _callRefreshSingleEvents() {
+    const device = this._config.device;
+    this._hass.callService('esphome', `${device}_refresh_single_events`, {});
   }
 
   getCardSize() {
@@ -594,7 +1537,7 @@ class AlphaHwrScheduleCard extends HTMLElement {
 
   static getStubConfig() {
     return {
-      entity: 'text_sensor.alpha_hwr_schedule',
+      entity: 'sensor.alpha_hwr_weekly_schedule',
       device: 'hwr_pump',
       title: 'Pump Schedule',
     };
@@ -603,7 +1546,6 @@ class AlphaHwrScheduleCard extends HTMLElement {
 
 customElements.define('alpha-hwr-schedule-card', AlphaHwrScheduleCard);
 
-// Register with HA card picker
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'alpha-hwr-schedule-card',
