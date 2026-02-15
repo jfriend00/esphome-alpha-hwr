@@ -18,7 +18,7 @@ static const char *TAG = "alpha_hwr.control";
 // Reference: control.py _MODE_BYTE_MAP (lines 145-151) and _MODE_SUFFIX_MAP (lines 156-163)
 const ControlService::ControlModeMapping ControlService::CLASS10_CONTROL_MAP[] = {
     {0x00, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_PRESSURE (0)
-    {0x00, {0x00, 0x00, 0x00, 0x00}},  // PROPORTIONAL_PRESSURE (1) - not in _MODE_BYTE_MAP
+    {0x01, {0x45, 0x65, 0x70, 0x00}},  // PROPORTIONAL_PRESSURE (1) - mode_byte 0x01, suffix from _MODE_SUFFIX_MAP
     {0x02, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_SPEED (2)
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (3) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (4) - unused
@@ -86,9 +86,6 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
 }
 
 void ControlService::read_setpoints_from_pump() {
-  // Use the mode already cached from the passive notification (no need to re-query Object 86 Sub 6).
-  // The passive notification provides mode + basic setpoint, and get_mode_async() uses wildcard
-  // matching (0,0) that can collide with telemetry responses.
   if (!mode_valid_) {
     ESP_LOGW(TAG, "Cannot read setpoints: mode not yet known");
     return;
@@ -139,11 +136,48 @@ void ControlService::read_setpoints_from_pump() {
         }
       }, 5000);
   } else {
-    // For non-temperature modes (speed, flow, pressure), the setpoint is already
-    // cached from the passive notification in update_mode_from_notification().
-    // This is the same data Python's get_mode() reads from Object 86 Sub 6.
-    ESP_LOGD(TAG, "Setpoint for %s already cached from notification: %.4f",
-             get_mode_name(current_mode_), cached_setpoint_);
+    // For non-temperature modes, read Object 86 Sub 6 to get current setpoint.
+    // This is the same read Python's get_mode() uses.
+    // Reference: control.py::get_mode() line 398
+    // Use 3s delay to ensure stale passive notifications have been consumed
+    ESP_LOGI(TAG, "Reading setpoint via Object 86 Sub 6 (get_mode)...");
+    ControlMode expected_mode = current_mode_;
+    get_mode_async([this, expected_mode](bool success, ControlMode mode) {
+      if (success) {
+        // Check if pump returned a stale mode (not yet updated after set_mode)
+        if (mode != expected_mode) {
+          ESP_LOGW(TAG, "Pump returned stale mode %s (expected %s), retrying in 2s...",
+                   get_mode_name(mode), get_mode_name(expected_mode));
+          // Restore expected mode (don't let stale response overwrite our set_mode)
+          current_mode_ = expected_mode;
+          mode_valid_ = true;
+          cached_setpoint_ = NAN;
+          if (mode_change_callback_) {
+            mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
+          }
+          // Retry after additional delay
+          if (schedule_callback_) {
+            schedule_callback_([this]() {
+              get_mode_async([this](bool ok, ControlMode m) {
+                if (ok) {
+                  ESP_LOGI(TAG, "Retry setpoint read: %.4f (mode: %s)", cached_setpoint_, get_mode_name(m));
+                  if (mode_change_callback_) {
+                    mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
+                  }
+                } else {
+                  ESP_LOGW(TAG, "Retry setpoint read failed (timeout)");
+                }
+              });
+            }, 5000);
+          }
+        } else {
+          ESP_LOGI(TAG, "Setpoint read from pump: %.4f (mode: %s)", 
+                   cached_setpoint_, get_mode_name(mode));
+        }
+      } else {
+        ESP_LOGW(TAG, "Failed to read setpoint via Object 86 Sub 6 (timeout)");
+      }
+    });
   }
 }
 
@@ -180,13 +214,12 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
 
   std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
 
-  // Send with response matching - accept ANY Class 10 packet (Object ID 0 = wildcard match)
-  // Reference: base.py::_read_class10_object() uses match_class10_response which only checks p[4] == 0x0A
-  // The pump sends a passive notification (OpSpec 0x0E) with the control mode data, not a direct response
+  // Send with response matching for Object 86 Sub 6 response
+  // The pump responds with OpSpec 0x0E notification: bytes 6-7 = Sub 0x0001, bytes 8-9 = Obj 0x2F01
     this->transport_.send_command(
       packet, 
-      0x0000,  // Accept ANY Class 10 packet (wildcard match)
-      0x0000,  // Accept ANY Sub-ID (wildcard match)
+      0x0001,  // Match Sub-ID at bytes 6-7 of response frame
+      0x2F01,  // Match Obj-ID at bytes 8-9 of response frame
       [this, on_complete](bool success, const uint8_t* payload, size_t payload_len) {
         if (!success) {
           ESP_LOGW(TAG, "Failed to read control mode (timeout)");
@@ -348,9 +381,9 @@ bool ControlService::set_mode(ControlMode mode) {
     mode_change_callback_(current_mode_, 0, 0.0f);
   }
 
-  // Read setpoints for the new mode after a short delay
+  // Read setpoints for the new mode after delay (pump needs time to update passive notifications)
   if (schedule_callback_) {
-    schedule_callback_([this]() { read_setpoints_from_pump(); }, 2000);
+    schedule_callback_([this]() { read_setpoints_from_pump(); }, 5000);
   }
 
   ESP_LOGI(TAG, "Mode set to %s", get_mode_name(mode));

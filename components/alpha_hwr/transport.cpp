@@ -144,12 +144,10 @@ uint16_t Transport::calculate_expected_length() const {
   if (reassembly_buffer_.size() < 2) {
     return 0;
   }
-  // GENI packet: [Start][Length][Payload...][CRC_H][CRC_L]
-  // Total = Length field + 4 (start + length + 2-byte CRC)
-  // But actual packet format is: [Start][Length][Payload][CRC_H][CRC_L]
-  // where the length field counts: Payload bytes only
-  // So total = length_field + 2 (start + length bytes)
-  return reassembly_buffer_[1] + 2;
+  // GENI packet: [Start(1)][Length(1)][Dst][Src][...APDU...][CRC_H][CRC_L]
+  // Length field counts bytes after itself: Dst + Src + APDU (excludes Start, Length, CRC)
+  // Total = 1(Start) + 1(Length) + Length_field + 2(CRC) = Length_field + 4
+  return reassembly_buffer_[1] + 4;
 }
 
 void Transport::on_notification(const uint8_t* data, size_t len) {
