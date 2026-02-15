@@ -47,6 +47,9 @@ CONF_PRODUCT_NAME = "product_name"
 CONF_SINGLE_EVENTS = "single_events"
 CONF_EVENT_LOG = "event_log"
 CONF_HISTORY = "history"
+CONF_CYCLE_TIMESTAMPS = "cycle_timestamps"
+CONF_START_COUNT = "start_count"
+CONF_OPERATING_HOURS = "operating_hours"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -161,6 +164,23 @@ CONFIG_SCHEMA = cv.Schema(
             icon="mdi:chart-line",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
+        cv.Optional(CONF_CYCLE_TIMESTAMPS): text_sensor.text_sensor_schema(
+            icon="mdi:clock-outline",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_START_COUNT): sensor.sensor_schema(
+            accuracy_decimals=0,
+            icon="mdi:counter",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_OPERATING_HOURS): sensor.sensor_schema(
+            unit_of_measurement="h",
+            accuracy_decimals=1,
+            icon="mdi:timer-sand",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -268,3 +288,15 @@ async def to_code(config):
     if CONF_HISTORY in config:
         sens = await text_sensor.new_text_sensor(config[CONF_HISTORY])
         cg.add(var.set_history_text_sensor(sens))
+
+    if CONF_CYCLE_TIMESTAMPS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_CYCLE_TIMESTAMPS])
+        cg.add(var.set_cycle_timestamps_text_sensor(sens))
+
+    if CONF_START_COUNT in config:
+        sens = await sensor.new_sensor(config[CONF_START_COUNT])
+        cg.add(var.set_start_count_sensor(sens))
+
+    if CONF_OPERATING_HOURS in config:
+        sens = await sensor.new_sensor(config[CONF_OPERATING_HOURS])
+        cg.add(var.set_operating_hours_sensor(sens))

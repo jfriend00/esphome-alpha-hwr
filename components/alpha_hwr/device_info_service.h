@@ -119,6 +119,19 @@ class DeviceInfoService {
    */
   const std::string& get_ble_version() const { return ble_version_; }
 
+  /**
+   * Read operating statistics from pump.
+   *
+   * Reads Object 93, Sub-ID 1 (Type 248: operation_history_pump_obj):
+   *   - start_count: Total number of pump starts (uint32 BE, offset 0)
+   *   - operating_time: Total operating seconds (uint32 BE, offset 8) → hours
+   *
+   * @param on_complete Callback(bool success, uint32_t start_count, float operating_hours)
+   *
+   * Reference: device_info.py::read_statistics() lines 302-367
+   */
+  void read_statistics_async(std::function<void(bool, uint32_t, float)> on_complete);
+
  private:
   core::Transport &transport_;
   core::Session &session_;

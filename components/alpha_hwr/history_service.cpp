@@ -158,6 +158,73 @@ std::string HistoryService::format_display() const {
   return result;
 }
 
+void HistoryService::read_cycle_timestamps_async(
+    int count, std::function<void(bool, const std::vector<uint32_t> &)> on_complete) {
+  if (!session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot read cycle timestamps: session not ready");
+    std::vector<uint32_t> empty;
+    if (on_complete) on_complete(false, empty);
+    return;
+  }
+
+  // SubID 13300 = 10-cycle, SubID 13301 = 100-cycle
+  uint16_t sub_id = (count <= 10) ? 13300 : 13301;
+  ESP_LOGI(TAG, "Reading %d-cycle timestamps (Object 88, Sub %u)...", count <= 10 ? 10 : 100, sub_id);
+
+  // Object 88 = 0x58
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x03;  // OpSpec: INFO read
+  apdu[2] = 0x58;  // Object 88
+  apdu[3] = (sub_id >> 8) & 0xFF;
+  apdu[4] = sub_id & 0xFF;
+
+  uint8_t frame[64];
+  size_t frame_len;
+  build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  // Use wildcard matching for Object 88 responses
+  transport_.send_command(packet, 0, 0,
+      [this, count, on_complete](bool success, const uint8_t *payload, size_t payload_len) {
+    std::vector<uint32_t> timestamps;
+
+    if (!success || payload_len < 7) {
+      ESP_LOGW(TAG, "Cycle timestamps read failed (success=%d, len=%zu)", success, payload_len);
+      if (on_complete) on_complete(false, timestamps);
+      return;
+    }
+
+    // Skip 3-byte header if present [00 00 XX]
+    const uint8_t *data = payload;
+    size_t data_len = payload_len;
+    if (data_len > 3 && data[0] == 0x00 && data[1] == 0x00) {
+      data += 3;
+      data_len -= 3;
+    }
+
+    // Parse array of uint32 BE timestamps
+    size_t num_timestamps = data_len / 4;
+    for (size_t i = 0; i < num_timestamps; i++) {
+      size_t offset = i * 4;
+      if (offset + 4 <= data_len) {
+        uint32_t ts = (uint32_t(data[offset]) << 24) | (uint32_t(data[offset + 1]) << 16) |
+                      (uint32_t(data[offset + 2]) << 8) | uint32_t(data[offset + 3]);
+        if (ts > 0) {
+          // Apply year-2000 offset if needed (same as reference)
+          if (ts < 946684800) {  // Before Jan 1, 2000
+            ts += 946684800;
+          }
+          timestamps.push_back(ts);
+        }
+      }
+    }
+
+    ESP_LOGI(TAG, "Read %zu cycle timestamps", timestamps.size());
+    if (on_complete) on_complete(true, timestamps);
+  }, 5000);
+}
+
 }  // namespace services
 }  // namespace alpha_hwr
 }  // namespace esphome

@@ -94,66 +94,8 @@ void AlphaHwrComponent::setup() {
       // Start telemetry service when authenticated
       this->telemetry_service_.start();
       
-      // Read device information strings
-      this->set_timeout(1000, [this]() {
-        ESP_LOGI(TAG, "Reading device information...");
-        this->read_device_info();
-      });
-      
-      // Sync pump clock after authentication (first sync)
-      this->set_timeout(2000, [this]() {
-        ESP_LOGI(TAG, "Performing initial pump clock sync...");
-        this->time_service_.set_clock_async([this](bool success) {
-          if (success) {
-            ESP_LOGI(TAG, "✓ Initial pump clock sync successful");
-            this->last_time_sync_timestamp_ = millis();
-          } else {
-            ESP_LOGW(TAG, "Initial pump clock sync failed - will retry in 24 hours");
-          }
-        });
-      });
-      
-      // Refresh schedule display on successful authentication
-      this->set_timeout(4000, [this]() {
-        ESP_LOGI(TAG, "Refreshing schedule display on authentication...");
-        this->update_schedule_display();
-      });
-      
-      // Read event log first (lighter load), then chain history after completion
-      this->set_timeout(6000, [this]() {
-        ESP_LOGI(TAG, "Reading event log...");
-        this->read_event_log([this](bool success) {
-          if (success) {
-            ESP_LOGI("alpha_hwr", "Event log read complete");
-          } else {
-            ESP_LOGW("alpha_hwr", "Event log read failed");
-          }
-          // Chain history after event log to avoid wildcard conflicts
-          this->set_timeout(2000, [this]() {
-            ESP_LOGI("alpha_hwr", "Reading history trends...");
-            this->read_history([this](bool success) {
-              if (success) {
-                ESP_LOGI("alpha_hwr", "History trends read complete");
-              }
-              // Chain single events LAST (35 reads, many may timeout)
-              this->set_timeout(2000, [this]() {
-                ESP_LOGI(TAG, "Reading single events...");
-                this->read_single_events([](bool success, const std::vector<services::SingleEvent>& events) {
-                  if (success) {
-                    ESP_LOGI("alpha_hwr", "Read %zu active single events", events.size());
-                  }
-                });
-              });
-            });
-          });
-        });
-      });
-      
-      // Query control mode and setpoints after authentication
-      this->set_timeout(5000, [this]() {
-        ESP_LOGI(TAG, "Reading control mode and setpoints from pump...");
-        this->control_service_.read_setpoints_from_pump();
-      });
+      // Trigger the one-time data read chain
+      this->trigger_initial_data_reads();
     });
   
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
@@ -203,6 +145,71 @@ void AlphaHwrComponent::loop() {
   this->transport_.loop();
 }
 
+void AlphaHwrComponent::trigger_initial_data_reads() {
+  if (initial_data_read_done_) return;
+  initial_data_read_done_ = true;
+  ESP_LOGI(TAG, "Triggering initial data reads...");
+
+  // Read device information strings
+  this->set_timeout(1000, [this]() {
+    ESP_LOGI(TAG, "Reading device information...");
+    this->read_device_info();
+  });
+
+  // Sync pump clock
+  this->set_timeout(2000, [this]() {
+    ESP_LOGI(TAG, "Performing initial pump clock sync...");
+    this->time_service_.set_clock_async([this](bool success) {
+      if (success) {
+        ESP_LOGI(TAG, "✓ Initial pump clock sync successful");
+        this->last_time_sync_timestamp_ = millis();
+      } else {
+        ESP_LOGW(TAG, "Initial pump clock sync failed - will retry in 24 hours");
+      }
+    });
+  });
+
+  // Refresh schedule display
+  this->set_timeout(4000, [this]() {
+    ESP_LOGI(TAG, "Refreshing schedule display...");
+    this->update_schedule_display();
+  });
+
+  // Read event log, then chain history, then single events
+  this->set_timeout(6000, [this]() {
+    ESP_LOGI(TAG, "Reading event log...");
+    this->read_event_log([this](bool success) {
+      if (success) {
+        ESP_LOGI(TAG, "Event log read complete");
+      } else {
+        ESP_LOGW(TAG, "Event log read failed");
+      }
+      this->set_timeout(2000, [this]() {
+        ESP_LOGI(TAG, "Reading history trends...");
+        this->read_history([this](bool success) {
+          if (success) {
+            ESP_LOGI(TAG, "History trends read complete");
+          }
+          this->set_timeout(2000, [this]() {
+            ESP_LOGI(TAG, "Reading single events...");
+            this->read_single_events([](bool success, const std::vector<services::SingleEvent>& events) {
+              if (success) {
+                ESP_LOGI("alpha_hwr", "Read %zu active single events", events.size());
+              }
+            });
+          });
+        });
+      });
+    });
+  });
+
+  // Query control mode and setpoints
+  this->set_timeout(5000, [this]() {
+    ESP_LOGI(TAG, "Reading control mode and setpoints from pump...");
+    this->control_service_.read_setpoints_from_pump();
+  });
+}
+
 // Called every 10 seconds by PollingComponent
 void AlphaHwrComponent::update() {
   ESP_LOGI(TAG, "update() called - ready: %d, parent: %d, conn_id: 0x%02X", 
@@ -210,6 +217,15 @@ void AlphaHwrComponent::update() {
            parent_ ? parent_->get_conn_id() : 0xFF);
   
   if (session_.is_ready() && parent_ && parent_->get_conn_id() != 0xFF) {
+    // If session is ready but initial data reads haven't been triggered yet
+    // (e.g., BLE connection persisted through ESP32 restart, no re-auth),
+    // trigger them now.
+    if (!initial_data_read_done_) {
+      ESP_LOGI(TAG, "Session ready but initial data not yet read - triggering now");
+      telemetry_service_.start();
+      trigger_initial_data_reads();
+    }
+
     // Poll telemetry first
     telemetry_service_.poll();
     

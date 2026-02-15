@@ -119,7 +119,11 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    void set_single_events_text_sensor(text_sensor::TextSensor *sensor) { single_events_text_sensor_ = sensor; }
    void set_event_log_text_sensor(text_sensor::TextSensor *sensor) { event_log_text_sensor_ = sensor; }
    void set_history_text_sensor(text_sensor::TextSensor *sensor) { history_text_sensor_ = sensor; }
+   void set_cycle_timestamps_text_sensor(text_sensor::TextSensor *sensor) { cycle_timestamps_text_sensor_ = sensor; }
 #endif
+   // Numeric sensor setters for operating statistics
+   void set_start_count_sensor(sensor::Sensor *sensor) { start_count_sensor_ = sensor; }
+   void set_operating_hours_sensor(sensor::Sensor *sensor) { operating_hours_sensor_ = sensor; }
    void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
   void setup() override;
@@ -139,6 +143,7 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   bool pairing_enabled_ = false;  // Controls whether to attempt BLE pairing/bonding
   
   void authenticate();
+  void trigger_initial_data_reads();
   
   // BLE connection manager (handles all BLE operations)
   core::BLEConnectionManager ble_manager_;
@@ -192,7 +197,17 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    text_sensor::TextSensor *single_events_text_sensor_{nullptr};
    text_sensor::TextSensor *event_log_text_sensor_{nullptr};
    text_sensor::TextSensor *history_text_sensor_{nullptr};
+   text_sensor::TextSensor *cycle_timestamps_text_sensor_{nullptr};
 #endif
+   
+   // Operating statistics sensors
+   sensor::Sensor *start_count_sensor_{nullptr};
+   sensor::Sensor *operating_hours_sensor_{nullptr};
+   
+   // Tracks whether the post-auth data read chain has been triggered.
+   // Ensures device info, event log, history, etc. are read even when
+   // the BLE connection persists through an ESP32 restart (no re-auth).
+   bool initial_data_read_done_{false};
    
    // Time synchronization tracking
    uint32_t last_time_sync_timestamp_{0};  // millis() when last sync occurred
@@ -363,8 +378,40 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
            this->history_text_sensor_->publish_state(display);
          }
 #endif
+         // Chain: read cycle timestamps after trends
+         this->read_cycle_timestamps();
        }
        if (on_complete) on_complete(success);
+     });
+   }
+
+   /**
+    * Read cycle timestamps (last 10 cycles) and publish to text sensor.
+    */
+   void read_cycle_timestamps() {
+     history_service_.read_cycle_timestamps_async(10, [this](bool success, const std::vector<uint32_t>& timestamps) {
+       if (success && !timestamps.empty()) {
+#ifdef USE_TEXT_SENSOR
+         if (this->cycle_timestamps_text_sensor_) {
+           std::string display;
+           for (const auto &ts : timestamps) {
+             time_t t = ts;
+             struct tm *tm_info = localtime(&t);
+             char buf[32];
+             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", tm_info);
+             if (!display.empty()) display += "\n";
+             display += buf;
+           }
+           if (display.size() > 255) {
+             display = display.substr(0, 252) + "...";
+           }
+           this->cycle_timestamps_text_sensor_->publish_state(display);
+         }
+#endif
+         ESP_LOGI(TAG, "Read %zu cycle timestamps", timestamps.size());
+       } else if (!success) {
+         ESP_LOGW(TAG, "Failed to read cycle timestamps");
+       }
      });
    }
 
@@ -443,8 +490,30 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
          }
 #endif
          ESP_LOGI(TAG, "Device information read successfully");
+         
+         // Chain: read operating statistics after device info
+         this->read_statistics();
        });
      }
+
+      /**
+       * Read operating statistics (start count, operating hours) and publish to sensors.
+       */
+      void read_statistics() {
+        ESP_LOGI(TAG, "Reading operating statistics...");
+        device_info_service_.read_statistics_async([this](bool success, uint32_t start_count, float operating_hours) {
+          if (success) {
+            if (this->start_count_sensor_) {
+              this->start_count_sensor_->publish_state(start_count);
+            }
+            if (this->operating_hours_sensor_) {
+              this->operating_hours_sensor_->publish_state(operating_hours);
+            }
+          } else {
+            ESP_LOGW(TAG, "Failed to read operating statistics");
+          }
+        });
+      }
  
      /**
       * Asynchronously read the pump schedule and update the text sensor display.

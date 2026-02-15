@@ -116,6 +116,17 @@ alpha_hwr:
       name: "History Trends"
       entity_category: diagnostic
    
+   # Cycle Timestamps (last 10 cycles)
+   cycle_timestamps:
+      name: "Cycle Timestamps"
+      entity_category: diagnostic
+   
+   # Operating Statistics (Diagnostic)
+   start_count:
+      name: "Start Count"
+   operating_hours:
+      name: "Operating Hours"
+   
    # Control Mode Display
    control_mode:
       name: "Control Mode"

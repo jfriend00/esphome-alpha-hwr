@@ -68,6 +68,16 @@ class HistoryService {
   void read_trends_async(std::function<void(bool, const std::vector<TrendSeries> &)> on_complete);
 
   /**
+   * Read cycle timestamps from pump.
+   * Object 88, SubID 13300 (last 10 cycles) or 13301 (last 100 cycles).
+   * Response: 3-byte header + N×4 bytes uint32 BE Unix timestamps.
+   *
+   * Reference: history.py::get_cycle_timestamps() / _read_timestamp_map()
+   */
+  void read_cycle_timestamps_async(int count,
+                                   std::function<void(bool, const std::vector<uint32_t> &)> on_complete);
+
+  /**
    * Format trend data as display string.
    */
   std::string format_display() const;

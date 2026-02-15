@@ -200,6 +200,56 @@ void DeviceInfoService::on_string_read_complete() {
   }
 }
 
+void DeviceInfoService::read_statistics_async(std::function<void(bool, uint32_t, float)> on_complete) {
+  ESP_LOGI(TAG, "Reading operating statistics (Object 93, Sub 1)...");
+
+  // Build Class 10 read for Object 93, Sub-ID 1 (operation_history_pump_obj)
+  // APDU: [Class=0x0A][OpSpec=0x03][ObjID=0x5D][SubH=0x00][SubL=0x01]
+  uint8_t apdu[] = {0x0A, 0x03, 0x5D, 0x00, 0x01};  // Object 93 = 0x5D, Sub 1
+  uint8_t packet[20];
+  size_t packet_len = build_geni_packet(0xE7, 0xF8, apdu, sizeof(apdu), packet);
+
+  std::vector<uint8_t> packet_vec(packet, packet + packet_len);
+
+  transport_.send_command(
+    packet_vec,
+    0,  // Use wildcard matching (reference only checks Class 10)
+    0,  // Use wildcard matching
+    [on_complete](bool success, const uint8_t *data, size_t len) {
+      if (!success || !data || len < 15) {
+        ESP_LOGW(TAG, "Statistics read failed or no data (len=%zu)", len);
+        if (on_complete) on_complete(false, 0, 0.0f);
+        return;
+      }
+
+      // data is already the payload (transport strips the 10-byte frame header and 2-byte CRC)
+      // Skip 3-byte Class 10 header [00 00 XX]
+      const uint8_t *stats = data + 3;
+      size_t stats_len = len - 3;
+
+      // Need at least 12 bytes: starts(4) + starts_1h(2) + starts_24h(2) + operating_time(4)
+      if (stats_len < 12) {
+        ESP_LOGW(TAG, "Statistics data too short: %zu bytes", stats_len);
+        if (on_complete) on_complete(false, 0, 0.0f);
+        return;
+      }
+
+      // Bytes 0-3: start_count (uint32 BE)
+      uint32_t start_count = (uint32_t(stats[0]) << 24) | (uint32_t(stats[1]) << 16) |
+                             (uint32_t(stats[2]) << 8) | uint32_t(stats[3]);
+
+      // Bytes 8-11: operating_time in seconds (uint32 BE)
+      uint32_t op_time_sec = (uint32_t(stats[8]) << 24) | (uint32_t(stats[9]) << 16) |
+                             (uint32_t(stats[10]) << 8) | uint32_t(stats[11]);
+      float operating_hours = op_time_sec / 3600.0f;
+
+      ESP_LOGI(TAG, "Statistics: starts=%u, hours=%.1f", start_count, operating_hours);
+      if (on_complete) on_complete(true, start_count, operating_hours);
+    },
+    5000  // 5 second timeout
+  );
+}
+
 }  // namespace services
 }  // namespace alpha_hwr
 }  // namespace esphome
