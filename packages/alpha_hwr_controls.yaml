@@ -137,23 +137,7 @@ button:
   - platform: restart
     name: "Restart HWR Pump"
   
-  # Schedule Management Button
-  - platform: template
-    name: "Refresh Schedule Display"
-    icon: "mdi:refresh"
-    on_press:
-      - lambda: |-
-          ESP_LOGI("button", "Refreshing schedule display...");
-          id(pump).update_schedule_display();
-  
-  # Device Information Button
-  - platform: template
-    name: "Read Device Info"
-    icon: "mdi:information"
-    on_press:
-      - lambda: |-
-          ESP_LOGI("button", "Manually triggering device info read...");
-          id(pump).read_device_info();
+
 
 
 select:

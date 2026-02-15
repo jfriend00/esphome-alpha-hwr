@@ -70,14 +70,6 @@ button:
           bool result = id(pump).disable_remote();
           ESP_LOGI("button", "Disable remote result: %s", result ? "SUCCESS" : "FAILED");
 
-  - platform: template
-    name: "Refresh Schedule Display"
-    icon: "mdi:refresh"
-    on_press:
-      - lambda: |-
-          ESP_LOGI("button", "Refreshing schedule display...");
-          id(pump).update_schedule_display();
-
 select:
   # Pump Control Mode Selector
   # Allows users to select between different pump operation modes
