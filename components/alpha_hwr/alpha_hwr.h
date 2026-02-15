@@ -252,6 +252,31 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
         return schedule_service_.get_schedule_display_string(entries, result);
       }
 
+   // Schedule editor helpers (for HA template entities)
+   bool get_cached_schedule_entry(uint8_t layer, uint8_t day_index, ScheduleEntry *entry) {
+     return schedule_service_.get_cached_entry(layer, day_index, entry);
+   }
+   void set_schedule_entry(uint8_t layer, uint8_t day_index, const ScheduleEntry &entry,
+                           std::function<void(bool)> on_complete) {
+     schedule_service_.set_entry_async(layer, day_index, entry, [this, on_complete](bool success) {
+       if (success) {
+         // Refresh display after successful write
+         this->set_timeout(500, [this]() { this->update_schedule_display(); });
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
+   void clear_schedule_entry_async(uint8_t layer, uint8_t day_index,
+                                    std::function<void(bool)> on_complete) {
+     schedule_service_.clear_entry_async(layer, day_index, [this, on_complete](bool success) {
+       if (success) {
+         this->set_timeout(500, [this]() { this->update_schedule_display(); });
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
+   bool is_schedule_layer_cached(uint8_t layer) const { return schedule_service_.is_layer_cached(layer); }
+
       /**
        * Asynchronously read pump's real-time clock.
        * 

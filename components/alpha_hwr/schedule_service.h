@@ -329,56 +329,68 @@ class ScheduleService {
     */
    bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result);
 
+  // -------------------------------------------------------------------------
+  // Cached Entry Access (for Schedule Editor UI)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get a cached schedule entry for a specific day on a layer.
+   *
+   * @param layer Schedule layer (0-4)
+   * @param day_index Day index (0=Monday, 6=Sunday)
+   * @param entry Output ScheduleEntry populated from cache
+   * @return True if cache valid, false if layer not yet read
+   */
+  bool get_cached_entry(uint8_t layer, uint8_t day_index, ScheduleEntry *entry);
+
+  /**
+   * Set a single day's schedule entry on a layer (read-modify-write).
+   *
+   * If the layer is cached, modifies cache and writes immediately.
+   * If not cached, reads layer first, then modifies and writes.
+   * Automatically calls configuration commit after write.
+   *
+   * @param layer Schedule layer (0-4)
+   * @param day_index Day index (0=Monday, 6=Sunday)
+   * @param entry The entry to set
+   * @param on_complete Callback with success status
+   */
+  void set_entry_async(uint8_t layer, uint8_t day_index, const ScheduleEntry &entry,
+                       std::function<void(bool)> on_complete);
+
+  /**
+   * Clear (disable) a single day's schedule entry on a layer.
+   * Writes a disabled entry for the specified day.
+   *
+   * @param layer Schedule layer (0-4)
+   * @param day_index Day index (0=Monday, 6=Sunday)
+   * @param on_complete Callback with success status
+   */
+  void clear_entry_async(uint8_t layer, uint8_t day_index,
+                         std::function<void(bool)> on_complete);
+
+  /**
+   * Check if a layer's entries are cached.
+   */
+  bool is_layer_cached(uint8_t layer) const {
+    return layer <= 4 && layer_cached_[layer];
+  }
+
  protected:
   // -------------------------------------------------------------------------
   // Internal Helper Methods
   // -------------------------------------------------------------------------
 
-  // NOTE: read_class10_object() removed - requires async implementation
-  // For Phase 7, only write operations are supported
-
-  /**
-   * Write a Class 10 command to the pump.
-   *
-   * @param apdu Complete APDU bytes (Class + OpSpec + data)
-   * @param apdu_len Length of APDU
-   * @return True if write succeeded, false otherwise
-   */
   bool write_class10_command(const uint8_t *apdu, size_t apdu_len);
-
-  /**
-   * Internal helper to enable/disable schedule.
-   *
-   * @param enable True to enable, false to disable
-   * @return True if operation succeeded, false otherwise
-   */
   bool set_state(bool enable);
-
-  /**
-   * Build a GENI frame with CRC.
-   *
-   * @param dst Destination address (typically 0xE7)
-   * @param src Source address (typically 0xF8)
-   * @param apdu APDU bytes
-   * @param apdu_len Length of APDU
-   * @param frame Output buffer for complete frame
-   * @param frame_len Output parameter for frame length
-   */
   void build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *apdu, size_t apdu_len, uint8_t *frame,
                         size_t *frame_len);
+  bool send_configuration_commit();
 
   /**
-   * Send configuration commit after schedule write operations.
-   *
-   * CRITICAL: This must be called after any schedule write (OpSpec 0xB3) to persist changes.
-   * Sends a Class 10 SET command (OpSpec 0x93) to Object 84, SubID 1 with the current
-   * ClockProgramOverview structure.
-   *
-   * See: reference/alpha-hwr/src/alpha_hwr/services/control.py:_send_configuration_commit
-   *
-   * @return True if commit sent successfully, false otherwise
+   * Write a full layer from cached data and call config commit.
    */
-  bool send_configuration_commit();
+  void write_cached_layer_async(uint8_t layer, std::function<void(bool)> on_complete);
 
   // -------------------------------------------------------------------------
   // Member Variables
@@ -390,17 +402,20 @@ class ScheduleService {
   ScheduleCallback schedule_callback_;
   WriteCallback write_callback_;
   
-  // Timeout callback for async operations (provided by main component)
   std::function<void(std::function<void()>, uint32_t)> set_timeout_callback_;
 
-  // Cached state for async read operations
-  bool schedule_state_cached_;       ///< True if schedule_enabled_ contains valid data
-  bool schedule_enabled_;             ///< Cached schedule enabled state
-  uint32_t last_state_poll_ms_;       ///< Timestamp of last state poll request
+  // Cached state
+  bool schedule_state_cached_;
+  bool schedule_enabled_;
+  uint32_t last_state_poll_ms_;
   
-  // Cached ClockProgramOverview structure (10 bytes) for read-modify-write
-  bool overview_cached_;              ///< True if overview_structure_ contains valid data
-  uint8_t overview_structure_[10];    ///< Complete 10-byte ClockProgramOverview structure
+  // Cached ClockProgramOverview (10 bytes)
+  bool overview_cached_;
+  uint8_t overview_structure_[10];
+
+  // Cached layer data: raw 42 bytes per layer (7 days × 6 bytes)
+  bool layer_cached_[5];
+  uint8_t cached_layer_data_[5][42];
 
   static constexpr const char *TAG = "schedule_service";
 };

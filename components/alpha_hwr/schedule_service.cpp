@@ -38,8 +38,9 @@ ScheduleService::ScheduleService(core::Transport &transport, core::Session &sess
       schedule_enabled_(false),
       last_state_poll_ms_(0),
       overview_cached_(false) {
-  // Initialize overview_structure_ to zeros
   memset(overview_structure_, 0, sizeof(overview_structure_));
+  memset(layer_cached_, 0, sizeof(layer_cached_));
+  memset(cached_layer_data_, 0, sizeof(cached_layer_data_));
   ESP_LOGD(TAG, "ScheduleService initialized");
 }
 
@@ -352,8 +353,6 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
 
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
-  // Match on ClockProgramEntry type (0xDE01 = 56833) in response Object ID field
-  // The pump responds with ObjID=0xDE01, SubID=0 (SubID 0 quirk handled by transport)
   this->transport_.send_command(packet, 0xDE01, 0, [this, on_complete, layer](bool success, const uint8_t* payload, size_t payload_len) {
     ESP_LOGI(TAG, "Schedule entry read callback: success=%d, payload_len=%zu", success, payload_len);
     std::vector<ScheduleEntry> entries;
@@ -368,6 +367,10 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
       if (on_complete) on_complete(false, entries);
       return;
     }
+
+    // Cache raw layer data (42 bytes starting after 3-byte header)
+    memcpy(this->cached_layer_data_[layer], payload + 3, 42);
+    this->layer_cached_[layer] = true;
 
     const uint8_t* entry_data = payload + 3;
     for (int day_idx = 0; day_idx < 7; day_idx++) {
@@ -760,6 +763,115 @@ void ScheduleService::build_geni_frame(uint8_t dst, uint8_t src, const uint8_t *
   frame[4 + apdu_len + 1] = crc & 0xFF;         // CRC low byte
 
   *frame_len = 4 + apdu_len + 2;  // Start + Length + Dst + Src + APDU + CRC
+}
+
+// -------------------------------------------------------------------------
+// Display & Formatting Methods
+// -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
+// Cached Entry Access
+// -------------------------------------------------------------------------
+
+bool ScheduleService::get_cached_entry(uint8_t layer, uint8_t day_index, ScheduleEntry *entry) {
+  if (layer > 4 || day_index > 6 || !entry) return false;
+  if (!layer_cached_[layer]) return false;
+
+  const uint8_t *bytes = cached_layer_data_[layer] + (day_index * 6);
+  *entry = ScheduleEntry::from_bytes(bytes, DAY_NAMES[day_index], layer);
+  return true;
+}
+
+void ScheduleService::set_entry_async(uint8_t layer, uint8_t day_index, const ScheduleEntry &entry,
+                                       std::function<void(bool)> on_complete) {
+  if (layer > 4 || day_index > 6) {
+    ESP_LOGE(TAG, "Invalid layer %d or day %d", layer, day_index);
+    if (on_complete) on_complete(false);
+    return;
+  }
+
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot set entry: session not ready");
+    if (on_complete) on_complete(false);
+    return;
+  }
+
+  if (layer_cached_[layer]) {
+    // Cache hit: modify cached data and write immediately
+    entry.to_bytes(cached_layer_data_[layer] + (day_index * 6));
+    ESP_LOGI(TAG, "Setting %s on layer %d: %s-%s (%s)",
+             DAY_NAMES[day_index], layer,
+             entry.get_begin_time().c_str(), entry.get_end_time().c_str(),
+             entry.is_enabled() ? "enabled" : "disabled");
+    write_cached_layer_async(layer, on_complete);
+  } else {
+    // Cache miss: read layer first, then modify and write
+    ESP_LOGD(TAG, "Layer %d not cached, reading first...", layer);
+    read_entries_async(layer, [this, layer, day_index, entry, on_complete](bool success, const std::vector<ScheduleEntry>&) {
+      if (!success || !layer_cached_[layer]) {
+        ESP_LOGE(TAG, "Failed to read layer %d for set_entry", layer);
+        if (on_complete) on_complete(false);
+        return;
+      }
+      // Now cached; modify and write
+      ScheduleEntry mutable_entry = entry;
+      mutable_entry.to_bytes(cached_layer_data_[layer] + (day_index * 6));
+      write_cached_layer_async(layer, on_complete);
+    });
+  }
+}
+
+void ScheduleService::clear_entry_async(uint8_t layer, uint8_t day_index,
+                                          std::function<void(bool)> on_complete) {
+  // Create a disabled entry
+  ScheduleEntry disabled;
+  disabled.set_enabled(false);
+  disabled.set_action(0x02);
+  disabled.set_begin_hour(0);
+  disabled.set_begin_minute(0);
+  disabled.set_end_hour(0);
+  disabled.set_end_minute(0);
+  disabled.set_day(DAY_NAMES[day_index]);
+  disabled.set_layer(layer);
+
+  set_entry_async(layer, day_index, disabled, on_complete);
+}
+
+void ScheduleService::write_cached_layer_async(uint8_t layer, std::function<void(bool)> on_complete) {
+  if (layer > 4 || !layer_cached_[layer]) {
+    if (on_complete) on_complete(false);
+    return;
+  }
+
+  uint16_t sub_id = 1000 + layer;
+  uint8_t apdu[53];
+  apdu[0] = 0x0A;
+  apdu[1] = 0xB3;
+  apdu[2] = 84;
+  apdu[3] = (sub_id >> 8) & 0xFF;
+  apdu[4] = sub_id & 0xFF;
+  apdu[5] = 0x00;
+  apdu[6] = 0xDE;
+  apdu[7] = 0x01;
+  apdu[8] = 0x00;
+  apdu[9] = 0x00;
+  apdu[10] = 0x2A;
+  memcpy(apdu + 11, cached_layer_data_[layer], 42);
+
+  uint8_t frame[256];
+  size_t frame_len = 0;
+  this->build_geni_frame(0xE7, 0xF8, apdu, 53, frame, &frame_len);
+
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  ESP_LOGI(TAG, "Writing cached layer %d to pump...", layer);
+
+  this->transport_.send_command(packet, 0xDE01, 0, [this, on_complete, layer](bool success, const uint8_t* data, size_t len) {
+    // Send configuration commit after write
+    this->send_configuration_commit();
+    ESP_LOGI(TAG, "Layer %d write + config commit sent", layer);
+    if (on_complete) on_complete(true);
+  }, 3000);
 }
 
 // -------------------------------------------------------------------------
