@@ -475,27 +475,18 @@ const char *ControlService::get_mode_name(ControlMode mode) {
 }
 
 void ControlService::send_configuration_commit() {
-  // Sub 0x5400, Obj 0xDA01
-  // Reference: control.py lines 1038-1048
-  ESP_LOGD(TAG, "Sending configuration commit...");
-  
-  uint8_t apdu[21];
-  // Hardcoded hex from Python: 0A9354000100DA0100000A02050005000100000000
-  const uint8_t commit_data[] = {
-      0x0A, 0x93, 0x54, 0x00, 0x01, 0x00, 0xDA, 0x01,
-      0x00, 0x00, 0x0A, 0x02, 0x05, 0x00, 0x05, 0x00,
-      0x01, 0x00, 0x00, 0x00, 0x00
-  };
-  memcpy(apdu, commit_data, 21);
-  
-  uint8_t packet_raw[64];
-  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 21, packet_raw);
-  
-  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-
-  // Send command via transport queue
-  this->transport_.send_command(packet);
+  // Delegate to the external callback (ScheduleService::send_configuration_commit)
+  // which preserves the cached ClockProgramOverview structure including
+  // the schedule_enabled flag. The previous hardcoded implementation had
+  // clock_program_enabled=0x00 which silently disabled the schedule.
+  if (config_commit_callback_) {
+    ESP_LOGD(TAG, "Delegating configuration commit to ScheduleService...");
+    config_commit_callback_();
+  } else {
+    ESP_LOGW(TAG, "No configuration commit callback set - skipping commit");
+  }
 }
+
 
 bool ControlService::send_control_request(ControlMode mode, bool start, float setpoint) {
   // Reference: control.py::_send_control_request() lines 233-284

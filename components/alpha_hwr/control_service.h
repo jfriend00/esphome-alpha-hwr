@@ -126,6 +126,13 @@ class ControlService {
     * @param callback Function to call set_timeout on the component
     */
    void set_schedule_callback(std::function<void(std::function<void()>, uint32_t)> callback);
+    
+    /**
+     * Set callback for configuration commits.
+     * Delegates to ScheduleService::send_configuration_commit() which
+     * preserves the cached ClockProgramOverview (including schedule_enabled).
+     */
+    void set_config_commit_callback(std::function<void()> callback) { config_commit_callback_ = callback; }
    
    /**
     * Set callback for control mode change notifications.
@@ -389,6 +396,7 @@ class ControlService {
     bool is_remote_mode_enabled_{false};  // Track remote mode state
     std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
     std::function<void(ControlMode, uint8_t, float)> mode_change_callback_;
+     std::function<void()> config_commit_callback_;
     
     // Cached setpoint values read from pump (NAN = not yet read)
     float cached_setpoint_{NAN};           // Current mode's setpoint from passive notification

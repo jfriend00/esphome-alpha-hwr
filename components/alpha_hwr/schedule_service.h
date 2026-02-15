@@ -1,9 +1,9 @@
 /**
  * Schedule Service for Grundfos ALPHA HWR Pump
  *
- * Manages pump schedule operations including reading, writing, enabling/disabling,
- * and validation. The pump supports up to 5 schedule layers (0-4), with each layer
- * containing one time interval per day of the week.
+ * Manages pump schedule operations including reading, writing,
+ * enabling/disabling, and validation. The pump supports up to 5 schedule layers
+ * (0-4), with each layer containing one time interval per day of the week.
  *
  * Based on: reference/alpha-hwr/src/alpha_hwr/services/schedule.py
  *
@@ -41,14 +41,14 @@ namespace alpha_hwr {
 namespace core {
 class Transport;
 class Session;
-}  // namespace core
+} // namespace core
 
 namespace services {
 
 /**
  * Single event entry (non-recurring, timestamp-based).
  * Protocol: Object 84, SubIDs 900-999, Type 220 (10 bytes)
- * 
+ *
  * Byte layout:
  *   [0]   enable (bool)
  *   [1]   action (SchedulingActionType, 0x02=RUN)
@@ -63,12 +63,10 @@ struct SingleEvent {
   uint8_t action{0x02};
   uint32_t begin_timestamp{0};
   uint32_t end_timestamp{0};
-  uint8_t index{0};  // 0-99 (SubID = 900 + index)
-  
-  bool is_valid() const {
-    return enabled && end_timestamp > begin_timestamp;
-  }
-  
+  uint8_t index{0}; // 0-99 (SubID = 900 + index)
+
+  bool is_valid() const { return enabled && end_timestamp > begin_timestamp; }
+
   void to_bytes(uint8_t *buf) const {
     buf[0] = enabled ? 0x01 : 0x00;
     buf[1] = action;
@@ -81,7 +79,7 @@ struct SingleEvent {
     buf[8] = (end_timestamp >> 8) & 0xFF;
     buf[9] = end_timestamp & 0xFF;
   }
-  
+
   static SingleEvent from_bytes(const uint8_t *data, uint8_t idx) {
     SingleEvent e;
     e.index = idx;
@@ -125,7 +123,7 @@ struct SingleEvent {
  * ```
  */
 class ScheduleService {
- public:
+public:
   /**
    * Callback for scheduling delayed operations.
    * Parameters: (callback_function, delay_ms)
@@ -136,7 +134,8 @@ class ScheduleService {
    * Callback for writing BLE packets.
    * Parameters: (handle, data, length) -> bool (success)
    */
-  using WriteCallback = std::function<bool(uint16_t, const uint8_t *, uint16_t)>;
+  using WriteCallback =
+      std::function<bool(uint16_t, const uint8_t *, uint16_t)>;
 
   // -------------------------------------------------------------------------
   // Constructor
@@ -152,22 +151,28 @@ class ScheduleService {
    * Set callback for scheduling delayed operations.
    * Required for async write operations and verification delays.
    */
-  void set_schedule_callback(ScheduleCallback callback) { this->schedule_callback_ = callback; }
+  void set_schedule_callback(ScheduleCallback callback) {
+    this->schedule_callback_ = callback;
+  }
 
   /**
    * Set callback for writing to BLE characteristic.
    * Required for sending commands to pump.
    */
-  void set_write_callback(WriteCallback callback) { this->write_callback_ = callback; }
+  void set_write_callback(WriteCallback callback) {
+    this->write_callback_ = callback;
+  }
 
   /**
    * Set callback for timeout operations (ESPHome's set_timeout).
    * Required for async write operations with completion callbacks.
-   * 
-   * @param callback Function that takes (lambda, delay_ms) and schedules lambda to run after delay
+   *
+   * @param callback Function that takes (lambda, delay_ms) and schedules lambda
+   * to run after delay
    */
-  void set_timeout_callback(std::function<void(std::function<void()>, uint32_t)> callback) { 
-    this->set_timeout_callback_ = callback; 
+  void set_timeout_callback(
+      std::function<void(std::function<void()>, uint32_t)> callback) {
+    this->set_timeout_callback_ = callback;
   }
 
   // -------------------------------------------------------------------------
@@ -184,7 +189,8 @@ class ScheduleService {
    * @return True if cached state is valid, false if no state has been read yet
    *
    * Protocol: Class 10, Object 84, SubID 1
-   * - Response format: [Header(3)][Capabilities(4)][Enabled(1)][DefaultAction(1)][BaseSetpoint(4)]
+   * - Response format:
+   * [Header(3)][Capabilities(4)][Enabled(1)][DefaultAction(1)][BaseSetpoint(4)]
    * - Byte 4 (payload index) is the enabled flag (0x01=enabled, 0x00=disabled)
    *
    * Note: This method returns the cached state immediately. Call poll_state()
@@ -245,7 +251,8 @@ class ScheduleService {
    * Each layer can contain up to 7 entries (one per day of the week).
    *
    * @param entries Output vector - populated with schedule entries
-   * @param layer Optional specific layer (0-4) to read. If -1, reads all layers.
+   * @param layer Optional specific layer (0-4) to read. If -1, reads all
+   * layers.
    * @return True if read succeeded, false on failure
    *
    * Protocol: Class 10, Object 84
@@ -259,61 +266,69 @@ class ScheduleService {
 
   /**
    * Read schedule entries from the pump (async with callback).
-   * 
+   *
    * @param layer Layer to read (0-4)
    * @param on_complete Callback invoked with success status and entries
    * @return True if read request sent successfully
    */
-  bool read_entries_async(int layer, std::function<void(bool success, const std::vector<ScheduleEntry>& entries)> on_complete);
-
-   /**
-    * Write schedule entries to the pump (synchronous, fire-and-forget).
-    *
-    * Writes a complete weekly schedule to the specified layer. Each layer
-    * can contain up to 7 entries (one per day). Entries are validated before
-    * writing to ensure no overlaps or invalid time ranges.
-    *
-    * Note: This is fire-and-forget mode - returns immediately without waiting
-    * for acknowledgment. Use write_entries_async() for proper transaction handling.
-    *
-    * @param entries Vector of ScheduleEntry objects to write
-    * @param layer Schedule layer to write to (0-4)
-    * @return True if successfully written, false otherwise
-    */
-  bool write_entries(const std::vector<ScheduleEntry> &entries, uint8_t layer = 0);
+  bool read_entries_async(
+      int layer, std::function<void(bool success,
+                                    const std::vector<ScheduleEntry> &entries)>
+                     on_complete);
 
   /**
-    * Write schedule entries to the pump (async with completion callback).
-    *
-    * Writes a complete weekly schedule and waits for acknowledgment from pump.
-    * Uses ESPHome's set_timeout() to check for response after write completes.
-    *
-    * @param entries Vector of ScheduleEntry objects to write
-    * @param layer Schedule layer to write to (0-4)
-    * @param on_complete Callback invoked when write completes (with success status)
-    * @return True if write packet sent successfully, false on validation/send error
-    *
-    * Protocol: Class 10, OpSpec 0xB3 (OpSpec 5), Object 84
-    * - SubID: 1000 + layer
-    * - Payload: 42 bytes (7 days × 6 bytes, no header for writes)
-    * - APDU format:
-    *   [0x0A]              # Class 10
-    *   [0xB3]              # OpSpec 5
-    *   [84]                # Object ID
-    *   [SubH][SubL]        # SubID (big-endian)
-    *   [0x00]              # Reserved
-    *   [0xDE][0x01][0x00]  # Type 222 header
-    *   [0x00][0x2A]        # Size (42 bytes)
-    *   [42 bytes data]     # Schedule entries
-    *
-    * Validation:
-    * - Layer must be 0-4
-    * - Time ranges must be valid (non-zero duration)
-    * - No overlaps allowed within same day/layer
-    * - Only one entry per day per layer (last one wins)
-    */
-  bool write_entries_async(const std::vector<ScheduleEntry> &entries, uint8_t layer,
-                          std::function<void(bool success)> on_complete);
+   * Write schedule entries to the pump (synchronous, fire-and-forget).
+   *
+   * Writes a complete weekly schedule to the specified layer. Each layer
+   * can contain up to 7 entries (one per day). Entries are validated before
+   * writing to ensure no overlaps or invalid time ranges.
+   *
+   * Note: This is fire-and-forget mode - returns immediately without waiting
+   * for acknowledgment. Use write_entries_async() for proper transaction
+   * handling.
+   *
+   * @param entries Vector of ScheduleEntry objects to write
+   * @param layer Schedule layer to write to (0-4)
+   * @return True if successfully written, false otherwise
+   */
+  bool write_entries(const std::vector<ScheduleEntry> &entries,
+                     uint8_t layer = 0);
+
+  /**
+   * Write schedule entries to the pump (async with completion callback).
+   *
+   * Writes a complete weekly schedule and waits for acknowledgment from pump.
+   * Uses ESPHome's set_timeout() to check for response after write completes.
+   *
+   * @param entries Vector of ScheduleEntry objects to write
+   * @param layer Schedule layer to write to (0-4)
+   * @param on_complete Callback invoked when write completes (with success
+   * status)
+   * @return True if write packet sent successfully, false on validation/send
+   * error
+   *
+   * Protocol: Class 10, OpSpec 0xB3 (OpSpec 5), Object 84
+   * - SubID: 1000 + layer
+   * - Payload: 42 bytes (7 days × 6 bytes, no header for writes)
+   * - APDU format:
+   *   [0x0A]              # Class 10
+   *   [0xB3]              # OpSpec 5
+   *   [84]                # Object ID
+   *   [SubH][SubL]        # SubID (big-endian)
+   *   [0x00]              # Reserved
+   *   [0xDE][0x01][0x00]  # Type 222 header
+   *   [0x00][0x2A]        # Size (42 bytes)
+   *   [42 bytes data]     # Schedule entries
+   *
+   * Validation:
+   * - Layer must be 0-4
+   * - Time ranges must be valid (non-zero duration)
+   * - No overlaps allowed within same day/layer
+   * - Only one entry per day per layer (last one wins)
+   */
+  bool write_entries_async(const std::vector<ScheduleEntry> &entries,
+                           uint8_t layer,
+                           std::function<void(bool success)> on_complete);
 
   /**
    * Clear (disable) a schedule entry for a specific day.
@@ -340,15 +355,18 @@ class ScheduleService {
    *
    * @param on_complete Callback with success status and vector of events
    */
-  void read_single_events_async(std::function<void(bool, const std::vector<SingleEvent>&)> on_complete);
+  void read_single_events_async(
+      std::function<void(bool, const std::vector<SingleEvent> &)> on_complete);
 
   /**
    * Write a single event to a specific slot.
-   * 
-   * @param event The event to write (event.index determines SubID = 900 + index)
+   *
+   * @param event The event to write (event.index determines SubID = 900 +
+   * index)
    * @param on_complete Callback with success status
    */
-  void write_single_event_async(const SingleEvent &event, std::function<void(bool)> on_complete);
+  void write_single_event_async(const SingleEvent &event,
+                                std::function<void(bool)> on_complete);
 
   /**
    * Clear (disable) a single event at a specific index.
@@ -356,7 +374,8 @@ class ScheduleService {
    * @param index Event slot (0 to max_nof_single_events-1)
    * @param on_complete Callback with success status
    */
-  void clear_single_event_async(uint8_t index, std::function<void(bool)> on_complete);
+  void clear_single_event_async(uint8_t index,
+                                std::function<void(bool)> on_complete);
 
   /**
    * Find the first free (disabled) single event slot.
@@ -367,7 +386,9 @@ class ScheduleService {
   /**
    * Get cached single events.
    */
-  const std::vector<SingleEvent>& get_cached_single_events() const { return cached_single_events_; }
+  const std::vector<SingleEvent> &get_cached_single_events() const {
+    return cached_single_events_;
+  }
 
   /**
    * Get max number of single events from ClockProgramOverview.
@@ -385,50 +406,56 @@ class ScheduleService {
   // Validation Methods
   // -------------------------------------------------------------------------
 
-   /**
-    * Validate a list of schedule entries for conflicts and errors.
-    *
-    * Performs comprehensive validation including:
-    * - Time range validity (not zero duration)
-    * - No overlaps within same day/layer
-    * - Valid day names
-    * - Valid layer values (0-4)
-    *
-    * @param entries Vector of ScheduleEntry instances to validate
-    * @param errors Output vector - populated with error messages if validation fails
-    * @return True if all entries are valid, false if any errors found
-    *
-    * Example error messages:
-    * - "Entry 2 (Monday 06:00-06:00): Invalid time range: begin and end times are identical (06:00)"
-    * - "Overlap detected: Monday layer 0: 06:00-08:00 overlaps with 07:00-09:00"
-    */
-   bool validate_entries(const std::vector<ScheduleEntry> &entries, std::vector<std::string> *errors);
+  /**
+   * Validate a list of schedule entries for conflicts and errors.
+   *
+   * Performs comprehensive validation including:
+   * - Time range validity (not zero duration)
+   * - No overlaps within same day/layer
+   * - Valid day names
+   * - Valid layer values (0-4)
+   *
+   * @param entries Vector of ScheduleEntry instances to validate
+   * @param errors Output vector - populated with error messages if validation
+   * fails
+   * @return True if all entries are valid, false if any errors found
+   *
+   * Example error messages:
+   * - "Entry 2 (Monday 06:00-06:00): Invalid time range: begin and end times
+   * are identical (06:00)"
+   * - "Overlap detected: Monday layer 0: 06:00-08:00 overlaps with 07:00-09:00"
+   */
+  bool validate_entries(const std::vector<ScheduleEntry> &entries,
+                        std::vector<std::string> *errors);
 
-   // -------------------------------------------------------------------------
-   // Display & Formatting Methods
-   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Display & Formatting Methods
+  // -------------------------------------------------------------------------
 
-   /**
-    * Get a human-readable schedule display string.
-    *
-    * Formats all schedule entries (across all layers) into a readable string
-    * organized by day of week. Multiple time blocks per day are displayed on
-    * the same line separated by commas. Days with no schedule show as "OFF".
-    *
-    * Format example:
-    *   Monday: 06:00-08:00, 10:00-12:00, 15:00-17:00
-    *   Tuesday: 06:00-08:00, 10:00-12:00
-    *   ...
-    *   Saturday: OFF
-    *   Sunday: OFF
-    *
-    * @param entries Vector of all schedule entries (typically from read_entries with layer=-1)
-    * @param result Output string - populated with formatted schedule
-    * @return True if formatting succeeded, false on error
-    *
-    * Note: Entries are automatically sorted by day and time. Only enabled entries are displayed.
-    */
-   bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result);
+  /**
+   * Get a human-readable schedule display string.
+   *
+   * Formats all schedule entries (across all layers) into a readable string
+   * organized by day of week. Multiple time blocks per day are displayed on
+   * the same line separated by commas. Days with no schedule show as "OFF".
+   *
+   * Format example:
+   *   Monday: 06:00-08:00, 10:00-12:00, 15:00-17:00
+   *   Tuesday: 06:00-08:00, 10:00-12:00
+   *   ...
+   *   Saturday: OFF
+   *   Sunday: OFF
+   *
+   * @param entries Vector of all schedule entries (typically from read_entries
+   * with layer=-1)
+   * @param result Output string - populated with formatted schedule
+   * @return True if formatting succeeded, false on error
+   *
+   * Note: Entries are automatically sorted by day and time. Only enabled
+   * entries are displayed.
+   */
+  bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries,
+                                   std::string *result);
 
   // -------------------------------------------------------------------------
   // Cached Entry Access (for Schedule Editor UI)
@@ -456,7 +483,8 @@ class ScheduleService {
    * @param entry The entry to set
    * @param on_complete Callback with success status
    */
-  void set_entry_async(uint8_t layer, uint8_t day_index, const ScheduleEntry &entry,
+  void set_entry_async(uint8_t layer, uint8_t day_index,
+                       const ScheduleEntry &entry,
                        std::function<void(bool)> on_complete);
 
   /**
@@ -477,19 +505,25 @@ class ScheduleService {
     return layer <= 4 && layer_cached_[layer];
   }
 
- protected:
+  /**
+   * Send configuration commit to persist schedule changes.
+   * Also called by ControlService (via callback) to preserve schedule state.
+   */
+  bool send_configuration_commit();
+
+protected:
   // -------------------------------------------------------------------------
   // Internal Helper Methods
   // -------------------------------------------------------------------------
 
   bool write_class10_command(const uint8_t *apdu, size_t apdu_len);
   bool set_state(bool enable);
-  bool send_configuration_commit();
 
   /**
    * Write a full layer from cached data and call config commit.
    */
-  void write_cached_layer_async(uint8_t layer, std::function<void(bool)> on_complete);
+  void write_cached_layer_async(uint8_t layer,
+                                std::function<void(bool)> on_complete);
 
   // -------------------------------------------------------------------------
   // Member Variables
@@ -500,14 +534,14 @@ class ScheduleService {
 
   ScheduleCallback schedule_callback_;
   WriteCallback write_callback_;
-  
+
   std::function<void(std::function<void()>, uint32_t)> set_timeout_callback_;
 
   // Cached state
   bool schedule_state_cached_;
   bool schedule_enabled_;
   uint32_t last_state_poll_ms_;
-  
+
   // Cached ClockProgramOverview (10 bytes)
   bool overview_cached_;
   uint8_t overview_structure_[10];
@@ -523,6 +557,6 @@ class ScheduleService {
   static constexpr const char *TAG = "schedule_service";
 };
 
-}  // namespace services
-}  // namespace alpha_hwr
-}  // namespace esphome
+} // namespace services
+} // namespace alpha_hwr
+} // namespace esphome

@@ -7,14 +7,17 @@ namespace alpha_hwr {
 
 // Static method to validate if a BLE device is an ALPHA HWR pump
 // Delegates to BLE Connection Manager
-bool AlphaHwrComponent::is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDevice &device) {
+bool AlphaHwrComponent::is_alpha_hwr_device(
+    const esp32_ble_tracker::ESPBTDevice &device) {
   return core::BLEConnectionManager::is_alpha_hwr_device(
-      device, GRUNDFOS_COMPANY_ID, PRODUCT_FAMILY_ALPHA, PRODUCT_TYPE_HWR, GRUNDFOS_SERVICE_UUID);
+      device, GRUNDFOS_COMPANY_ID, PRODUCT_FAMILY_ALPHA, PRODUCT_TYPE_HWR,
+      GRUNDFOS_SERVICE_UUID);
 }
 
 void AlphaHwrComponent::setup() {
-  ESP_LOGI(TAG, "================== Alpha HWR Component setup() called ==================");
-  
+  ESP_LOGI(TAG, "================== Alpha HWR Component setup() called "
+                "==================");
+
   // Initialize BLE connection manager
   ble_manager_.set_ble_client(parent_);
   ble_manager_.set_pairing_enabled(pairing_enabled_);
@@ -22,121 +25,134 @@ void AlphaHwrComponent::setup() {
   ble_manager_.set_service_uuid(GRUNDFOS_SERVICE_UUID);
   ble_manager_.set_characteristic_uuid(GENI_CHAR_UUID);
   ble_manager_.init_security();
-  
+
   // Set BLE manager callbacks
-  ble_manager_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
-    this->set_timeout(delay_ms, std::move(callback));
-  });
-  
-  ble_manager_.set_connection_callback([this]() {
-    this->session_.on_connected();
-  });
-  
+  ble_manager_.set_scheduler_callback(
+      [this](uint32_t delay_ms, std::function<void()> callback) {
+        this->set_timeout(delay_ms, std::move(callback));
+      });
+
+  ble_manager_.set_connection_callback(
+      [this]() { this->session_.on_connected(); });
+
   ble_manager_.set_disconnection_callback([this]() {
     this->session_.on_disconnected();
     this->transport_.reset();
   });
-  
-  ble_manager_.set_service_found_callback([this]() {
-    this->session_.on_service_found();
-  });
-  
+
+  ble_manager_.set_service_found_callback(
+      [this]() { this->session_.on_service_found(); });
+
   ble_manager_.set_subscribed_callback([this]() {
     this->session_.on_subscribed();
-    
+
     // Wait for pump to stabilize, then authenticate
     this->set_timeout(2000, [this]() {
       ESP_LOGI(TAG, "Pump stabilized. Starting authentication...");
       this->authenticate();
     });
   });
-  
-  ble_manager_.set_notification_callback([this](const uint8_t* data, size_t len) {
-    // Pass to transport for reassembly
-    this->transport_.on_notification(data, len);
-  });
-  
+
+  ble_manager_.set_notification_callback(
+      [this](const uint8_t *data, size_t len) {
+        // Pass to transport for reassembly
+        this->transport_.on_notification(data, len);
+      });
+
   // Set transport write callback
-  this->transport_.set_write_callback([this](const uint8_t* data, size_t len) -> bool {
-    // Get GENI service and characteristic
-    auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
-    if (!service) return false;
-    
-    auto *chr = this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
-    if (!chr) return false;
-    
-    auto status = esp_ble_gattc_write_char(
-        this->parent_->get_gattc_if(),
-        this->parent_->get_conn_id(),
-        chr->handle,
-        len,
-        const_cast<uint8_t*>(data),
-        ESP_GATT_WRITE_TYPE_NO_RSP,
-        ESP_GATT_AUTH_REQ_NONE);
-    return (status == ESP_OK);
-  });
-  
+  this->transport_.set_write_callback(
+      [this](const uint8_t *data, size_t len) -> bool {
+        // Get GENI service and characteristic
+        auto *service = this->parent_->get_service(GRUNDFOS_SERVICE_UUID);
+        if (!service)
+          return false;
+
+        auto *chr =
+            this->parent_->get_characteristic(service->uuid, GENI_CHAR_UUID);
+        if (!chr)
+          return false;
+
+        auto status = esp_ble_gattc_write_char(
+            this->parent_->get_gattc_if(), this->parent_->get_conn_id(),
+            chr->handle, len, const_cast<uint8_t *>(data),
+            ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+        return (status == ESP_OK);
+      });
+
   // Initialize transport callback for complete packets
-  transport_.set_packet_callback([this](const uint8_t* data, size_t len) {
+  transport_.set_packet_callback([this](const uint8_t *data, size_t len) {
     // Route to telemetry service for processing
     this->telemetry_service_.on_packet(data, len);
   });
-  
+
   // Initialize authentication module callbacks
-  auth_.set_scheduler_callback([this](uint32_t delay_ms, std::function<void()> callback) {
-    this->set_timeout(delay_ms, std::move(callback));
+  auth_.set_scheduler_callback(
+      [this](uint32_t delay_ms, std::function<void()> callback) {
+        this->set_timeout(delay_ms, std::move(callback));
+      });
+
+  auth_.set_completion_callback([this]() {
+    this->session_.on_authenticated();
+    ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
+
+    // Start telemetry service when authenticated
+    this->telemetry_service_.start();
+
+    // Trigger the one-time data read chain
+    this->trigger_initial_data_reads();
   });
-  
-    auth_.set_completion_callback([this]() {
-      this->session_.on_authenticated();
-      ESP_LOGI(TAG, "✓ Authentication handshake complete - pump ready");
-      
-      // Start telemetry service when authenticated
-      this->telemetry_service_.start();
-      
-      // Trigger the one-time data read chain
-      this->trigger_initial_data_reads();
-    });
-  
+
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
-  
-  // Set control service reference in telemetry service for passive mode notifications
+
+  // Set control service reference in telemetry service for passive mode
+  // notifications
   telemetry_service_.set_control_service(&control_service_);
-  
+
   // Initialize control service callbacks
-  control_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
-    this->set_timeout(delay_ms, std::move(callback));
-  });
-  
+  control_service_.set_schedule_callback(
+      [this](std::function<void()> callback, uint32_t delay_ms) {
+        this->set_timeout(delay_ms, std::move(callback));
+      });
+
+  // Delegate config commits to ScheduleService which preserves the cached
+  // ClockProgramOverview (including schedule_enabled flag)
+  control_service_.set_config_commit_callback(
+      [this]() { this->schedule_service_.send_configuration_commit(); });
+
   // Set control mode change callback to publish to text sensor
-  control_service_.set_mode_change_callback([this](services::ControlMode mode, uint8_t operation_mode, float setpoint) {
+  control_service_.set_mode_change_callback([this](services::ControlMode mode,
+                                                   uint8_t operation_mode,
+                                                   float setpoint) {
 #ifdef USE_TEXT_SENSOR
     // Only publish if the control service has a valid mode from the pump
     if (this->control_mode_sensor_ && this->control_service_.is_mode_valid()) {
-      const char* mode_name = services::ControlService::get_mode_name(mode);
+      const char *mode_name = services::ControlService::get_mode_name(mode);
       this->control_mode_sensor_->publish_state(mode_name);
       ESP_LOGI(TAG, "Published control mode to sensor: %s", mode_name);
     }
 #endif
   });
-  
-   // Initialize schedule service callbacks
-   schedule_service_.set_schedule_callback([this](std::function<void()> callback, uint32_t delay_ms) {
-     this->set_timeout(delay_ms, std::move(callback));
-   });
-   
-   schedule_service_.set_timeout_callback([this](std::function<void()> callback, uint32_t delay_ms) {
-     this->set_timeout(delay_ms, std::move(callback));
-   });
-   
-   // Initialize schedule text sensor with "Loading..." state
+
+  // Initialize schedule service callbacks
+  schedule_service_.set_schedule_callback(
+      [this](std::function<void()> callback, uint32_t delay_ms) {
+        this->set_timeout(delay_ms, std::move(callback));
+      });
+
+  schedule_service_.set_timeout_callback(
+      [this](std::function<void()> callback, uint32_t delay_ms) {
+        this->set_timeout(delay_ms, std::move(callback));
+      });
+
+  // Initialize schedule text sensor with "Loading..." state
 #ifdef USE_TEXT_SENSOR
-   if (this->schedule_text_sensor_) {
-     this->schedule_text_sensor_->publish_state("Loading schedule...");
-   }
-   
-   // Control mode text sensor will be populated when we receive the passive notification
-   // from the pump during authentication. Do NOT publish a default/unknown value here.
+  if (this->schedule_text_sensor_) {
+    this->schedule_text_sensor_->publish_state("Loading schedule...");
+  }
+
+  // Control mode text sensor will be populated when we receive the passive
+  // notification from the pump during authentication. Do NOT publish a
+  // default/unknown value here.
 #endif
 }
 
@@ -146,7 +162,8 @@ void AlphaHwrComponent::loop() {
 }
 
 void AlphaHwrComponent::trigger_initial_data_reads() {
-  if (initial_data_read_done_) return;
+  if (initial_data_read_done_)
+    return;
   initial_data_read_done_ = true;
   ESP_LOGD(TAG, "Triggering initial data reads...");
 
@@ -164,7 +181,8 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
         ESP_LOGD(TAG, "Initial pump clock sync successful");
         this->last_time_sync_timestamp_ = millis();
       } else {
-        ESP_LOGW(TAG, "Initial pump clock sync failed - will retry in 24 hours");
+        ESP_LOGW(TAG,
+                 "Initial pump clock sync failed - will retry in 24 hours");
       }
     });
   });
@@ -192,11 +210,14 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
           }
           this->set_timeout(2000, [this]() {
             ESP_LOGD(TAG, "Reading single events...");
-            this->read_single_events([](bool success, const std::vector<services::SingleEvent>& events) {
-              if (success) {
-                ESP_LOGD("alpha_hwr", "Read %zu active single events", events.size());
-              }
-            });
+            this->read_single_events(
+                [](bool success,
+                   const std::vector<services::SingleEvent> &events) {
+                  if (success) {
+                    ESP_LOGD("alpha_hwr", "Read %zu active single events",
+                             events.size());
+                  }
+                });
           });
         });
       });
@@ -217,24 +238,25 @@ void AlphaHwrComponent::update() {
     // (e.g., BLE connection persisted through ESP32 restart, no re-auth),
     // trigger them now.
     if (!initial_data_read_done_) {
-      ESP_LOGD(TAG, "Session ready but initial data not yet read - triggering now");
+      ESP_LOGD(TAG,
+               "Session ready but initial data not yet read - triggering now");
       telemetry_service_.start();
       trigger_initial_data_reads();
     }
 
     // Poll telemetry first
     telemetry_service_.poll();
-    
+
     // CRITICAL FIX: Space out schedule poll to avoid request collision
     // The pump appears to have trouble handling concurrent Class 10 reads.
-    // Delay schedule poll by 500ms to ensure telemetry response completes first.
-    this->set_timeout("schedule_poll", 500, [this]() {
-      schedule_service_.poll_state();
-    });
-    
+    // Delay schedule poll by 500ms to ensure telemetry response completes
+    // first.
+    this->set_timeout("schedule_poll", 500,
+                      [this]() { schedule_service_.poll_state(); });
+
     // Check and perform daily time sync if needed
     check_and_sync_time();
-    
+
     // Check for timed-out response handlers (2 second timeout)
     transport_.check_timeouts(2000);
   } else {
@@ -245,22 +267,24 @@ void AlphaHwrComponent::update() {
 void AlphaHwrComponent::check_and_sync_time() {
   // Check if we need to sync (once per day)
   uint32_t now = millis();
-  
+
   // Handle millis() rollover (every ~49 days)
   if (now < last_time_sync_timestamp_) {
     ESP_LOGD(TAG, "millis() rollover detected, resetting time sync tracking");
     last_time_sync_timestamp_ = 0;
   }
-  
+
   // If never synced (0) or 24 hours have passed
-  if (last_time_sync_timestamp_ == 0 || (now - last_time_sync_timestamp_) >= TIME_SYNC_INTERVAL_MS) {
+  if (last_time_sync_timestamp_ == 0 ||
+      (now - last_time_sync_timestamp_) >= TIME_SYNC_INTERVAL_MS) {
     // Check if system time is available via SNTP
     time_t current_time = ::time(nullptr);
-    if (current_time < 1609459200) {  // Before 2021-01-01 means time not synced
-      ESP_LOGD(TAG, "System time not synced via SNTP yet, skipping pump clock sync");
+    if (current_time < 1609459200) { // Before 2021-01-01 means time not synced
+      ESP_LOGD(TAG,
+               "System time not synced via SNTP yet, skipping pump clock sync");
       return;
     }
-    
+
     ESP_LOGD(TAG, "Daily time sync due - syncing pump clock...");
     time_service_.set_clock_async([this](bool success) {
       if (success) {
@@ -278,21 +302,23 @@ void AlphaHwrComponent::authenticate() {
     ESP_LOGW(TAG, "Parent BLE client not available");
     return;
   }
-  
+
   session_.on_authenticating();
   auth_.start();
 }
 
-void AlphaHwrComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+void AlphaHwrComponent::gap_event_handler(esp_gap_ble_cb_event_t event,
+                                          esp_ble_gap_cb_param_t *param) {
   // Delegate to BLE connection manager
   ble_manager_.handle_gap_event(event, param);
 }
 
-void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
-                                             esp_ble_gattc_cb_param_t *param) {
+void AlphaHwrComponent::gattc_event_handler(esp_gattc_cb_event_t event,
+                                            esp_gatt_if_t gattc_if,
+                                            esp_ble_gattc_cb_param_t *param) {
   // Delegate to BLE connection manager
   ble_manager_.handle_gattc_event(event, gattc_if, param);
 }
 
-}  // namespace alpha_hwr
-}  // namespace esphome
+} // namespace alpha_hwr
+} // namespace esphome
