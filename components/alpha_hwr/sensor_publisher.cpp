@@ -150,6 +150,157 @@ void SensorPublisher::publish_warnings(const std::vector<uint16_t>& codes) {
 #endif
 }
 
+// Grundfos GENI error code descriptions (from GENI profile, 98+ codes)
+// Used for both alarm (Object 88, Sub 0) and warning (Object 88, Sub 11) codes
+static const char *get_alarm_description(uint16_t code) {
+  switch (code) {
+    case 0:   return "OK";
+    case 1:   return "Leakage Current";
+    case 2:   return "Motor Phase Missing";
+    case 3:   return "External Alarm";
+    case 4:   return "Max Number of Restarts";
+    case 7:   return "Too Many Hardware Shutdowns";
+    case 9:   return "Motor Phase Sequence Reversal";
+    case 10:  return "Pump Communication";
+    case 12:  return "Service Interval";
+    case 14:  return "Electronic DC Link Protection";
+    case 15:  return "Communication Fault Main System";
+    case 16:  return "Other";
+    case 17:  return "Low System Performance";
+    case 19:  return "Diaphragm Break";
+    case 21:  return "Too Many Starts Per Hour";
+    case 22:  return "Motor Moisture";
+    case 24:  return "Vibration";
+    case 25:  return "User Wrong Configuration";
+    case 26:  return "Welding Contactor";
+    case 28:  return "Battery Low";
+    case 29:  return "Impeller Forced Backwards";
+    case 30:  return "Bearing Wear";
+    case 31:  return "Varistor Change";
+    case 32:  return "Over Voltage";
+    case 33:  return "Service Soon";
+    case 35:  return "Air in Pump Head";
+    case 36:  return "Discharge Valve Leakage";
+    case 37:  return "Suction Valve Leakage";
+    case 39:  return "Mixing Loop Valve Stuck";
+    case 40:  return "Motor Low Supply Voltage";
+    case 41:  return "Motor Low Supply Voltage Transient";
+    case 42:  return "Cut-In Fault";
+    case 43:  return "Motor Positive Turbine Operation";
+    case 44:  return "Under Temperature";
+    case 45:  return "Voltage Asymmetry";
+    case 46:  return "External Warning";
+    case 48:  return "Motor Over Load";
+    case 49:  return "Motor Over Current";
+    case 50:  return "Motor Protection General Shut Down";
+    case 51:  return "Motor Blocked";
+    case 54:  return "Motor Protection 3s Limit";
+    case 55:  return "Motor Current Protection";
+    case 56:  return "Motor Under Load";
+    case 57:  return "Dry Run";
+    case 58:  return "Low Flow";
+    case 59:  return "No Flow";
+    case 60:  return "Low Input Power";
+    case 61:  return "Water Hammer";
+    case 63:  return "Media Temperature Frozen Protection";
+    case 64:  return "Over Temperature";
+    case 65:  return "Motor Over Temperature";
+    case 66:  return "Control Electronics Over Temperature";
+    case 67:  return "Power Converter Over Temperature";
+    case 68:  return "High Media Temperature Protection";
+    case 69:  return "Motor Over Heated";
+    case 70:  return "Motor Over Heated Thermal Relay 2";
+    case 72:  return "Motor Drive Unit Internal Fault";
+    case 73:  return "Hardware Shut Down";
+    case 74:  return "Motor High DC Link Voltage";
+    case 75:  return "Motor Low DC Link Voltage";
+    case 76:  return "PMCM Lost Node Internal";
+    case 77:  return "Twin Pumps Communication Fault";
+    case 80:  return "Hardware Fault Type 2";
+    case 83:  return "FE Parameter Verification Error";
+    case 84:  return "Persistence Break Down";
+    case 85:  return "Motor Drive Unit Memory Fault";
+    case 87:  return "Multi Sensor Limit Exceeded";
+    case 88:  return "General Sensor Fault";
+    case 89:  return "Primary Feedback Sensor Fault";
+    case 90:  return "Speed Sensor Signal Fault";
+    case 91:  return "Pump Flow Temperature Sensor";
+    case 92:  return "Feedback Sensor Calibration Fault";
+    case 93:  return "Fallback Sensor Signal Fault";
+    case 94:  return "Limit Exceeded 1";
+    case 95:  return "Limit Exceeded 2";
+    case 96:  return "Reference Input Signal Fault";
+    case 97:  return "Invalid Setpoint";
+    case 105: return "Electronic Rectifier Protection";
+    case 106: return "Electronic Inverter Protection";
+    case 110: return "Electrical Asymmetry";
+    case 114: return "Frost Protection";
+    case 117: return "Door Opened";
+    case 125: return "Outdoor Temperature Sensor";
+    case 126: return "Zone Air Supply Temperature Sensor";
+    case 127: return "Shunt Relative Pressure Sensor";
+    case 130: return "Cable Theft";
+    case 131: return "Unbalance";
+    case 132: return "Invalid GSC File";
+    case 133: return "Generic Limit Exceeded";
+    case 134: return "Data Fault from Remote Sensors";
+    case 142: return "Running on Battery Common";
+    case 143: return "Multi Sensor Signal Fault";
+    case 148: return "Motor DE Bearing Temp High";
+    case 149: return "Motor NDE Bearing Temp High";
+    case 152: return "Communication Fault Add-On Module";
+    case 155: return "Inrush Fault";
+    case 156: return "Internal Freq Converter Communication";
+    case 157: return "Real Time Clock Out of Order";
+    case 159: return "CIM Communication";
+    case 161: return "Sensor Supply Fault 5V/12V";
+    case 162: return "Sensor Supply Fault 24V";
+    case 163: return "Motor Drive Unit Config Fault";
+    case 164: return "LiqTec Sensor Signal Fault";
+    case 165: return "AI Signal Fault";
+    case 166: return "AI2 Signal Fault";
+    case 167: return "AI3 Signal Fault";
+    case 168: return "Pressure Sensor Signal Fault";
+    case 169: return "Flow Sensor Signal Fault";
+    case 175: return "Supply Flow Temperature Sensor";
+    case 176: return "Return Flow Temperature Sensor";
+    case 181: return "PTC Sensor Signal Fault";
+    case 190: return "Sensor 1 Limit Exceeded";
+    case 191: return "Level Control High Water";
+    case 193: return "Sensor Limit 4 Exceeded";
+    case 197: return "Operation with Reduced Pressure";
+    case 200: return "Application Fault";
+    case 203: return "Alarm on All Pumps";
+    case 204: return "Inconsistency Between Sensors";
+    case 205: return "Level Switch Inconsistency";
+    case 206: return "Water Shortage Level 1";
+    case 207: return "Water Leakage";
+    case 208: return "Cavitation";
+    case 209: return "Non-Return Valve Fault";
+    case 210: return "Overpressure";
+    case 211: return "Shunt Relative Pressure Surveillance";
+    case 215: return "Pipe Filling Time Out";
+    case 220: return "Motor Contactor Wear Out";
+    case 225: return "PMCM Lost Node External";
+    case 226: return "IO Module Communication";
+    case 228: return "Flow Switch Monitoring";
+    case 229: return "Water on Floor";
+    case 230: return "Invalid MAC Address";
+    case 236: return "Pump Fault";
+    case 237: return "Pump 2 Fault";
+    case 240: return "Motor Bearing Lubrication";
+    case 241: return "Motor Phase Failure";
+    case 242: return "Motor Model Auto Recognition Failure";
+    case 245: return "Pump Max Running Time Protection";
+    case 247: return "Power On Notice";
+    case 248: return "Running on Battery";
+    case 249: return "User Configurable Alert";
+    case 250: return "User Configurable Alert 1";
+    case 255: return "Electronics Short Circuit Fault";
+    default:  return nullptr;
+  }
+}
+
 std::string SensorPublisher::format_codes(const std::vector<uint16_t>& codes) {
   if (codes.empty()) {
     return "None";
@@ -160,8 +311,13 @@ std::string SensorPublisher::format_codes(const std::vector<uint16_t>& codes) {
     if (i > 0) {
       result += ", ";
     }
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%u", codes[i]);
+    const char *desc = get_alarm_description(codes[i]);
+    char buf[64];
+    if (desc) {
+      snprintf(buf, sizeof(buf), "%s (%u)", desc, codes[i]);
+    } else {
+      snprintf(buf, sizeof(buf), "Unknown (%u)", codes[i]);
+    }
     result += buf;
   }
   
