@@ -32,7 +32,7 @@ DeviceInfoService::DeviceInfoService(core::Transport &transport, core::Session &
 }
 
 bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_complete) {
-  ESP_LOGI(TAG, "Starting device info read (5 strings)");
+  ESP_LOGD(TAG, "Starting device info read (5 strings)");
   
   // Reset state
   pending_reads_ = 5;
@@ -50,7 +50,7 @@ bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_comp
         if (product_name_ == "LPHA HWR") {
           product_name_ = "ALPHA HWR";
         }
-        ESP_LOGI(TAG, "Product name: %s", product_name_.c_str());
+        ESP_LOGD(TAG, "Product name: %s", product_name_.c_str());
       } else {
         ESP_LOGW(TAG, "Failed to read product name");
       }
@@ -66,7 +66,7 @@ bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_comp
         if (!serial_number_.empty() && serial_number_[0] == '0') {
           serial_number_ = "1" + serial_number_;
         }
-        ESP_LOGI(TAG, "Serial number: %s", serial_number_.c_str());
+        ESP_LOGD(TAG, "Serial number: %s", serial_number_.c_str());
       } else {
         ESP_LOGW(TAG, "Failed to read serial number");
       }
@@ -78,7 +78,7 @@ bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_comp
     [this](bool ok, const char* value) {
       if (ok && value) {
         software_version_ = value;
-        ESP_LOGI(TAG, "Software version: %s", software_version_.c_str());
+        ESP_LOGD(TAG, "Software version: %s", software_version_.c_str());
       } else {
         ESP_LOGW(TAG, "Failed to read software version");
       }
@@ -90,7 +90,7 @@ bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_comp
     [this](bool ok, const char* value) {
       if (ok && value) {
         hardware_version_ = value;
-        ESP_LOGI(TAG, "Hardware version: %s", hardware_version_.c_str());
+        ESP_LOGD(TAG, "Hardware version: %s", hardware_version_.c_str());
       } else {
         ESP_LOGW(TAG, "Failed to read hardware version");
       }
@@ -102,7 +102,7 @@ bool DeviceInfoService::read_device_info_async(std::function<void(bool)> on_comp
     [this](bool ok, const char* value) {
       if (ok && value) {
         ble_version_ = value;
-        ESP_LOGI(TAG, "BLE version: %s", ble_version_.c_str());
+        ESP_LOGD(TAG, "BLE version: %s", ble_version_.c_str());
       } else {
         ESP_LOGW(TAG, "Failed to read BLE version");
       }
@@ -121,7 +121,7 @@ bool DeviceInfoService::read_class7_string_async(uint8_t string_id,
   uint8_t packet[20];  // Max needed: 4 (header) + 3 (APDU) + 2 (CRC) = 9 bytes
   size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet);
   
-  ESP_LOGD(TAG, "Reading Class 7 String ID %d", string_id);
+  ESP_LOGV(TAG, "Reading Class 7 String ID %d", string_id);
   
   // Convert to vector for transport
   std::vector<uint8_t> packet_vec(packet, packet + packet_len);
@@ -177,7 +177,7 @@ bool DeviceInfoService::read_class7_string_async(uint8_t string_id,
         string_buffer[--actual_len] = '\0';
       }
       
-      ESP_LOGD(TAG, "String ID %d: '%s' (%d bytes)", string_id, string_buffer, actual_len);
+      ESP_LOGV(TAG, "String ID %d: '%s' (%d bytes)", string_id, string_buffer, actual_len);
       on_complete(true, string_buffer);
     },
     3000  // 3 second timeout
@@ -188,7 +188,7 @@ bool DeviceInfoService::read_class7_string_async(uint8_t string_id,
 
 void DeviceInfoService::on_string_read_complete() {
   pending_reads_--;
-  ESP_LOGD(TAG, "String read complete, %d remaining", pending_reads_);
+  ESP_LOGV(TAG, "String read complete, %d remaining", pending_reads_);
   
   if (pending_reads_ == 0 && completion_callback_) {
     ESP_LOGI(TAG, "All device info strings read successfully");

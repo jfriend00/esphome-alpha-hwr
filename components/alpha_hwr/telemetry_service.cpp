@@ -61,7 +61,7 @@ void TelemetryService::send_read_request(uint32_t register_addr) {
   
   std::vector<uint8_t> packet(packet_raw, packet_raw + 11);
   
-  ESP_LOGD(TAG, "Queueing READ request for register 0x%06X", register_addr);
+  ESP_LOGV(TAG, "Queueing READ request for register 0x%06X", register_addr);
   
   // Send via transport queue (no response matching here as telemetry uses various OpSpecs)
   this->transport_.send_command(packet);
@@ -73,7 +73,7 @@ void TelemetryService::poll() {
     return;
   }
   
-  ESP_LOGI(TAG, "Polling telemetry registers...");
+  ESP_LOGD(TAG, "Polling telemetry registers...");
   
   // Reset alarm/warning response toggle (alarms queued first, then warnings)
   next_09_is_warnings_ = false;
@@ -109,7 +109,7 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
   }
   
   uint8_t opspec = frame.opspec;
-  ESP_LOGD(TAG, "Class 10 packet, OpSpec: 0x%02X, Sub=0x%04X, Obj=0x%04X", 
+  ESP_LOGV(TAG, "Class 10 packet, OpSpec: 0x%02X, Sub=0x%04X, Obj=0x%04X", 
            opspec, frame.sub_id, frame.obj_id);
   
   // Route to appropriate handler based on OpSpec
@@ -166,7 +166,6 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
 }
 
 void TelemetryService::handle_motor_state_response(const uint8_t* data, size_t len) {
-  ESP_LOGI(TAG, "Motor state response (OpSpec 0x30)");
   
   // Decode motor state using telemetry decoder
   protocol::MotorStateTelemetry motor = protocol::decode_motor_state_response(data, len);
@@ -178,7 +177,6 @@ void TelemetryService::handle_motor_state_response(const uint8_t* data, size_t l
 }
 
 void TelemetryService::handle_flow_pressure_response(const uint8_t* data, size_t len) {
-  ESP_LOGI(TAG, "Flow/pressure response (OpSpec 0x2B)");
   
   // Decode flow/pressure using telemetry decoder
   protocol::FlowPressureTelemetry flow = protocol::decode_flow_pressure_response(data, len);
@@ -190,7 +188,6 @@ void TelemetryService::handle_flow_pressure_response(const uint8_t* data, size_t
 }
 
 void TelemetryService::handle_temperature_response(const uint8_t* data, size_t len) {
-  ESP_LOGI(TAG, "Temperature response (OpSpec 0x14)");
   
   // Decode temperature using telemetry decoder
   protocol::TemperatureTelemetry temp = protocol::decode_temperature_response(data, len);
@@ -202,7 +199,7 @@ void TelemetryService::handle_temperature_response(const uint8_t* data, size_t l
 }
 
 void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len, uint8_t opspec) {
-  ESP_LOGI(TAG, "Alarms response (OpSpec 0x%02X)", opspec);
+  ESP_LOGD(TAG, "Alarms response (OpSpec 0x%02X)", opspec);
   
   // Decode alarms using telemetry decoder (opspec determines data offset)
   protocol::AlarmWarningTelemetry alarms = protocol::decode_alarms_warnings_response(data, len, opspec);
@@ -214,7 +211,7 @@ void TelemetryService::handle_alarms_response(const uint8_t* data, size_t len, u
 }
 
 void TelemetryService::handle_warnings_response(const uint8_t* data, size_t len, uint8_t opspec) {
-  ESP_LOGI(TAG, "Warnings response (OpSpec 0x%02X)", opspec);
+  ESP_LOGD(TAG, "Warnings response (OpSpec 0x%02X)", opspec);
   
   // Decode warnings using telemetry decoder (opspec determines data offset)
   protocol::AlarmWarningTelemetry warnings = protocol::decode_alarms_warnings_response(data, len, opspec);
@@ -262,34 +259,13 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
   else if (sub_id == 0x0001 && obj_id == 0x2F01) {
     ESP_LOGI(TAG, "Control mode notification received (Obj 0x2F01, Sub 1)");
     
-    // Log full packet for debugging
-    ESP_LOGD(TAG, "Control mode packet length: %d bytes", len);
-    if (len <= 50) {  // Only log short packets to avoid spam
-      std::string hex;
-      for (size_t i = 0; i < len; i++) {
-        char buf[4];
-        snprintf(buf, sizeof(buf), "%02X ", data[i]);
-        hex += buf;
-      }
-      ESP_LOGD(TAG, "Control mode packet: %s", hex.c_str());
-    }
-    
-    // Extract payload: skip GENI header (10 bytes), CRC is at end (2 bytes)
-    // Python reference (control.py:470): checks `len(data) >= 10` then `len(data) >= offset + 7`
-    // This means we check against FULL packet length (including header), not payload length
     if (len >= 10) {  // Need at least header
       const uint8_t* payload = data + 10;
       size_t payload_len = len - 12;  // Full packet minus header (10) and CRC (2)
       
       // Payload structure: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes float)]
-      // Determine offset - Python checks the payload bytes at positions 0 and 1
       size_t offset = (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) ? 3 : 0;
       
-      ESP_LOGD(TAG, "Payload length: %d bytes, offset: %d bytes", payload_len, offset);
-      
-      // Python reference (control.py:482): checks `len(data) >= offset + 7`
-      // Since data includes the 10-byte header, this translates to:
-      // Full packet length >= 10 (header) + offset + 7 (data bytes) = 17 or 20 bytes
       if (len >= 10 + offset + 7) {
         uint8_t control_source = payload[offset];
         uint8_t operation_mode = payload[offset + 1];
@@ -315,7 +291,7 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
     }
   }
   else {
-    ESP_LOGD(TAG, "Unknown passive notification (Sub=0x%04X, Obj=0x%04X)", sub_id, obj_id);
+    ESP_LOGV(TAG, "Unknown passive notification (Sub=0x%04X, Obj=0x%04X)", sub_id, obj_id);
   }
 }
 

@@ -100,7 +100,7 @@ void TimeService::set_clock_async(std::function<void(bool)> callback) {
   if (callback) {
     // Use a simple approach: just report success since the packet is correctly formatted.
     // If we need verification, the daily sync retry will catch failures.
-    ESP_LOGI(TAG, "Clock SET packet sent successfully");
+    ESP_LOGD(TAG, "Clock SET packet sent successfully");
     callback(true);
   }
 }
@@ -129,9 +129,6 @@ std::vector<uint8_t> TimeService::build_set_clock_packet(const ESPTime &dt) {
   data[11] = dt.minute;
   data[12] = dt.second;
   // data[13-15] = 0 (padding, already initialized)
-  
-  ESP_LOGD(TAG, "DateTime bytes: %04d-%02d-%02d %02d:%02d:%02d",
-           dt.year, dt.month, dt.day_of_month, dt.hour, dt.minute, dt.second);
   
   // Build Class 10 SET frame using build_data_object_set equivalent
   // Reference: time.py line 268: FrameBuilder.build_data_object_set(sub_id=0x5E00, obj_id=0x6401, data)

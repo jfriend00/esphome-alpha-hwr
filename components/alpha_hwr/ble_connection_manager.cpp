@@ -80,56 +80,26 @@ void BLEConnectionManager::init_security() {
 
 void BLEConnectionManager::dump_services() {
   if (!client_) {
-    ESP_LOGW(TAG, "BLE client not available");
     return;
   }
   
-  ESP_LOGI(TAG, "========== DISCOVERED SERVICES ==========");
-  ESP_LOGI(TAG, "Checking for known BLE services...");
-  
-  // Try Generic Access (0x1800)
-  auto *gap_service = client_->get_service(0x1800);
-  if (gap_service) {
-    ESP_LOGI(TAG, "  ✓ Generic Access (0x1800)");
-    ESP_LOGI(TAG, "    Handles: 0x%04x - 0x%04x", gap_service->start_handle, gap_service->end_handle);
-  }
-  
-  // Try Generic Attribute (0x1801)
-  auto *gatt_service = client_->get_service(0x1801);
-  if (gatt_service) {
-    ESP_LOGI(TAG, "  ✓ Generic Attribute (0x1801)");
-    ESP_LOGI(TAG, "    Handles: 0x%04x - 0x%04x", gatt_service->start_handle, gatt_service->end_handle);
-  }
-  
-  // Try configured service UUID
+  // Check configured service UUID
   auto *service = client_->get_service(service_uuid_);
   if (service) {
-    ESP_LOGI(TAG, "  ✓ Grundfos Service (0xFE5D): %s", service_uuid_.to_string().c_str());
-    ESP_LOGI(TAG, "    Handles: 0x%04x - 0x%04x", 
+    ESP_LOGI(TAG, "Grundfos Service found (0xFE5D), handles 0x%04x-0x%04x",
              service->start_handle, service->end_handle);
     
-    // Try to parse characteristics if not already done
+    // Ensure characteristics are parsed
     if (service->characteristics.empty()) {
-      ESP_LOGI(TAG, "    Parsing characteristics...");
       service->parse_characteristics();
     }
     
-    // List all characteristics
-    if (!service->characteristics.empty()) {
-      ESP_LOGI(TAG, "    Characteristics (%d found):", service->characteristics.size());
-      for (auto *chr : service->characteristics) {
-        ESP_LOGI(TAG, "      - UUID: %s, Handle: 0x%04x, Props: 0x%02x", 
-                 chr->uuid.to_string().c_str(), chr->handle, chr->properties);
-      }
-    } else {
-      ESP_LOGW(TAG, "    No characteristics found in service!");
+    if (service->characteristics.empty()) {
+      ESP_LOGW(TAG, "No characteristics found in service!");
     }
   } else {
-    ESP_LOGW(TAG, "  ✗ Service NOT found!");
-    ESP_LOGW(TAG, "    Expected UUID: %s", service_uuid_.to_string().c_str());
+    ESP_LOGW(TAG, "Service NOT found! Expected UUID: %s", service_uuid_.to_string().c_str());
   }
-  
-  ESP_LOGI(TAG, "========================================");
 }
 
 void BLEConnectionManager::subscribe_to_notifications() {
@@ -229,26 +199,11 @@ void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param
 }
 
 void BLEConnectionManager::handle_service_discovered(const esp_ble_gattc_cb_param_t *param) {
-  // Log ALL services as they are discovered
+  // Service discovery callback — individual services are logged at verbose level only
   auto *search_res = &param->search_res;
-  char uuid_buf[64];
   if (search_res->srvc_id.uuid.len == ESP_UUID_LEN_16) {
-    sprintf(uuid_buf, "0x%04X", search_res->srvc_id.uuid.uuid.uuid16);
-  } else if (search_res->srvc_id.uuid.len == ESP_UUID_LEN_32) {
-    sprintf(uuid_buf, "0x%08X", search_res->srvc_id.uuid.uuid.uuid32);
-  } else {
-    sprintf(uuid_buf, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-            search_res->srvc_id.uuid.uuid.uuid128[15], search_res->srvc_id.uuid.uuid.uuid128[14],
-            search_res->srvc_id.uuid.uuid.uuid128[13], search_res->srvc_id.uuid.uuid.uuid128[12],
-            search_res->srvc_id.uuid.uuid.uuid128[11], search_res->srvc_id.uuid.uuid.uuid128[10],
-            search_res->srvc_id.uuid.uuid.uuid128[9], search_res->srvc_id.uuid.uuid.uuid128[8],
-            search_res->srvc_id.uuid.uuid.uuid128[7], search_res->srvc_id.uuid.uuid.uuid128[6],
-            search_res->srvc_id.uuid.uuid.uuid128[5], search_res->srvc_id.uuid.uuid.uuid128[4],
-            search_res->srvc_id.uuid.uuid.uuid128[3], search_res->srvc_id.uuid.uuid.uuid128[2],
-            search_res->srvc_id.uuid.uuid.uuid128[1], search_res->srvc_id.uuid.uuid.uuid128[0]);
+    ESP_LOGV(TAG, "Service discovered: 0x%04X", search_res->srvc_id.uuid.uuid.uuid16);
   }
-  ESP_LOGI(TAG, ">>> RAW SERVICE DISCOVERED: %s (handles 0x%04x-0x%04x)", 
-           uuid_buf, search_res->start_handle, search_res->end_handle);
 }
 
 void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc_if) {
@@ -263,24 +218,19 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
     auto *service = client_->get_service(service_uuid_);
     
     if (service) {
+      ESP_LOGI(TAG, "✓ Service found, enabling notifications...");
+      
       // Notify component that service was found
       if (service_found_callback_) {
         service_found_callback_();
       }
       
-      ESP_LOGI(TAG, "✓ Service found!");
-      ESP_LOGI(TAG, "  UUID: %s", service->uuid.to_string().c_str());
-      ESP_LOGI(TAG, "  Start Handle: 0x%04x, End Handle: 0x%04x", 
-               service->start_handle, service->end_handle);
-      
       // Check for characteristic
       auto *chr = client_->get_characteristic(service->uuid, characteristic_uuid_);
       if (chr) {
-        ESP_LOGI(TAG, "✓ Characteristic found. Enabling notifications...");
         subscribe_to_notifications();
       } else {
-        ESP_LOGW(TAG, "✗ Characteristic NOT found!");
-        ESP_LOGW(TAG, "Expected UUID: %s", characteristic_uuid_.to_string().c_str());
+        ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_string().c_str());
       }
     } else {
       // Service NOT found - implement retry logic
@@ -299,11 +249,7 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
           });
         }
       } else {
-        ESP_LOGE(TAG, "Failed to find service after %d attempts!", MAX_DISCOVERY_RETRIES);
-        ESP_LOGW(TAG, "This may indicate:");
-        ESP_LOGW(TAG, "  1. Device is not an ALPHA HWR pump");
-        ESP_LOGW(TAG, "  2. Different firmware version with different service layout");
-        ESP_LOGW(TAG, "  3. BLE connection/discovery issue");
+        ESP_LOGE(TAG, "Failed to find service after %d attempts", MAX_DISCOVERY_RETRIES);
       }
     }
   }
@@ -312,7 +258,7 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
 void BLEConnectionManager::handle_notification(const esp_ble_gattc_cb_param_t *param) {
   auto *notify_evt = &param->notify;
   if (notify_evt->value_len > 0) {
-    ESP_LOGD(TAG, "Received notification, %d bytes", notify_evt->value_len);
+    ESP_LOGV(TAG, "Received notification, %d bytes", notify_evt->value_len);
     if (notification_callback_) {
       notification_callback_(notify_evt->value, notify_evt->value_len);
     }

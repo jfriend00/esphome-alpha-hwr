@@ -252,7 +252,7 @@ bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int laye
     return false;
   }
 
-  ESP_LOGI(TAG, "Reading schedule entries for layer %d...", layer);
+  ESP_LOGD(TAG, "Reading schedule entries for layer %d...", layer);
 
   uint16_t sub_id = 1000 + layer;
 
@@ -292,7 +292,7 @@ bool ScheduleService::read_entries(std::vector<ScheduleEntry> *entries, int laye
       }
     }
 
-    ESP_LOGI(TAG, "Read %d enabled entries from layer %d", enabled_count, layer);
+    ESP_LOGD(TAG, "Read %d enabled entries from layer %d", enabled_count, layer);
   });
 
   return true;
@@ -306,7 +306,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
 
   // Special handling for layer=-1: read all layers
   if (layer == -1) {
-    ESP_LOGI(TAG, "Reading schedule entries from all layers (async)...");
+    ESP_LOGD(TAG, "Reading schedule entries from all layers (async)...");
     
     // Create a shared vector to collect entries from all layers
     auto all_entries = std::make_shared<std::vector<ScheduleEntry>>();
@@ -316,7 +316,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
     std::function<void(int)> read_next_layer = [this, all_entries, &layers_pending, on_complete, read_next_layer](int current_layer) {
       if (current_layer > 4) {
         // All layers read, return combined results
-        ESP_LOGI(TAG, "Read %zu total schedule entries from all layers", all_entries->size());
+        ESP_LOGD(TAG, "Read %zu total schedule entries from all layers", all_entries->size());
         if (on_complete) on_complete(true, *all_entries);
         return;
       }
@@ -328,7 +328,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
           for (const auto& entry : entries) {
             all_entries->push_back(entry);
           }
-          ESP_LOGD(TAG, "Layer %d contributed %zu entries", current_layer, entries.size());
+          ESP_LOGV(TAG, "Layer %d contributed %zu entries", current_layer, entries.size());
         } else {
           ESP_LOGW(TAG, "Failed to read layer %d (continuing with other layers)", current_layer);
         }
@@ -348,7 +348,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
     return false;
   }
 
-  ESP_LOGI(TAG, "Reading schedule entries for layer %d (async)...", layer);
+  ESP_LOGD(TAG, "Reading schedule entries for layer %d (async)...", layer);
 
   uint16_t sub_id = 1000 + layer;
 
@@ -362,7 +362,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
   std::vector<uint8_t> packet(frame, frame + frame_len);
 
   this->transport_.send_command(packet, 0xDE01, 0, [this, on_complete, layer](bool success, const uint8_t* payload, size_t payload_len) {
-    ESP_LOGI(TAG, "Schedule entry read callback: success=%d, payload_len=%zu", success, payload_len);
+    ESP_LOGD(TAG, "Schedule entry read callback: success=%d, payload_len=%zu", success, payload_len);
     std::vector<ScheduleEntry> entries;
     if (!success) {
       ESP_LOGW(TAG, "Failed to read schedule entries for layer %d (timeout)", layer);
@@ -389,7 +389,7 @@ bool ScheduleService::read_entries_async(int layer, std::function<void(bool succ
       }
     }
 
-    ESP_LOGI(TAG, "Read %d enabled entries from layer %d (async)", (int)entries.size(), layer);
+    ESP_LOGD(TAG, "Read %d enabled entries from layer %d (async)", (int)entries.size(), layer);
     if (on_complete) on_complete(true, entries);
   });
 
@@ -444,7 +444,7 @@ bool ScheduleService::write_entries(const std::vector<ScheduleEntry> &entries, u
     // Fill 6-byte entry
     entry.to_bytes(payload_data + offset);
 
-    ESP_LOGD(TAG, "Added entry for %s at offset %zu: %02X %02X %02X %02X %02X %02X", entry.get_day().c_str(), offset,
+    ESP_LOGV(TAG, "Added entry for %s at offset %zu: %02X %02X %02X %02X %02X %02X", entry.get_day().c_str(), offset,
              payload_data[offset], payload_data[offset + 1], payload_data[offset + 2], payload_data[offset + 3],
              payload_data[offset + 4], payload_data[offset + 5]);
   }
@@ -469,19 +469,6 @@ bool ScheduleService::write_entries(const std::vector<ScheduleEntry> &entries, u
 
   // Append payload
   memcpy(apdu + 11, payload_data, 42);
-
-  // DEBUG: Dump complete APDU bytes before sending
-  ESP_LOGI(TAG, "=== WRITE APDU DEBUG (53 bytes) ===");
-  ESP_LOGI(TAG, "APDU Header (11 bytes): %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-           apdu[0], apdu[1], apdu[2], apdu[3], apdu[4], apdu[5], 
-           apdu[6], apdu[7], apdu[8], apdu[9], apdu[10]);
-  ESP_LOGI(TAG, "Payload (42 bytes):");
-  for (int i = 0; i < 7; i++) {
-    int offset = 11 + (i * 6);
-    ESP_LOGI(TAG, "  Day %d: %02X %02X %02X %02X %02X %02X", i,
-             apdu[offset], apdu[offset+1], apdu[offset+2], 
-             apdu[offset+3], apdu[offset+4], apdu[offset+5]);
-  }
 
   // Send write command
   if (!this->write_class10_command(apdu, 53)) {
@@ -551,7 +538,7 @@ bool ScheduleService::write_entries_async(const std::vector<ScheduleEntry> &entr
     // Fill 6-byte entry
     entry.to_bytes(payload_data + offset);
 
-    ESP_LOGD(TAG, "Added entry for %s at offset %zu", entry.get_day().c_str(), offset);
+    ESP_LOGV(TAG, "Added entry for %s at offset %zu", entry.get_day().c_str(), offset);
   }
 
   // Build APDU
@@ -877,7 +864,7 @@ void ScheduleService::read_single_events_async(
   }
 
   uint8_t max_events = get_max_single_events();
-  ESP_LOGI(TAG, "Reading up to %d single events from pump...", max_events);
+  ESP_LOGD(TAG, "Reading up to %d single events from pump...", max_events);
 
   // Read single events sequentially to avoid flooding the transport queue
   auto events = std::make_shared<std::vector<SingleEvent>>();
@@ -888,7 +875,7 @@ void ScheduleService::read_single_events_async(
       // All done
       this->cached_single_events_ = *events;
       this->single_events_cached_ = true;
-      ESP_LOGI(TAG, "Read %zu active single events (of %d slots)", events->size(), max_events);
+      ESP_LOGD(TAG, "Read %zu active single events (of %d slots)", events->size(), max_events);
       if (on_complete) on_complete(true, *events);
       return;
     }

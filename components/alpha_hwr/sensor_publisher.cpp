@@ -15,7 +15,6 @@ namespace alpha_hwr {
 namespace services {
 
 SensorPublisher::SensorPublisher() {
-  ESP_LOGI(TAG, "SensorPublisher created");
 }
 
 void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& motor) {
@@ -26,7 +25,7 @@ void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& m
   }
   
   // Log summary
-  ESP_LOGI(TAG, "✓ Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM",
+  ESP_LOGD(TAG, "Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM",
            motor.has_voltage_ac ? motor.voltage_ac_v : 0,
            motor.has_voltage_dc ? motor.voltage_dc_v : 0,
            motor.has_current ? motor.current_a : 0,
@@ -66,7 +65,7 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
   }
   
   // Log summary
-  ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar",
+  ESP_LOGD(TAG, "Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar",
            flow.flow_m3h, flow.head_m,
            flow.has_inlet_pressure ? flow.inlet_pressure_bar : NAN);
   
@@ -90,7 +89,7 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
 
 void SensorPublisher::publish_temperature(const protocol::TemperatureTelemetry& temp) {
   // Log summary
-  ESP_LOGI(TAG, "✓ Temps: Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C",
+  ESP_LOGD(TAG, "Temps: Media=%.1f°C, PCB=%.1f°C, Box=%.1f°C",
            temp.has_media_temp ? temp.media_temperature_c : NAN,
            temp.has_pcb_temp ? temp.pcb_temperature_c : NAN,
            temp.has_control_box_temp ? temp.control_box_temperature_c : NAN);

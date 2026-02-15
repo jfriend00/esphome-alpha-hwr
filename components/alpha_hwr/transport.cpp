@@ -56,22 +56,6 @@ void Transport::loop() {
       size_t remaining = cmd.packet.size() - cmd.bytes_sent;
       size_t to_send = std::min(remaining, BLE_MTU_LIMIT);
 
-      // Log packet hex for debugging - especially for Object 86
-      if (cmd.bytes_sent == 0 && cmd.expect_obj_id == 0x0056) {
-        ESP_LOGI(TAG, "[OBJ86] Sending Object 86 Sub %d request, full packet (%zu bytes):", 
-                 cmd.expect_sub_id, cmd.packet.size());
-        // Print in chunks of 20 bytes
-        for (size_t i = 0; i < cmd.packet.size(); i += 20) {
-          std::string hex_line;
-          for (size_t j = i; j < std::min(i + 20, cmd.packet.size()); j++) {
-            char buf[4];
-            snprintf(buf, sizeof(buf), "%02X ", cmd.packet[j]);
-            hex_line += buf;
-          }
-          ESP_LOGI(TAG, "[OBJ86] %s", hex_line.c_str());
-        }
-      }
-
       ESP_LOGV(TAG, "Sending chunk: %zu bytes (%zu/%zu sent)", 
                to_send, cmd.bytes_sent + to_send, cmd.packet.size());
 
@@ -86,10 +70,10 @@ void Transport::loop() {
             this->state_ = State::AWAITING_RESPONSE;
             cmd.timestamp_ms = now;
             cmd.waiting_for_response = true;
-            ESP_LOGD(TAG, "Command sent, waiting for response (Obj %d Sub %d)", 
+            ESP_LOGV(TAG, "Command sent, waiting for response (Obj %d Sub %d)", 
                      cmd.expect_obj_id, cmd.expect_sub_id);
           } else {
-            ESP_LOGD(TAG, "Command sent (no response expected)");
+            ESP_LOGV(TAG, "Command sent (no response expected)");
             this->command_queue_.pop_front();
             this->state_ = State::IDLE;
           }
@@ -134,7 +118,7 @@ void Transport::send_command(const std::vector<uint8_t>& packet, uint16_t expect
   cmd.allow_register_read = allow_register_read;
   
   this->command_queue_.push_back(cmd);
-  ESP_LOGD(TAG, "Command queued (queue size: %zu)", this->command_queue_.size());
+  ESP_LOGV(TAG, "Command queued (queue size: %zu)", this->command_queue_.size());
 }
 
 bool Transport::is_frame_start(uint8_t byte) const {
@@ -171,7 +155,7 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
     // Calculate expected length
     if (reassembly_buffer_.size() >= 2) {
       expected_packet_length_ = calculate_expected_length();
-      ESP_LOGD(TAG, "Expected packet length: %d bytes", expected_packet_length_);
+      ESP_LOGV(TAG, "Expected packet length: %d bytes", expected_packet_length_);
     }
   } else if (reassembling_) {
     // Continuation of existing packet
@@ -195,7 +179,7 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
    // Check if packet is complete
    if (reassembling_ && expected_packet_length_ > 0 && 
        reassembly_buffer_.size() >= expected_packet_length_) {
-     ESP_LOGD(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
+     ESP_LOGV(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
 
      // Log first 12 bytes for debugging packet structure
      if (reassembly_buffer_.size() >= 12) {
@@ -248,7 +232,7 @@ void Transport::register_response_handler(uint16_t object_id, uint16_t sub_id, R
 
   pending_handlers_.push_back(handler);
 
-  ESP_LOGD(TAG, "Registered response handler for Object %d SubID %d (total pending: %d)",
+  ESP_LOGV(TAG, "Registered response handler for Object %d SubID %d (total pending: %d)",
            object_id, sub_id, pending_handlers_.size());
 }
 
@@ -301,7 +285,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
         ESP_LOGI(TAG, "[AWAITING] ⚠️  Class 10 OpSpec 0x0E notification: Sub=%d (0x%04X), Obj=%d (0x%04X) - SHOULD MATCH WILDCARD!",
                  packet_sub_id, packet_sub_id, packet_obj_id, packet_obj_id);
       }
-      ESP_LOGD(TAG, "[AWAITING] Packet received: len=%d, Class=%02X, OpSpec=%02X, Sub=%d, Obj=%d (waiting for Obj %d Sub %d)",
+      ESP_LOGV(TAG, "[AWAITING] Packet received: len=%d, Class=%02X, OpSpec=%02X, Sub=%d, Obj=%d (waiting for Obj %d Sub %d)",
                len, (len > 4 ? data[4] : 0xFF), opspec, packet_sub_id, packet_obj_id, cmd.expect_obj_id, cmd.expect_sub_id);
     }
   }
@@ -342,7 +326,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     // Class 7 uses a different packet structure: [STX][LEN][DST][SRC][Class][Cmd][ID][...STRING...][CRC]
     // When expect_obj_id == 0 && expect_sub_id == 0, we match by Class byte only
     if (is_class7 && cmd.expect_obj_id == 0x0000 && cmd.expect_sub_id == 0x0000) {
-      ESP_LOGD(TAG, "Class 7 response matched (wildcard match by class byte)");
+      ESP_LOGV(TAG, "Class 7 response matched (wildcard match by class byte)");
       if (cmd.callback) {
         cmd.callback(true, data, len);
       }
@@ -367,7 +351,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
      if (is_register_read && !cmd.allow_register_read) {
        // This is telemetry register-read response, not a DataObject response
        // Discard it for command matching purposes (unless command explicitly allows it)
-       ESP_LOGD(TAG, "Class 10 register-read (OpSpec=0x%02X), skipping for command response (waiting for Obj %d Sub %d)", 
+       ESP_LOGV(TAG, "Class 10 register-read (OpSpec=0x%02X), skipping for command response (waiting for Obj %d Sub %d)", 
                 opspec, cmd.expect_obj_id, cmd.expect_sub_id);
        return false;
      }
@@ -391,7 +375,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     // Reference: Python base.py::match_class10_response only checks p[4] == 0x0A
     if (cmd.expect_obj_id == 0x0000 && cmd.expect_sub_id == 0x0000) {
       matched = true;
-      ESP_LOGD(TAG, "Wildcard match: accepting any Class 10 packet (OpSpec=0x%02X, Obj=%d, Sub=%d)",
+      ESP_LOGV(TAG, "Wildcard match: accepting any Class 10 packet (OpSpec=0x%02X, Obj=%d, Sub=%d)",
                opspec, packet_obj_id, packet_sub_id);
     } else {
       // Exact match: check Object ID and Sub-ID
@@ -404,7 +388,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     }
 
     if (matched) {
-      ESP_LOGD(TAG, "Command response matched for Obj %d (Sub %d -> %d)", 
+      ESP_LOGV(TAG, "Command response matched for Obj %d (Sub %d -> %d)", 
                packet_obj_id, cmd.expect_sub_id, packet_sub_id);
       if (cmd.callback) {
         cmd.callback(true, payload, payload_len);
@@ -414,7 +398,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
       return true;
      } else {
        // This is a Class 10 DataObject response but doesn't match what we're waiting for
-       ESP_LOGD(TAG, "Class 10 DataObject MISMATCH: got Obj=0x%04X Sub=0x%04X, want Obj=0x%04X Sub=0x%04X, OpSpec=0x%02X",
+       ESP_LOGV(TAG, "Class 10 DataObject MISMATCH: got Obj=0x%04X Sub=0x%04X, want Obj=0x%04X Sub=0x%04X, OpSpec=0x%02X",
                 packet_obj_id, packet_sub_id, cmd.expect_obj_id, cmd.expect_sub_id, opspec);
        return false;
      }
@@ -468,7 +452,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
   // Search for matching handler
   for (auto it = pending_handlers_.begin(); it != pending_handlers_.end(); ++it) {
     if (it->object_id == packet_obj_id && it->sub_id == packet_sub_id) {
-      ESP_LOGD(TAG, "Response handler matched for Object %d SubID %d", packet_obj_id, packet_sub_id);
+      ESP_LOGV(TAG, "Response handler matched for Object %d SubID %d", packet_obj_id, packet_sub_id);
 
       // Extract payload: skip header (10 bytes) and CRC (2 bytes)
       const uint8_t* payload = data + 10;
@@ -477,12 +461,12 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
       // Invoke callback
       if (it->callback) {
         it->callback(payload, payload_len);
-        ESP_LOGD(TAG, "Response handler invoked with %d bytes payload", payload_len);
+        ESP_LOGV(TAG, "Response handler invoked with %d bytes payload", payload_len);
       }
 
       // Remove handler (one-shot)
       pending_handlers_.erase(it);
-      ESP_LOGD(TAG, "Response handler removed (%d remaining)", pending_handlers_.size());
+      ESP_LOGV(TAG, "Response handler removed (%d remaining)", pending_handlers_.size());
 
       return true;  // Handler was found and invoked
     }

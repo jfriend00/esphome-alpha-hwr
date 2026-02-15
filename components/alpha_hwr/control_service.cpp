@@ -92,11 +92,11 @@ void ControlService::read_setpoints_from_pump() {
     return;
   }
   
-  ESP_LOGI(TAG, "Reading setpoints for mode: %s", get_mode_name(current_mode_));
+  ESP_LOGD(TAG, "Reading setpoints for mode: %s", get_mode_name(current_mode_));
   
   // For Temperature Range mode, read Object 91 Sub 430 for min/max temps + autoadapt
   if (current_mode_ == ControlMode::TEMPERATURE_RANGE) {
-    ESP_LOGI(TAG, "Reading temperature range from Object 91 Sub 430...");
+    ESP_LOGD(TAG, "Reading temperature range from Object 91 Sub 430...");
     
     uint8_t apdu[5];
     apdu[0] = 0x0A;  // Class 10
@@ -127,7 +127,7 @@ void ControlService::read_setpoints_from_pump() {
           cached_autoadapt_ = payload[offset] ? 1 : 0;
           cached_temp_min_ = protocol::decode_float_be(&payload[offset + 1]);
           cached_temp_max_ = protocol::decode_float_be(&payload[offset + 5]);
-          ESP_LOGI(TAG, "Temperature range: min=%.1f°C, max=%.1f°C, autoadapt=%s", 
+          ESP_LOGI(TAG, "Temperature range: min=%.1f, max=%.1f, autoadapt=%s", 
                    cached_temp_min_, cached_temp_max_, cached_autoadapt_ ? "ON" : "OFF");
           
           // Trigger mode change callback to update UI
@@ -141,7 +141,7 @@ void ControlService::read_setpoints_from_pump() {
     // This is the same read Python's get_mode() uses.
     // Reference: control.py::get_mode() line 398
     // Use 3s delay to ensure stale passive notifications have been consumed
-    ESP_LOGI(TAG, "Reading setpoint via Object 86 Sub 6 (get_mode)...");
+    ESP_LOGD(TAG, "Reading setpoint via Object 86 Sub 6 (get_mode)...");
     ControlMode expected_mode = current_mode_;
     get_mode_async([this, expected_mode](bool success, ControlMode mode) {
       if (success) {
@@ -161,7 +161,7 @@ void ControlService::read_setpoints_from_pump() {
             schedule_callback_([this]() {
               get_mode_async([this](bool ok, ControlMode m) {
                 if (ok) {
-                  ESP_LOGI(TAG, "Retry setpoint read: %.4f (mode: %s)", cached_setpoint_, get_mode_name(m));
+                  ESP_LOGD(TAG, "Retry setpoint read: %.4f (mode: %s)", cached_setpoint_, get_mode_name(m));
                   if (mode_change_callback_) {
                     mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
                   }
@@ -633,7 +633,6 @@ void ControlService::set_constant_pressure_async(float value_m, std::function<vo
   } else {
     set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
     cached_setpoint_ = value_m;
-    ESP_LOGI(TAG, "✓ Constant pressure set to %.2f m (%.0f Pa)", value_m, value_pa);
     if (callback) callback(true);
   }
 }
@@ -667,7 +666,6 @@ void ControlService::set_constant_speed_async(float value_rpm, std::function<voi
   } else {
     set_class10_setpoint(value_rpm, SUB_SPEED_SETPOINT);
     cached_setpoint_ = value_rpm;
-    ESP_LOGI(TAG, "✓ Constant speed set to %.0f RPM", value_rpm);
     if (callback) callback(true);
   }
 }
@@ -701,7 +699,6 @@ void ControlService::set_constant_flow_async(float value_m3h, std::function<void
   } else {
     set_class10_setpoint(value_m3h, SUB_FLOW_SETPOINT);
     cached_setpoint_ = value_m3h;
-    ESP_LOGI(TAG, "✓ Constant flow set to %.2f m³/h", value_m3h);
     if (callback) callback(true);
   }
 }
@@ -822,7 +819,6 @@ void ControlService::set_proportional_pressure_async(float value_m, std::functio
   } else {
     set_class10_setpoint(value_pa, SUB_PRESSURE_SETPOINT);
     cached_setpoint_ = value_m;
-    ESP_LOGI(TAG, "✓ Proportional pressure set to %.2f m (%.0f Pa)", value_pa / 9806.65f, value_pa);
     if (callback) callback(true);
   }
 }
