@@ -119,6 +119,36 @@ void AlphaHwrComponent::setup() {
         this->update_schedule_display();
       });
       
+      // Read event log first (lighter load), then chain history after completion
+      this->set_timeout(6000, [this]() {
+        ESP_LOGI(TAG, "Reading event log...");
+        this->read_event_log([this](bool success) {
+          if (success) {
+            ESP_LOGI("alpha_hwr", "Event log read complete");
+          } else {
+            ESP_LOGW("alpha_hwr", "Event log read failed");
+          }
+          // Chain history after event log to avoid wildcard conflicts
+          this->set_timeout(2000, [this]() {
+            ESP_LOGI("alpha_hwr", "Reading history trends...");
+            this->read_history([this](bool success) {
+              if (success) {
+                ESP_LOGI("alpha_hwr", "History trends read complete");
+              }
+              // Chain single events LAST (35 reads, many may timeout)
+              this->set_timeout(2000, [this]() {
+                ESP_LOGI(TAG, "Reading single events...");
+                this->read_single_events([](bool success, const std::vector<services::SingleEvent>& events) {
+                  if (success) {
+                    ESP_LOGI("alpha_hwr", "Read %zu active single events", events.size());
+                  }
+                });
+              });
+            });
+          });
+        });
+      });
+      
       // Query control mode and setpoints after authentication
       this->set_timeout(5000, [this]() {
         ESP_LOGI(TAG, "Reading control mode and setpoints from pump...");

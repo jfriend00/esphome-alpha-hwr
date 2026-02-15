@@ -131,6 +131,97 @@ number:
     step: 5
     initial_value: 0
 
+  # Single Event time inputs
+  - platform: template
+    name: "Single Event Start Month"
+    id: single_event_start_month
+    icon: "mdi:calendar-start"
+    optimistic: true
+    min_value: 1
+    max_value: 12
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Single Event Start Day"
+    id: single_event_start_day
+    icon: "mdi:calendar-start"
+    optimistic: true
+    min_value: 1
+    max_value: 31
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Single Event Start Hour"
+    id: single_event_start_hour
+    icon: "mdi:clock-start"
+    optimistic: true
+    min_value: 0
+    max_value: 23
+    step: 1
+    initial_value: 6
+
+  - platform: template
+    name: "Single Event Start Minute"
+    id: single_event_start_min
+    icon: "mdi:clock-start"
+    optimistic: true
+    min_value: 0
+    max_value: 59
+    step: 5
+    initial_value: 0
+
+  - platform: template
+    name: "Single Event End Month"
+    id: single_event_end_month
+    icon: "mdi:calendar-end"
+    optimistic: true
+    min_value: 1
+    max_value: 12
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Single Event End Day"
+    id: single_event_end_day
+    icon: "mdi:calendar-end"
+    optimistic: true
+    min_value: 1
+    max_value: 31
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Single Event End Hour"
+    id: single_event_end_hour
+    icon: "mdi:clock-end"
+    optimistic: true
+    min_value: 0
+    max_value: 23
+    step: 1
+    initial_value: 8
+
+  - platform: template
+    name: "Single Event End Minute"
+    id: single_event_end_min
+    icon: "mdi:clock-end"
+    optimistic: true
+    min_value: 0
+    max_value: 59
+    step: 5
+    initial_value: 0
+
+  - platform: template
+    name: "Single Event Clear Slot"
+    id: single_event_clear_slot
+    icon: "mdi:numeric"
+    optimistic: true
+    min_value: 0
+    max_value: 34
+    step: 1
+    initial_value: 0
+
 button:
   - platform: template
     name: "Save Schedule Entry"
@@ -176,5 +267,106 @@ button:
               ESP_LOGI("sched_editor", "✓ Schedule entry cleared");
             } else {
               ESP_LOGW("sched_editor", "✗ Failed to clear schedule entry");
+            }
+          });
+
+  # --------------------------------------------------------------------------
+  # Single Event (One-Time Schedule) Management
+  # --------------------------------------------------------------------------
+
+  - platform: template
+    name: "Add Single Event"
+    icon: "mdi:calendar-plus"
+    on_press:
+      - lambda: |-
+          // Get event times from the number inputs
+          uint16_t start_month = (uint16_t)id(single_event_start_month).state;
+          uint16_t start_day_val = (uint16_t)id(single_event_start_day).state;
+          uint16_t start_hour = (uint16_t)id(single_event_start_hour).state;
+          uint16_t start_minute = (uint16_t)id(single_event_start_min).state;
+          uint16_t end_month = (uint16_t)id(single_event_end_month).state;
+          uint16_t end_day_val = (uint16_t)id(single_event_end_day).state;
+          uint16_t end_hour = (uint16_t)id(single_event_end_hour).state;
+          uint16_t end_minute = (uint16_t)id(single_event_end_min).state;
+          
+          // Build Unix timestamps using current year
+          time_t now = ::time(nullptr);
+          struct tm *t = localtime(&now);
+          int year = t->tm_year;  // years since 1900
+          
+          struct tm start_tm = {};
+          start_tm.tm_year = year;
+          start_tm.tm_mon = start_month - 1;
+          start_tm.tm_mday = start_day_val;
+          start_tm.tm_hour = start_hour;
+          start_tm.tm_min = start_minute;
+          start_tm.tm_sec = 0;
+          start_tm.tm_isdst = -1;
+          time_t begin_ts = mktime(&start_tm);
+          
+          struct tm end_tm = {};
+          end_tm.tm_year = year;
+          end_tm.tm_mon = end_month - 1;
+          end_tm.tm_mday = end_day_val;
+          end_tm.tm_hour = end_hour;
+          end_tm.tm_min = end_minute;
+          end_tm.tm_sec = 0;
+          end_tm.tm_isdst = -1;
+          time_t end_ts = mktime(&end_tm);
+          
+          if (begin_ts >= end_ts) {
+            ESP_LOGW("single_event", "Start must be before end");
+            return;
+          }
+          
+          // Find a free slot
+          int slot = id(pump).find_free_single_event_slot();
+          if (slot < 0) {
+            ESP_LOGW("single_event", "No free single event slots");
+            return;
+          }
+          
+          esphome::alpha_hwr::services::SingleEvent event;
+          event.index = (uint8_t)slot;
+          event.enabled = true;
+          event.action = 0x02;  // RUN
+          event.begin_timestamp = (uint32_t)begin_ts;
+          event.end_timestamp = (uint32_t)end_ts;
+          
+          ESP_LOGI("single_event", "Adding event slot %d: %02d/%02d %02d:%02d - %02d/%02d %02d:%02d",
+                   slot, start_month, start_day_val, start_hour, start_minute,
+                   end_month, end_day_val, end_hour, end_minute);
+          
+          id(pump).write_single_event(event, [](bool success) {
+            if (success) {
+              ESP_LOGI("single_event", "✓ Single event saved");
+            } else {
+              ESP_LOGW("single_event", "✗ Failed to save single event");
+            }
+          });
+
+  - platform: template
+    name: "Clear Single Event"
+    icon: "mdi:calendar-remove"
+    on_press:
+      - lambda: |-
+          uint8_t idx = (uint8_t)id(single_event_clear_slot).state;
+          ESP_LOGI("single_event", "Clearing single event slot %d", idx);
+          id(pump).clear_single_event(idx, [](bool success) {
+            if (success) {
+              ESP_LOGI("single_event", "✓ Single event cleared");
+            } else {
+              ESP_LOGW("single_event", "✗ Failed to clear single event");
+            }
+          });
+
+  - platform: template
+    name: "Refresh Single Events"
+    icon: "mdi:calendar-refresh"
+    on_press:
+      - lambda: |-
+          id(pump).read_single_events([](bool success, const std::vector<esphome::alpha_hwr::services::SingleEvent>& events) {
+            if (success) {
+              ESP_LOGI("single_event", "✓ Refreshed %zu events", events.size());
             }
           });

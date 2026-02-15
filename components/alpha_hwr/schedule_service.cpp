@@ -15,6 +15,8 @@
 #include "esphome/core/hal.h"
 #include <cstring>
 #include <map>
+#include <set>
+#include <algorithm>
 
 namespace esphome {
 namespace alpha_hwr {
@@ -185,22 +187,27 @@ bool ScheduleService::send_configuration_commit() {
 
   ESP_LOGD(TAG, "Sending configuration commit...");
 
-  // CRITICAL: Use exact bytes from Python reference (control.py:1042)
-  // Any deviation causes pump to reject the commit!
-  // Python hardcoded: 02050005000100000000
+  // Use cached ClockProgramOverview structure if available, otherwise use defaults
+  // This preserves all pump settings while committing schedule changes
   uint8_t structure_bytes[10];
-  structure_bytes[0] = 0x02;  // max_nof_actions
-  structure_bytes[1] = 0x05;  // max_nof_single_events
-  structure_bytes[2] = 0x00;  
-  structure_bytes[3] = 0x05;  // max_nof_events_per_day
-  structure_bytes[4] = 0x00;  // clock_program_enabled (0 = disabled, 1 = enabled)
-  structure_bytes[5] = 0x01;  // default_action = START
-  structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
-  structure_bytes[7] = 0x00;
-  structure_bytes[8] = 0x00;
-  structure_bytes[9] = 0x00;
   
-  ESP_LOGD(TAG, "Using hardcoded Python reference values for commit");
+  if (this->overview_cached_) {
+    memcpy(structure_bytes, this->overview_structure_, 10);
+    ESP_LOGD(TAG, "Using cached ClockProgramOverview structure for commit");
+  } else {
+    // Fallback to proper ALPHA HWR default values
+    ESP_LOGW(TAG, "No cached overview for commit - using default values");
+    structure_bytes[0] = 0x8C;  // max_nof_actions = 140
+    structure_bytes[1] = 0x23;  // max_nof_single_events = 35
+    structure_bytes[2] = 0x05;  // max_nof_alternative_events_per_day = 5
+    structure_bytes[3] = 0x05;  // max_nof_events_per_day = 5
+    structure_bytes[4] = 0x00;  // clock_program_enabled (preserve current)
+    structure_bytes[5] = 0x01;  // default_action = START
+    structure_bytes[6] = 0x00;  // base_set_point (float32 = 0.0)
+    structure_bytes[7] = 0x00;
+    structure_bytes[8] = 0x00;
+    structure_bytes[9] = 0x00;
+  }
 
   // Build APDU: Class 10 SET command for Object 84, SubID 1
   uint8_t apdu[21];
@@ -875,7 +882,168 @@ void ScheduleService::write_cached_layer_async(uint8_t layer, std::function<void
 }
 
 // -------------------------------------------------------------------------
-// Display & Formatting Methods
+// Single Event Operations
+// -------------------------------------------------------------------------
+
+void ScheduleService::read_single_events_async(
+    std::function<void(bool, const std::vector<SingleEvent>&)> on_complete) {
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot read single events: session not ready");
+    std::vector<SingleEvent> empty;
+    if (on_complete) on_complete(false, empty);
+    return;
+  }
+
+  uint8_t max_events = get_max_single_events();
+  ESP_LOGI(TAG, "Reading up to %d single events from pump...", max_events);
+
+  // Read single events sequentially to avoid flooding the transport queue
+  auto events = std::make_shared<std::vector<SingleEvent>>();
+  auto read_next = std::make_shared<std::function<void(uint8_t)>>();
+
+  *read_next = [this, events, on_complete, max_events, read_next](uint8_t idx) {
+    if (idx >= max_events) {
+      // All done
+      this->cached_single_events_ = *events;
+      this->single_events_cached_ = true;
+      ESP_LOGI(TAG, "Read %zu active single events (of %d slots)", events->size(), max_events);
+      if (on_complete) on_complete(true, *events);
+      return;
+    }
+
+    uint16_t sub_id = 900 + idx;
+    uint8_t apdu[5];
+    apdu[0] = 0x0A; apdu[1] = 0x03; apdu[2] = 84;
+    apdu[3] = (sub_id >> 8) & 0xFF; apdu[4] = sub_id & 0xFF;
+
+    uint8_t frame[64];
+    size_t frame_len;
+    this->build_geni_frame(0xE7, 0xF8, apdu, 5, frame, &frame_len);
+    std::vector<uint8_t> packet(frame, frame + frame_len);
+
+    this->transport_.send_command(packet, 0xDC01, 0,
+        [this, idx, events, on_complete, max_events, read_next](
+            bool success, const uint8_t* payload, size_t payload_len) {
+      if (success && payload_len >= 13) {
+        SingleEvent ev = SingleEvent::from_bytes(payload + 3, idx);
+        if (ev.enabled) {
+          events->push_back(ev);
+          ESP_LOGD(TAG, "Single event slot %d: active (%u - %u)", idx, ev.begin_timestamp, ev.end_timestamp);
+        }
+      }
+      // Read next slot
+      (*read_next)(idx + 1);
+    }, 3000);
+  };
+
+  (*read_next)(0);
+}
+
+void ScheduleService::write_single_event_async(const SingleEvent &event,
+                                                  std::function<void(bool)> on_complete) {
+  if (!this->session_.is_ready()) {
+    ESP_LOGE(TAG, "Cannot write single event: session not ready");
+    if (on_complete) on_complete(false);
+    return;
+  }
+
+  uint16_t sub_id = 900 + event.index;
+  ESP_LOGI(TAG, "Writing single event to slot %d (SubID %d): %s %u-%u",
+           event.index, sub_id, event.enabled ? "enabled" : "disabled",
+           event.begin_timestamp, event.end_timestamp);
+
+  uint8_t apdu[21]; // 11 header + 10 data
+  apdu[0] = 0x0A;
+  apdu[1] = 0xB3;
+  apdu[2] = 84;
+  apdu[3] = (sub_id >> 8) & 0xFF;
+  apdu[4] = sub_id & 0xFF;
+  apdu[5] = 0x00;
+  apdu[6] = 0xDC;  // Type 220
+  apdu[7] = 0x01;
+  apdu[8] = 0x00;
+  apdu[9] = 0x00;
+  apdu[10] = 0x0A; // Size: 10 bytes
+  event.to_bytes(apdu + 11);
+
+  uint8_t frame[256];
+  size_t frame_len = 0;
+  this->build_geni_frame(0xE7, 0xF8, apdu, 21, frame, &frame_len);
+  std::vector<uint8_t> packet(frame, frame + frame_len);
+
+  this->transport_.send_command(packet, 0xDC01, 0,
+      [this, on_complete, event](bool success, const uint8_t* data, size_t len) {
+    this->send_configuration_commit();
+    ESP_LOGI(TAG, "Single event slot %d write + commit sent", event.index);
+
+    // Update cache
+    if (single_events_cached_) {
+      auto &cache = cached_single_events_;
+      cache.erase(std::remove_if(cache.begin(), cache.end(),
+          [&event](const SingleEvent &e) { return e.index == event.index; }), cache.end());
+      if (event.enabled) {
+        cache.push_back(event);
+      }
+    }
+
+    if (on_complete) on_complete(true);
+  }, 3000);
+}
+
+void ScheduleService::clear_single_event_async(uint8_t index,
+                                                  std::function<void(bool)> on_complete) {
+  SingleEvent disabled;
+  disabled.index = index;
+  disabled.enabled = false;
+  disabled.action = 0x02;
+  disabled.begin_timestamp = 0;
+  disabled.end_timestamp = 0;
+  write_single_event_async(disabled, on_complete);
+}
+
+int ScheduleService::find_free_single_event_slot() const {
+  uint8_t max_events = overview_cached_ ? overview_structure_[1] : 35;
+  if (!single_events_cached_) return 0;
+
+  std::set<uint8_t> used;
+  for (const auto &ev : cached_single_events_) {
+    used.insert(ev.index);
+  }
+  for (uint8_t i = 0; i < max_events; i++) {
+    if (used.find(i) == used.end()) return i;
+  }
+  return -1;
+}
+
+std::string ScheduleService::format_single_events_display() const {
+  if (!single_events_cached_ || cached_single_events_.empty()) {
+    return "No single events";
+  }
+
+  std::string result;
+  for (const auto &ev : cached_single_events_) {
+    if (!ev.enabled) continue;
+    time_t begin_t = (time_t)ev.begin_timestamp;
+    time_t end_t = (time_t)ev.end_timestamp;
+    struct tm begin_tm, end_tm;
+    localtime_r(&begin_t, &begin_tm);
+    localtime_r(&end_t, &end_tm);
+
+    char buf[80];
+    snprintf(buf, sizeof(buf), "[%d] %04d-%02d-%02d %02d:%02d - %02d:%02d",
+             ev.index,
+             begin_tm.tm_year + 1900, begin_tm.tm_mon + 1, begin_tm.tm_mday,
+             begin_tm.tm_hour, begin_tm.tm_min,
+             end_tm.tm_hour, end_tm.tm_min);
+
+    if (!result.empty()) result += "\n";
+    result += buf;
+  }
+  return result;
+}
+
+// -------------------------------------------------------------------------
+// Final Display & Formatting Methods
 // -------------------------------------------------------------------------
 
 bool ScheduleService::get_schedule_display_string(const std::vector<ScheduleEntry> &entries, std::string *result) {

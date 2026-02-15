@@ -24,6 +24,8 @@
 #include "schedule_entry.h"
 #include "device_info_service.h"
 #include "time_service.h"
+#include "event_log_service.h"
+#include "history_service.h"
 
 namespace esphome {
 namespace alpha_hwr {
@@ -83,7 +85,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
       control_service_(transport_, session_),
       schedule_service_(transport_, session_),
       device_info_service_(transport_, session_),
-      time_service_(&transport_) {
+      time_service_(&transport_),
+      event_log_service_(transport_, session_),
+      history_service_(transport_, session_) {
     parent->register_ble_node(this);
     parent_ = parent;
     ESP_LOGI(TAG, "AlphaHwrComponent constructor");
@@ -112,6 +116,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    void set_hardware_version_text_sensor(text_sensor::TextSensor *sensor) { hardware_version_sensor_ = sensor; }
    void set_ble_version_text_sensor(text_sensor::TextSensor *sensor) { ble_version_sensor_ = sensor; }
    void set_product_name_text_sensor(text_sensor::TextSensor *sensor) { product_name_sensor_ = sensor; }
+   void set_single_events_text_sensor(text_sensor::TextSensor *sensor) { single_events_text_sensor_ = sensor; }
+   void set_event_log_text_sensor(text_sensor::TextSensor *sensor) { event_log_text_sensor_ = sensor; }
+   void set_history_text_sensor(text_sensor::TextSensor *sensor) { history_text_sensor_ = sensor; }
 #endif
    void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
@@ -160,6 +167,12 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   // Time service (handles pump RTC management)
   services::TimeService time_service_;
   
+  // Event log service (reads pump start/stop event history)
+  services::EventLogService event_log_service_;
+  
+  // History service (reads trend data: flow, head, temp, power-on)
+  services::HistoryService history_service_;
+  
   // Sensor publisher (maps telemetry to ESPHome sensors)
   services::SensorPublisher sensor_publisher_;
   
@@ -176,6 +189,9 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
    text_sensor::TextSensor *hardware_version_sensor_{nullptr};
    text_sensor::TextSensor *ble_version_sensor_{nullptr};
    text_sensor::TextSensor *product_name_sensor_{nullptr};
+   text_sensor::TextSensor *single_events_text_sensor_{nullptr};
+   text_sensor::TextSensor *event_log_text_sensor_{nullptr};
+   text_sensor::TextSensor *history_text_sensor_{nullptr};
 #endif
    
    // Time synchronization tracking
@@ -276,6 +292,81 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
      });
    }
    bool is_schedule_layer_cached(uint8_t layer) const { return schedule_service_.is_layer_cached(layer); }
+
+   // Single event (one-time schedule) methods
+   void read_single_events(std::function<void(bool, const std::vector<services::SingleEvent>&)> on_complete) {
+     schedule_service_.read_single_events_async([this, on_complete](bool success, const std::vector<services::SingleEvent>& events) {
+       if (success) {
+#ifdef USE_TEXT_SENSOR
+         if (this->single_events_text_sensor_) {
+           this->single_events_text_sensor_->publish_state(schedule_service_.format_single_events_display());
+         }
+#endif
+       }
+       if (on_complete) on_complete(success, events);
+     });
+   }
+   void write_single_event(const services::SingleEvent &event, std::function<void(bool)> on_complete) {
+     schedule_service_.write_single_event_async(event, [this, on_complete](bool success) {
+       if (success) {
+#ifdef USE_TEXT_SENSOR
+         if (this->single_events_text_sensor_) {
+           this->single_events_text_sensor_->publish_state(schedule_service_.format_single_events_display());
+         }
+#endif
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
+   void clear_single_event(uint8_t index, std::function<void(bool)> on_complete) {
+     schedule_service_.clear_single_event_async(index, [this, on_complete](bool success) {
+       if (success) {
+#ifdef USE_TEXT_SENSOR
+         if (this->single_events_text_sensor_) {
+           this->single_events_text_sensor_->publish_state(schedule_service_.format_single_events_display());
+         }
+#endif
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
+   int find_free_single_event_slot() const { return schedule_service_.find_free_single_event_slot(); }
+
+   // Event log methods
+   void read_event_log(std::function<void(bool)> on_complete) {
+     event_log_service_.read_entries_async([this, on_complete](bool success, const std::vector<services::EventLogEntry>& entries) {
+       if (success) {
+#ifdef USE_TEXT_SENSOR
+         if (this->event_log_text_sensor_) {
+           std::string display = event_log_service_.format_display();
+           if (display.size() > 255) {
+             display = display.substr(0, 252) + "...";
+           }
+           this->event_log_text_sensor_->publish_state(display);
+         }
+#endif
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
+
+   // History methods
+   void read_history(std::function<void(bool)> on_complete) {
+     history_service_.read_trends_async([this, on_complete](bool success, const std::vector<services::TrendSeries>& trends) {
+       if (success) {
+#ifdef USE_TEXT_SENSOR
+         if (this->history_text_sensor_) {
+           std::string display = history_service_.format_display();
+           if (display.size() > 255) {
+             display = display.substr(0, 252) + "...";
+           }
+           this->history_text_sensor_->publish_state(display);
+         }
+#endif
+       }
+       if (on_complete) on_complete(success);
+     });
+   }
 
       /**
        * Asynchronously read pump's real-time clock.

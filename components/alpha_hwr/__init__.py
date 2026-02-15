@@ -44,6 +44,9 @@ CONF_SOFTWARE_VERSION = "software_version"
 CONF_HARDWARE_VERSION = "hardware_version"
 CONF_BLE_VERSION = "ble_version"
 CONF_PRODUCT_NAME = "product_name"
+CONF_SINGLE_EVENTS = "single_events"
+CONF_EVENT_LOG = "event_log"
+CONF_HISTORY = "history"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -147,6 +150,17 @@ CONFIG_SCHEMA = cv.Schema(
             icon="mdi:information",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
+        cv.Optional(CONF_SINGLE_EVENTS): text_sensor.text_sensor_schema(
+            icon="mdi:calendar-star",
+        ),
+        cv.Optional(CONF_EVENT_LOG): text_sensor.text_sensor_schema(
+            icon="mdi:history",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_HISTORY): text_sensor.text_sensor_schema(
+            icon="mdi:chart-line",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -242,3 +256,15 @@ async def to_code(config):
     if CONF_PRODUCT_NAME in config:
         sens = await text_sensor.new_text_sensor(config[CONF_PRODUCT_NAME])
         cg.add(var.set_product_name_text_sensor(sens))
+
+    if CONF_SINGLE_EVENTS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SINGLE_EVENTS])
+        cg.add(var.set_single_events_text_sensor(sens))
+
+    if CONF_EVENT_LOG in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_EVENT_LOG])
+        cg.add(var.set_event_log_text_sensor(sens))
+
+    if CONF_HISTORY in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_HISTORY])
+        cg.add(var.set_history_text_sensor(sens))

@@ -124,13 +124,14 @@ void Transport::loop() {
 
 void Transport::send_command(const std::vector<uint8_t>& packet, uint16_t expect_obj_id, 
                             uint16_t expect_sub_id, CommandCallback callback, 
-                            uint32_t timeout_ms) {
+                            uint32_t timeout_ms, bool allow_register_read) {
   Command cmd;
   cmd.packet = packet;
   cmd.expect_obj_id = expect_obj_id;
   cmd.expect_sub_id = expect_sub_id;
   cmd.callback = callback;
   cmd.timeout_ms = timeout_ms;
+  cmd.allow_register_read = allow_register_read;
   
   this->command_queue_.push_back(cmd);
   ESP_LOGD(TAG, "Command queued (queue size: %zu)", this->command_queue_.size());
@@ -363,9 +364,9 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     bool is_register_read = (opspec == 0x30 || opspec == 0x2B || opspec == 0x14 || 
                              opspec == 0x2E || opspec == 0x2D || opspec == 0x09);
     
-     if (is_register_read) {
+     if (is_register_read && !cmd.allow_register_read) {
        // This is telemetry register-read response, not a DataObject response
-       // Discard it for command matching purposes
+       // Discard it for command matching purposes (unless command explicitly allows it)
        ESP_LOGD(TAG, "Class 10 register-read (OpSpec=0x%02X), skipping for command response (waiting for Obj %d Sub %d)", 
                 opspec, cmd.expect_obj_id, cmd.expect_sub_id);
        return false;

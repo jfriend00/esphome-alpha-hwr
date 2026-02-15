@@ -46,6 +46,56 @@ class Session;
 namespace services {
 
 /**
+ * Single event entry (non-recurring, timestamp-based).
+ * Protocol: Object 84, SubIDs 900-999, Type 220 (10 bytes)
+ * 
+ * Byte layout:
+ *   [0]   enable (bool)
+ *   [1]   action (SchedulingActionType, 0x02=RUN)
+ *   [2-5] begin (uint32 BE, Unix timestamp)
+ *   [6-9] end (uint32 BE, Unix timestamp)
+ *
+ * Single events override the weekly schedule when active.
+ * In case of overlapping events, the one with lowest SubID wins.
+ */
+struct SingleEvent {
+  bool enabled{false};
+  uint8_t action{0x02};
+  uint32_t begin_timestamp{0};
+  uint32_t end_timestamp{0};
+  uint8_t index{0};  // 0-99 (SubID = 900 + index)
+  
+  bool is_valid() const {
+    return enabled && end_timestamp > begin_timestamp;
+  }
+  
+  void to_bytes(uint8_t *buf) const {
+    buf[0] = enabled ? 0x01 : 0x00;
+    buf[1] = action;
+    buf[2] = (begin_timestamp >> 24) & 0xFF;
+    buf[3] = (begin_timestamp >> 16) & 0xFF;
+    buf[4] = (begin_timestamp >> 8) & 0xFF;
+    buf[5] = begin_timestamp & 0xFF;
+    buf[6] = (end_timestamp >> 24) & 0xFF;
+    buf[7] = (end_timestamp >> 16) & 0xFF;
+    buf[8] = (end_timestamp >> 8) & 0xFF;
+    buf[9] = end_timestamp & 0xFF;
+  }
+  
+  static SingleEvent from_bytes(const uint8_t *data, uint8_t idx) {
+    SingleEvent e;
+    e.index = idx;
+    e.enabled = data[0] != 0;
+    e.action = data[1];
+    e.begin_timestamp = ((uint32_t)data[2] << 24) | ((uint32_t)data[3] << 16) |
+                        ((uint32_t)data[4] << 8) | data[5];
+    e.end_timestamp = ((uint32_t)data[6] << 24) | ((uint32_t)data[7] << 16) |
+                      ((uint32_t)data[8] << 8) | data[9];
+    return e;
+  }
+};
+
+/**
  * Schedule Service - Manages pump weekly schedules.
  *
  * Provides methods to:
@@ -281,6 +331,57 @@ class ScheduleService {
   bool clear_entry(const std::string &day, uint8_t layer = 0);
 
   // -------------------------------------------------------------------------
+  // Single Event Operations (One-Time Schedules)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Read all active single events from the pump.
+   * Reads SubIDs 900 to 900+max_nof_single_events-1 from Object 84.
+   *
+   * @param on_complete Callback with success status and vector of events
+   */
+  void read_single_events_async(std::function<void(bool, const std::vector<SingleEvent>&)> on_complete);
+
+  /**
+   * Write a single event to a specific slot.
+   * 
+   * @param event The event to write (event.index determines SubID = 900 + index)
+   * @param on_complete Callback with success status
+   */
+  void write_single_event_async(const SingleEvent &event, std::function<void(bool)> on_complete);
+
+  /**
+   * Clear (disable) a single event at a specific index.
+   *
+   * @param index Event slot (0 to max_nof_single_events-1)
+   * @param on_complete Callback with success status
+   */
+  void clear_single_event_async(uint8_t index, std::function<void(bool)> on_complete);
+
+  /**
+   * Find the first free (disabled) single event slot.
+   * @return Index of free slot, or -1 if all slots are full
+   */
+  int find_free_single_event_slot() const;
+
+  /**
+   * Get cached single events.
+   */
+  const std::vector<SingleEvent>& get_cached_single_events() const { return cached_single_events_; }
+
+  /**
+   * Get max number of single events from ClockProgramOverview.
+   */
+  uint8_t get_max_single_events() const {
+    return overview_cached_ ? overview_structure_[1] : 35;
+  }
+
+  /**
+   * Format single events as display string.
+   */
+  std::string format_single_events_display() const;
+
+  // -------------------------------------------------------------------------
   // Validation Methods
   // -------------------------------------------------------------------------
 
@@ -416,6 +517,10 @@ class ScheduleService {
   // Cached layer data: raw 42 bytes per layer (7 days × 6 bytes)
   bool layer_cached_[5];
   uint8_t cached_layer_data_[5][42];
+
+  // Cached single events
+  std::vector<SingleEvent> cached_single_events_;
+  bool single_events_cached_{false};
 
   static constexpr const char *TAG = "schedule_service";
 };

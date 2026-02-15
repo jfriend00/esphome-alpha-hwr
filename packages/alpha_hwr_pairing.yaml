@@ -102,6 +102,20 @@ alpha_hwr:
    schedule:
       name: "Weekly Schedule"
    
+   # Single Events Display
+   single_events:
+      name: "Single Events"
+   
+   # Event Log Display
+   event_log:
+      name: "Event Log"
+      entity_category: diagnostic
+   
+   # History Trends Display
+   history:
+      name: "History Trends"
+      entity_category: diagnostic
+   
    # Control Mode Display
    control_mode:
       name: "Control Mode"
