@@ -26,12 +26,11 @@ void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& m
   }
   
   // Log summary
-  ESP_LOGI(TAG, "✓ Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM, %.1f°C",
+  ESP_LOGI(TAG, "✓ Motor: AC=%.1fV, DC=%.1fV, %.2fA, %.1fW, %.0f RPM",
            motor.has_voltage_ac ? motor.voltage_ac_v : 0,
            motor.has_voltage_dc ? motor.voltage_dc_v : 0,
            motor.has_current ? motor.current_a : 0,
-           motor.power_w, motor.speed_rpm,
-           motor.has_converter_temp ? motor.converter_temperature_c : 0);
+           motor.power_w, motor.speed_rpm);
   
   // Publish voltage AC
   if (motor.has_voltage_ac && voltage_sensor_ != nullptr) {
@@ -57,14 +56,6 @@ void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& m
   if (motor.has_speed && rpm_sensor_ != nullptr) {
     rpm_sensor_->publish_state(motor.speed_rpm);
   }
-  
-  // Publish converter temperature (with NaN and range validation)
-  if (motor.has_converter_temp && temp_converter_sensor_ != nullptr) {
-    if (!std::isnan(motor.converter_temperature_c) &&
-        motor.converter_temperature_c >= -20 && motor.converter_temperature_c <= 120) {
-      temp_converter_sensor_->publish_state(motor.converter_temperature_c);
-    }
-  }
 }
 
 void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetry& flow) {
@@ -75,10 +66,9 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
   }
   
   // Log summary
-  ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar, P_out=%.2f bar",
+  ESP_LOGI(TAG, "✓ Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar",
            flow.flow_m3h, flow.head_m,
-           flow.has_inlet_pressure ? flow.inlet_pressure_bar : NAN,
-           flow.has_outlet_pressure ? flow.outlet_pressure_bar : NAN);
+           flow.has_inlet_pressure ? flow.inlet_pressure_bar : NAN);
   
   // Publish flow rate
   if (flow.has_flow && flow_sensor_ != nullptr) {
@@ -94,13 +84,6 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
   if (flow.has_inlet_pressure && inlet_pressure_sensor_ != nullptr) {
     if (!std::isnan(flow.inlet_pressure_bar)) {
       inlet_pressure_sensor_->publish_state(flow.inlet_pressure_bar);
-    }
-  }
-  
-  // Publish outlet pressure (often NaN on HWR models)
-  if (flow.has_outlet_pressure && outlet_pressure_sensor_ != nullptr) {
-    if (!std::isnan(flow.outlet_pressure_bar)) {
-      outlet_pressure_sensor_->publish_state(flow.outlet_pressure_bar);
     }
   }
 }

@@ -66,17 +66,8 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
   mode_valid_ = true;  // Mark mode as valid - we received it from the pump
   cached_operation_mode_ = operation_mode;
   
-  // Cache setpoint with appropriate unit conversion per mode
-  // For TEMPERATURE_RANGE, the notification setpoint is not meaningful (temps come from Object 91 Sub 430)
-  if (current_mode_ == ControlMode::TEMPERATURE_RANGE) {
-    // Don't cache — real min/max come from Object 91 Sub 430
-  } else if (current_mode_ == ControlMode::CONSTANT_PRESSURE || 
-             current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
-    // Notification setpoint is in Pascals, convert to meters
-    cached_setpoint_ = setpoint / 9806.65f;
-  } else {
-    cached_setpoint_ = setpoint;
-  }
+  // Don't cache notification setpoint — it's unreliable for most modes.
+  // Real setpoints are read from specific registers in read_setpoints_from_pump().
   
   ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, raw_setpoint=%.4f)",
            get_mode_name(current_mode_), operation_mode, setpoint);
@@ -113,7 +104,7 @@ void ControlService::read_setpoints_from_pump() {
     size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
     std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
     
-    this->transport_.send_command(packet, 0, 0,
+    this->transport_.send_command(packet, 91, 430,
       [this](bool ok, const uint8_t* payload, size_t payload_len) {
         if (!ok || payload_len < 12) {
           ESP_LOGW(TAG, "Failed to read temp range (success=%d, len=%zu)", ok, payload_len);
@@ -135,6 +126,64 @@ void ControlService::read_setpoints_from_pump() {
                    cached_temp_min_, cached_temp_max_, cached_autoadapt_ ? "ON" : "OFF");
           
           // Trigger mode change callback to update UI
+          if (mode_change_callback_) {
+            mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
+          }
+        }
+      }, 5000);
+  } else if (current_mode_ == ControlMode::CONSTANT_SPEED ||
+             current_mode_ == ControlMode::CONSTANT_FLOW ||
+             current_mode_ == ControlMode::CONSTANT_PRESSURE ||
+             current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
+    // Read setpoint from the mode-specific Class 10 sub-ID register
+    // Reference: control.py SUB_SPEED_SETPOINT=13, SUB_PRESSURE_SETPOINT=15, SUB_FLOW_SETPOINT=39
+    uint16_t sub_id;
+    if (current_mode_ == ControlMode::CONSTANT_SPEED) {
+      sub_id = SUB_SPEED_SETPOINT;  // 13
+    } else if (current_mode_ == ControlMode::CONSTANT_FLOW) {
+      sub_id = SUB_FLOW_SETPOINT;  // 39
+    } else {
+      sub_id = SUB_PRESSURE_SETPOINT;  // 15 (both constant and proportional)
+    }
+    
+    ESP_LOGI(TAG, "Reading setpoint from Object 86 Sub %u...", sub_id);
+    
+    uint8_t apdu[5];
+    apdu[0] = 0x0A;  // Class 10
+    apdu[1] = 0x03;  // OpSpec: READ
+    apdu[2] = 86;    // Object 86
+    apdu[3] = (sub_id >> 8) & 0xFF;
+    apdu[4] = sub_id & 0xFF;
+    
+    uint8_t packet_raw[64];
+    size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
+    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+    
+    bool is_pressure = (current_mode_ == ControlMode::CONSTANT_PRESSURE ||
+                        current_mode_ == ControlMode::PROPORTIONAL_PRESSURE);
+    
+    this->transport_.send_command(packet, 86, sub_id,
+      [this, is_pressure](bool ok, const uint8_t* payload, size_t payload_len) {
+        if (!ok) {
+          ESP_LOGW(TAG, "Failed to read setpoint (timeout) — using unavailable");
+          return;
+        }
+        
+        // Skip 3-byte header [00 00 XX] if present
+        int offset = 0;
+        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+          offset = 3;
+        }
+        
+        if (payload_len >= (size_t)(offset + 4)) {
+          float value = protocol::decode_float_be(&payload[offset]);
+          // Pressure registers store Pascals, convert to meters
+          if (is_pressure) {
+            value /= 9806.65f;
+          }
+          cached_setpoint_ = value;
+          ESP_LOGI(TAG, "Setpoint read from pump: %.4f", cached_setpoint_);
+          
           if (mode_change_callback_) {
             mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
           }
@@ -337,9 +386,16 @@ bool ControlService::set_mode(ControlMode mode) {
 
   current_mode_ = mode;
   mode_valid_ = true;
+  // Clear stale setpoint from previous mode
+  cached_setpoint_ = NAN;
 
   if (mode_change_callback_) {
     mode_change_callback_(current_mode_, 0, 0.0f);
+  }
+
+  // Read setpoints for the new mode after a short delay
+  if (schedule_callback_) {
+    schedule_callback_([this]() { read_setpoints_from_pump(); }, 2000);
   }
 
   ESP_LOGI(TAG, "Mode set to %s", get_mode_name(mode));

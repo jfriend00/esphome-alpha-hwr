@@ -54,8 +54,6 @@ alpha_hwr:
     name: "Motor Current"
   inlet_pressure:
     name: "Inlet Pressure"
-  outlet_pressure:
-    name: "Outlet Pressure"
   # ... other enhanced sensors
 ```
 

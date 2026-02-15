@@ -94,14 +94,13 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
   void set_power_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_power_sensor(sensor); }
   void set_rpm_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_rpm_sensor(sensor); }
   void set_temp_media_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_media_sensor(sensor); }
-  void set_temp_converter_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_converter_sensor(sensor); }
   void set_temp_pcb_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_pcb_sensor(sensor); }
   void set_temp_control_box_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_temp_control_box_sensor(sensor); }
   void set_voltage_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_voltage_sensor(sensor); }
   void set_voltage_dc_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_voltage_dc_sensor(sensor); }
   void set_current_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_current_sensor(sensor); }
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_inlet_pressure_sensor(sensor); }
-  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { sensor_publisher_.set_outlet_pressure_sensor(sensor); }
+  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { /* Removed: HWR pump lacks this sensor */ }
    void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) { pairing_status_sensor_ = sensor; }
 #ifdef USE_TEXT_SENSOR
    void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { sensor_publisher_.set_alarms_text_sensor(sensor); }

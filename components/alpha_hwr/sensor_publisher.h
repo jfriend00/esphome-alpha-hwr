@@ -81,14 +81,13 @@ class SensorPublisher {
   void set_power_sensor(sensor::Sensor *sensor) { power_sensor_ = sensor; }
   void set_rpm_sensor(sensor::Sensor *sensor) { rpm_sensor_ = sensor; }
   void set_temp_media_sensor(sensor::Sensor *sensor) { temp_media_sensor_ = sensor; }
-  void set_temp_converter_sensor(sensor::Sensor *sensor) { temp_converter_sensor_ = sensor; }
   void set_temp_pcb_sensor(sensor::Sensor *sensor) { temp_pcb_sensor_ = sensor; }
   void set_temp_control_box_sensor(sensor::Sensor *sensor) { temp_control_box_sensor_ = sensor; }
   void set_voltage_sensor(sensor::Sensor *sensor) { voltage_sensor_ = sensor; }
   void set_voltage_dc_sensor(sensor::Sensor *sensor) { voltage_dc_sensor_ = sensor; }
   void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
-  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { outlet_pressure_sensor_ = sensor; }
+  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { /* Removed: HWR pump lacks this sensor */ }
 
 #ifdef USE_TEXT_SENSOR
   void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { alarms_sensor_ = sensor; }
@@ -153,14 +152,12 @@ class SensorPublisher {
   sensor::Sensor *power_sensor_{nullptr};
   sensor::Sensor *rpm_sensor_{nullptr};
   sensor::Sensor *temp_media_sensor_{nullptr};
-  sensor::Sensor *temp_converter_sensor_{nullptr};
   sensor::Sensor *temp_pcb_sensor_{nullptr};
   sensor::Sensor *temp_control_box_sensor_{nullptr};
   sensor::Sensor *voltage_sensor_{nullptr};
   sensor::Sensor *voltage_dc_sensor_{nullptr};
   sensor::Sensor *current_sensor_{nullptr};
   sensor::Sensor *inlet_pressure_sensor_{nullptr};
-  sensor::Sensor *outlet_pressure_sensor_{nullptr};
 
 #ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *alarms_sensor_{nullptr};

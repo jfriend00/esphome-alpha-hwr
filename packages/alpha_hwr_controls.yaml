@@ -26,6 +26,7 @@ switch:
   # Toggle pump on/off based on motor speed
   - platform: template
     name: "Pump Running"
+    id: pump_running_switch
     icon: "mdi:pump"
     optimistic: false
     lambda: |-
@@ -34,14 +35,17 @@ switch:
       return speed > 0;
     turn_on_action:
       - lambda: |-
-          ESP_LOGI("switch", "Starting pump...");
-          bool result = id(pump).pump_start();
-          ESP_LOGI("switch", "Start pump result: %s", result ? "SUCCESS" : "FAILED");
+          ESP_LOGI("switch", "Starting pump (enabling remote mode first)...");
+          id(pump).enable_remote();
+          id(pump).pump_start();
+          // Immediate UI feedback while motor spins up
+          id(pump_running_switch).publish_state(true);
     turn_off_action:
       - lambda: |-
           ESP_LOGI("switch", "Stopping pump...");
-          bool result = id(pump).pump_stop();
-          ESP_LOGI("switch", "Stop pump result: %s", result ? "SUCCESS" : "FAILED");
+          id(pump).pump_stop();
+          // Immediate UI feedback while motor spins down
+          id(pump_running_switch).publish_state(false);
   
   # Schedule Enable/Disable Control
   - platform: template
@@ -240,12 +244,10 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
-      auto mode = id(pump).get_control_mode();
-      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE) {
-        float sp = id(pump).get_cached_setpoint();
-        if (!std::isnan(sp)) return sp;
-      }
-      return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE)
+        return NAN;
+      float sp = id(pump).get_cached_setpoint();
+      return std::isnan(sp) ? NAN : sp;
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant pressure setpoint to %.2f m", x);
@@ -271,12 +273,10 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
-      auto mode = id(pump).get_control_mode();
-      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED) {
-        float sp = id(pump).get_cached_setpoint();
-        if (!std::isnan(sp)) return sp;
-      }
-      return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED)
+        return NAN;
+      float sp = id(pump).get_cached_setpoint();
+      return std::isnan(sp) ? NAN : sp;
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant speed setpoint to %.0f RPM", x);
@@ -302,12 +302,10 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
-      auto mode = id(pump).get_control_mode();
-      if (mode == esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW) {
-        float sp = id(pump).get_cached_setpoint();
-        if (!std::isnan(sp)) return sp;
-      }
-      return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW)
+        return NAN;
+      float sp = id(pump).get_cached_setpoint();
+      return std::isnan(sp) ? NAN : sp;
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting constant flow setpoint to %.2f m³/h", x);
@@ -397,12 +395,10 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
-      auto mode = id(pump).get_control_mode();
-      if (mode == esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE) {
-        float sp = id(pump).get_cached_setpoint();
-        if (!std::isnan(sp)) return sp;
-      }
-      return {};
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE)
+        return NAN;
+      float sp = id(pump).get_cached_setpoint();
+      return std::isnan(sp) ? NAN : sp;
     set_action:
       - lambda: |-
           ESP_LOGI("number", "Setting proportional pressure setpoint to %.2f m", x);
