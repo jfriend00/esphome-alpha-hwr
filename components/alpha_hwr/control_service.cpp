@@ -66,11 +66,18 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
   mode_valid_ = true;  // Mark mode as valid - we received it from the pump
   cached_operation_mode_ = operation_mode;
   
-  // Don't cache notification setpoint — it's unreliable for most modes.
-  // Real setpoints are read from specific registers in read_setpoints_from_pump().
+  // Cache setpoint from notification — this is the same data Python's get_mode() reads
+  // from Object 86 Sub 6. Apply unit conversion for pressure modes (Pa → meters).
+  // Reference: control.py::get_mode() lines 428-434
+  if (current_mode_ == ControlMode::CONSTANT_PRESSURE ||
+      current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
+    cached_setpoint_ = setpoint / 9806.65f;
+  } else {
+    cached_setpoint_ = setpoint;
+  }
   
-  ESP_LOGI(TAG, "Control mode updated from passive notification: %s (op_mode=%d, raw_setpoint=%.4f)",
-           get_mode_name(current_mode_), operation_mode, setpoint);
+  ESP_LOGI(TAG, "Control mode from notification: %s (op_mode=%d, setpoint=%.4f, raw=%.4f)",
+           get_mode_name(current_mode_), operation_mode, cached_setpoint_, setpoint);
   
   // Notify callback if set
   if (mode_change_callback_) {
@@ -131,64 +138,12 @@ void ControlService::read_setpoints_from_pump() {
           }
         }
       }, 5000);
-  } else if (current_mode_ == ControlMode::CONSTANT_SPEED ||
-             current_mode_ == ControlMode::CONSTANT_FLOW ||
-             current_mode_ == ControlMode::CONSTANT_PRESSURE ||
-             current_mode_ == ControlMode::PROPORTIONAL_PRESSURE) {
-    // Read setpoint from the mode-specific Class 10 sub-ID register
-    // Reference: control.py SUB_SPEED_SETPOINT=13, SUB_PRESSURE_SETPOINT=15, SUB_FLOW_SETPOINT=39
-    uint16_t sub_id;
-    if (current_mode_ == ControlMode::CONSTANT_SPEED) {
-      sub_id = SUB_SPEED_SETPOINT;  // 13
-    } else if (current_mode_ == ControlMode::CONSTANT_FLOW) {
-      sub_id = SUB_FLOW_SETPOINT;  // 39
-    } else {
-      sub_id = SUB_PRESSURE_SETPOINT;  // 15 (both constant and proportional)
-    }
-    
-    ESP_LOGI(TAG, "Reading setpoint from Object 86 Sub %u...", sub_id);
-    
-    uint8_t apdu[5];
-    apdu[0] = 0x0A;  // Class 10
-    apdu[1] = 0x03;  // OpSpec: READ
-    apdu[2] = 86;    // Object 86
-    apdu[3] = (sub_id >> 8) & 0xFF;
-    apdu[4] = sub_id & 0xFF;
-    
-    uint8_t packet_raw[64];
-    size_t packet_len = build_geni_packet(0xF8, 0xE7, apdu, 5, packet_raw);
-    std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
-    
-    bool is_pressure = (current_mode_ == ControlMode::CONSTANT_PRESSURE ||
-                        current_mode_ == ControlMode::PROPORTIONAL_PRESSURE);
-    
-    this->transport_.send_command(packet, 86, sub_id,
-      [this, is_pressure](bool ok, const uint8_t* payload, size_t payload_len) {
-        if (!ok) {
-          ESP_LOGW(TAG, "Failed to read setpoint (timeout) — using unavailable");
-          return;
-        }
-        
-        // Skip 3-byte header [00 00 XX] if present
-        int offset = 0;
-        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
-          offset = 3;
-        }
-        
-        if (payload_len >= (size_t)(offset + 4)) {
-          float value = protocol::decode_float_be(&payload[offset]);
-          // Pressure registers store Pascals, convert to meters
-          if (is_pressure) {
-            value /= 9806.65f;
-          }
-          cached_setpoint_ = value;
-          ESP_LOGI(TAG, "Setpoint read from pump: %.4f", cached_setpoint_);
-          
-          if (mode_change_callback_) {
-            mode_change_callback_(current_mode_, cached_operation_mode_, cached_setpoint_);
-          }
-        }
-      }, 5000);
+  } else {
+    // For non-temperature modes (speed, flow, pressure), the setpoint is already
+    // cached from the passive notification in update_mode_from_notification().
+    // This is the same data Python's get_mode() reads from Object 86 Sub 6.
+    ESP_LOGD(TAG, "Setpoint for %s already cached from notification: %.4f",
+             get_mode_name(current_mode_), cached_setpoint_);
   }
 }
 
