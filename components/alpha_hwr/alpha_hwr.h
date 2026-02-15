@@ -292,7 +292,7 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
      schedule_service_.set_entry_async(layer, day_index, entry, [this, on_complete](bool success) {
        if (success) {
          // Refresh display after successful write
-         this->set_timeout(500, [this]() { this->update_schedule_display(); });
+         this->set_timeout(500, [this]() { this->publish_schedule_json(); });
        }
        if (on_complete) on_complete(success);
      });
@@ -301,7 +301,7 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
                                     std::function<void(bool)> on_complete) {
      schedule_service_.clear_entry_async(layer, day_index, [this, on_complete](bool success) {
        if (success) {
-         this->set_timeout(500, [this]() { this->update_schedule_display(); });
+         this->set_timeout(500, [this]() { this->publish_schedule_json(); });
        }
        if (on_complete) on_complete(success);
      });
@@ -526,40 +526,86 @@ class AlphaHwrComponent : public PollingComponent, public ble_client::BLEClientN
       *   on_press:
       *     - lambda: id(pump).update_schedule_display();
       */
+     /**
+      * Publish schedule data as JSON to the text sensor for the Lovelace card.
+      * Reads from the schedule cache (no BLE traffic). Call after reads/writes complete.
+      *
+      * JSON format (compact, fits HA 255-char state limit for typical usage):
+      *   {"e":1,"s":{"0":[[360,480],[360,480],0,0,0,0,0]}}
+      *   - "e": schedule enabled (1/0)
+      *   - "s": layers keyed by number, only non-empty layers included
+      *   - Each layer: array of 7 entries (Mon=0..Sun=6)
+      *   - Entry: [start_minutes, end_minutes] or 0 (disabled/empty)
+      */
+     void publish_schedule_json() {
+#ifdef USE_TEXT_SENSOR
+       if (!this->schedule_text_sensor_) return;
+
+       bool enabled = false;
+       schedule_service_.get_state(&enabled);
+
+       std::string json = "{\"e\":";
+       json += enabled ? "1" : "0";
+       json += ",\"s\":{";
+
+       bool first_layer = true;
+       for (int layer = 0; layer < 5; layer++) {
+         if (!schedule_service_.is_layer_cached(layer)) continue;
+
+         bool has_entries = false;
+         std::string layer_json = "[";
+         for (int day = 0; day < 7; day++) {
+           if (day > 0) layer_json += ",";
+           ScheduleEntry entry;
+           if (get_cached_schedule_entry(layer, day, &entry) && entry.is_enabled()) {
+             int start = entry.get_begin_hour() * 60 + entry.get_begin_minute();
+             int end = entry.get_end_hour() * 60 + entry.get_end_minute();
+             layer_json += "[";
+             layer_json += to_string(start);
+             layer_json += ",";
+             layer_json += to_string(end);
+             layer_json += "]";
+             has_entries = true;
+           } else {
+             layer_json += "0";
+           }
+         }
+         layer_json += "]";
+
+         if (has_entries) {
+           if (!first_layer) json += ",";
+           json += "\"";
+           json += to_string(layer);
+           json += "\":";
+           json += layer_json;
+           first_layer = false;
+         }
+       }
+
+       json += "}}";
+
+       // Safety: HA limits entity state to 255 characters
+       if (json.size() > 255) {
+         json = json.substr(0, 252) + "...";
+         ESP_LOGW(TAG, "Schedule JSON truncated to 255 chars");
+       }
+
+       this->schedule_text_sensor_->publish_state(json);
+       ESP_LOGD(TAG, "Published schedule JSON (%zu chars)", json.size());
+#endif
+     }
+
+     /**
+      * Read schedule from pump and publish JSON. Called during initial setup and refresh.
+      */
      void update_schedule_display() {
-       ESP_LOGI(TAG, "update_schedule_display() called");
-       // For now, just read layer 0 to test if reading works
+       ESP_LOGD(TAG, "Refreshing schedule from pump...");
        this->read_schedule_entries_async(0, [this](bool success, const std::vector<ScheduleEntry> &entries) {
-         ESP_LOGI(TAG, "Schedule read callback: success=%d, entries=%zu", success, entries.size());
          if (!success) {
            ESP_LOGW(TAG, "Failed to read schedule for display update");
-#ifdef USE_TEXT_SENSOR
-           if (this->schedule_text_sensor_) {
-             this->schedule_text_sensor_->publish_state("Error reading schedule (timeout)");
-           }
-#endif
            return;
          }
-
-         // Format and display the schedule
-#ifdef USE_TEXT_SENSOR
-         if (this->schedule_text_sensor_) {
-           std::string display_str;
-           if (entries.empty()) {
-             display_str = "No schedule configured on layer 0";
-             ESP_LOGI(TAG, "Schedule is empty on layer 0");
-           } else if (this->get_schedule_display_string(entries, &display_str)) {
-             ESP_LOGI(TAG, "Schedule display updated with %zu entries", entries.size());
-           } else {
-             display_str = "Error formatting schedule";
-             ESP_LOGW(TAG, "Failed to format schedule display");
-           }
-           this->schedule_text_sensor_->publish_state(display_str);
-           ESP_LOGI(TAG, "Published to sensor:\n%s", display_str.c_str());
-         } else {
-           ESP_LOGW(TAG, "schedule_text_sensor_ is null!");
-         }
-#endif
+         this->publish_schedule_json();
        });
      }
 };

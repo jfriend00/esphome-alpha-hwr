@@ -13,6 +13,48 @@
 # Requires: alpha_hwr_pairing.yaml (main component with id: pump)
 # ==============================================================================
 
+# ESPHome services for the Lovelace schedule card
+# Note: using string vars to work around ESP32-C3 RISC-V int32_t/long linker bug
+api:
+  services:
+    - service: set_schedule_entry
+      variables:
+        data: string
+      then:
+        - lambda: |-
+            // data format: "layer,day,start_hour,start_minute,end_hour,end_minute"
+            static const char* DAYS[] = {"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"};
+            int vals[6];
+            int n = sscanf(data.c_str(), "%d,%d,%d,%d,%d,%d",
+                           &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]);
+            if (n != 6 || vals[0] < 0 || vals[0] > 4 || vals[1] < 0 || vals[1] > 6) {
+              ESP_LOGW("sched_svc", "Invalid data: %s", data.c_str());
+              return;
+            }
+            esphome::alpha_hwr::ScheduleEntry entry(
+              DAYS[vals[1]], (uint8_t)vals[2], (uint8_t)vals[3],
+              (uint8_t)vals[4], (uint8_t)vals[5], 0x02, vals[0], true);
+            id(pump).set_schedule_entry(vals[0], vals[1], entry, [](bool ok) {
+              ESP_LOGI("sched_svc", "set_schedule_entry: %s", ok ? "OK" : "FAILED");
+            });
+
+    - service: clear_schedule_entry
+      variables:
+        data: string
+      then:
+        - lambda: |-
+            // data format: "layer,day"
+            int l, d;
+            if (sscanf(data.c_str(), "%d,%d", &l, &d) != 2 || l < 0 || l > 4 || d < 0 || d > 6) return;
+            id(pump).clear_schedule_entry_async(l, d, [](bool ok) {
+              ESP_LOGI("sched_svc", "clear_schedule_entry: %s", ok ? "OK" : "FAILED");
+            });
+
+    - service: refresh_schedule
+      then:
+        - lambda: |-
+            id(pump).update_schedule_display();
+
 # Global variables to hold editor state
 globals:
   - id: sched_edit_day
