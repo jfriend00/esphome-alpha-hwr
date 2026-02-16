@@ -180,6 +180,12 @@ public:
   void set_operating_hours_sensor(sensor::Sensor *sensor) {
     operating_hours_sensor_ = sensor;
   }
+  void set_clock_diff_sensor(sensor::Sensor *sensor) {
+    clock_diff_sensor_ = sensor;
+  }
+  void set_last_clock_sync_sensor(text_sensor::TextSensor *sensor) {
+    last_clock_sync_sensor_ = sensor;
+  }
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 
   void setup() override;
@@ -256,11 +262,13 @@ private:
   text_sensor::TextSensor *event_log_text_sensor_{nullptr};
   text_sensor::TextSensor *history_text_sensor_{nullptr};
   text_sensor::TextSensor *cycle_timestamps_text_sensor_{nullptr};
+  text_sensor::TextSensor *last_clock_sync_sensor_{nullptr};
 #endif
 
   // Operating statistics sensors
   sensor::Sensor *start_count_sensor_{nullptr};
   sensor::Sensor *operating_hours_sensor_{nullptr};
+  sensor::Sensor *clock_diff_sensor_{nullptr};
 
   // Tracks whether the post-auth data read chain has been triggered.
   // Ensures device info, event log, history, etc. are read even when
@@ -341,8 +349,20 @@ public:
   }
 
   // Schedule service access methods (for ESPHome buttons/lambdas)
-  bool enable_schedule() { return schedule_service_.enable(); }
-  bool disable_schedule() { return schedule_service_.disable(); }
+  bool enable_schedule() {
+    bool success = schedule_service_.enable();
+    if (success) {
+      this->publish_schedule_json();
+    }
+    return success;
+  }
+  bool disable_schedule() {
+    bool success = schedule_service_.disable();
+    if (success) {
+      this->publish_schedule_json();
+    }
+    return success;
+  }
   bool get_schedule_state(bool *result) {
     return schedule_service_.get_state(result);
   }
@@ -571,10 +591,6 @@ public:
    *     }
    *   });
    */
-  void sync_pump_clock(std::function<void(bool)> callback) {
-    time_service_.set_clock_async(callback);
-  }
-
   /**
    * Asynchronously read device information and update text sensors.
    *
@@ -586,69 +602,23 @@ public:
    * Usage:
    *   Called automatically in authenticate() after successful authentication
    */
-  void read_device_info() {
-    ESP_LOGI(TAG, "Reading device information...");
-    device_info_service_.read_device_info_async([this](bool success) {
-      if (!success) {
-        ESP_LOGW(TAG, "Failed to read device information");
-        return;
-      }
-
-#ifdef USE_TEXT_SENSOR
-      // Publish to text sensors if configured
-      if (serial_number_sensor_ &&
-          !device_info_service_.get_serial_number().empty()) {
-        serial_number_sensor_->publish_state(
-            device_info_service_.get_serial_number());
-      }
-      if (software_version_sensor_ &&
-          !device_info_service_.get_software_version().empty()) {
-        software_version_sensor_->publish_state(
-            device_info_service_.get_software_version());
-      }
-      if (hardware_version_sensor_ &&
-          !device_info_service_.get_hardware_version().empty()) {
-        hardware_version_sensor_->publish_state(
-            device_info_service_.get_hardware_version());
-      }
-      if (ble_version_sensor_ &&
-          !device_info_service_.get_ble_version().empty()) {
-        ble_version_sensor_->publish_state(
-            device_info_service_.get_ble_version());
-      }
-      if (product_name_sensor_ &&
-          !device_info_service_.get_product_name().empty()) {
-        product_name_sensor_->publish_state(
-            device_info_service_.get_product_name());
-      }
-#endif
-      ESP_LOGI(TAG, "Device information read successfully");
-
-      // Chain: read operating statistics after device info
-      this->read_statistics();
-    });
-  }
+  void read_device_info();
 
   /**
    * Read operating statistics (start count, operating hours) and publish to
    * sensors.
    */
-  void read_statistics() {
-    ESP_LOGI(TAG, "Reading operating statistics...");
-    device_info_service_.read_statistics_async(
-        [this](bool success, uint32_t start_count, float operating_hours) {
-          if (success) {
-            if (this->start_count_sensor_) {
-              this->start_count_sensor_->publish_state(start_count);
-            }
-            if (this->operating_hours_sensor_) {
-              this->operating_hours_sensor_->publish_state(operating_hours);
-            }
-          } else {
-            ESP_LOGW(TAG, "Failed to read operating statistics");
-          }
-        });
-  }
+  void read_statistics();
+
+  /**
+   * Read pump clock and publish drift sensor (manual trigger for testing).
+   */
+  void read_pump_clock();
+
+  /**
+   * Perform clock synchronization with drift calculation.
+   */
+  void perform_clock_sync();
 
   /**
    * Asynchronously read the pump schedule and update the text sensor display.

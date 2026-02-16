@@ -30,12 +30,30 @@ static const uint16_t SUB_ID_DATETIME_CONFIG = 100;  // Set time
 void TimeService::get_clock_async(std::function<void(ESPTime)> callback) {
   ESP_LOGD(TAG, "Reading pump clock (Object 94, Sub 101)...");
   
+  // Build Class 10 GET request: [Class][OpSpec][ObjID][SubID_H][SubID_L]
+  // OpSpec 0x03 = INFO (read operation)
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x03;  // OpSpec INFO (GET/read)
+  apdu[2] = OBJECT_ID_RTC & 0xFF;  // Object ID (94)
+  apdu[3] = (SUB_ID_DATETIME_ACTUAL >> 8) & 0xFF;  // Sub-ID high (0x00)
+  apdu[4] = SUB_ID_DATETIME_ACTUAL & 0xFF;  // Sub-ID low (0x65 = 101)
+  
+  // Build GENI frame
+  uint8_t frame_buf[32];
+  size_t frame_len = build_geni_packet(0xE7, 0xF8, apdu, sizeof(apdu), frame_buf);
+  std::vector<uint8_t> packet(frame_buf, frame_buf + frame_len);
+  
+  ESP_LOGD(TAG, "Clock GET packet: %s", format_hex_pretty(packet).c_str());
+  
   // Send Class 10 GET: Object 94, SubID 101 (DateTimeActual)
   // send_command signature: (packet, expect_obj_id, expect_sub_id, callback, timeout_ms)
+  // Use wildcard matching (0, 0) to accept any Class 10 response, matching Python's behavior
+  // Reference: base.py::match_class10_response only checks p[4] == 0x0A
   transport_->send_command(
-    {},  // Empty packet for GET
-    OBJECT_ID_RTC, 
-    SUB_ID_DATETIME_ACTUAL,
+    packet,
+    0,  // Wildcard: accept any Object ID
+    0,  // Wildcard: accept any Sub-ID
     [this, callback](bool success, const uint8_t *data, size_t len) {
       if (!success || !data || len == 0) {
         ESP_LOGW(TAG, "Clock read timeout or failed");
@@ -201,7 +219,23 @@ ESPTime TimeService::parse_clock_response(const uint8_t *data, size_t len) {
   pump_time.hour = hour;
   pump_time.minute = minute;
   pump_time.second = second;
-  pump_time.recalc_timestamp_utc(false);  // Calculate Unix timestamp
+  pump_time.day_of_week = 1;  // Not provided by pump, set to Monday
+  pump_time.day_of_year = 1;  // Not provided by pump
+  
+  // Manually calculate Unix timestamp treating pump time as LOCAL time
+  // The pump stores time in local timezone (PST/PDT), not UTC
+  struct tm tm_pump = {};
+  tm_pump.tm_year = year - 1900;
+  tm_pump.tm_mon = month - 1;
+  tm_pump.tm_mday = day;
+  tm_pump.tm_hour = hour;
+  tm_pump.tm_min = minute;
+  tm_pump.tm_sec = second;
+  tm_pump.tm_isdst = -1;  // Auto-detect DST
+  pump_time.timestamp = mktime(&tm_pump);  // Convert local time to Unix timestamp
+  
+  ESP_LOGD(TAG, "ESPTime created: timestamp=%ld, is_valid=%d", 
+           pump_time.timestamp, pump_time.is_valid());
   
   return pump_time;
 }

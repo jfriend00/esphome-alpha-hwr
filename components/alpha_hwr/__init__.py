@@ -50,6 +50,8 @@ CONF_HISTORY = "history"
 CONF_CYCLE_TIMESTAMPS = "cycle_timestamps"
 CONF_START_COUNT = "start_count"
 CONF_OPERATING_HOURS = "operating_hours"
+CONF_CLOCK_DIFF = "clock_diff"
+CONF_LAST_CLOCK_SYNC = "last_clock_sync"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -181,6 +183,17 @@ CONFIG_SCHEMA = cv.Schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
+        cv.Optional(CONF_CLOCK_DIFF): sensor.sensor_schema(
+            unit_of_measurement="s",
+            accuracy_decimals=0,
+            icon="mdi:timer-sand",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_LAST_CLOCK_SYNC): text_sensor.text_sensor_schema(
+            icon="mdi:clock-check",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -300,3 +313,11 @@ async def to_code(config):
     if CONF_OPERATING_HOURS in config:
         sens = await sensor.new_sensor(config[CONF_OPERATING_HOURS])
         cg.add(var.set_operating_hours_sensor(sens))
+
+    if CONF_CLOCK_DIFF in config:
+        sens = await sensor.new_sensor(config[CONF_CLOCK_DIFF])
+        cg.add(var.set_clock_diff_sensor(sens))
+
+    if CONF_LAST_CLOCK_SYNC in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_LAST_CLOCK_SYNC])
+        cg.add(var.set_last_clock_sync_sensor(sens))

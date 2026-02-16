@@ -105,6 +105,10 @@ bool ScheduleService::poll_state() {
 
           ESP_LOGD(TAG, "Schedule state updated: %s",
                    this->schedule_enabled_ ? "enabled" : "disabled");
+
+          if (this->state_change_callback_) {
+            this->state_change_callback_(this->schedule_enabled_);
+          }
         } else {
           ESP_LOGW(TAG, "Schedule state response too short (%zu bytes)",
                    payload_len);

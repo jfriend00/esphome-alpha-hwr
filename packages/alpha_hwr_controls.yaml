@@ -137,6 +137,13 @@ button:
   - platform: restart
     name: "Restart HWR Pump"
   
+  - platform: template
+    name: "Read Pump Clock"
+    icon: "mdi:clock-check"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("button", "Manual pump clock read requested");
+          id(pump).read_pump_clock();
 
 
 

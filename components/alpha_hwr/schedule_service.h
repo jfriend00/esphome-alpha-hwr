@@ -137,6 +137,12 @@ public:
   using WriteCallback =
       std::function<bool(uint16_t, const uint8_t *, uint16_t)>;
 
+  /**
+   * Callback for schedule state changes.
+   * Parameters: (enabled)
+   */
+  using StateChangeCallback = std::function<void(bool)>;
+
   // -------------------------------------------------------------------------
   // Constructor
   // -------------------------------------------------------------------------
@@ -173,6 +179,13 @@ public:
   void set_timeout_callback(
       std::function<void(std::function<void()>, uint32_t)> callback) {
     this->set_timeout_callback_ = callback;
+  }
+
+  /**
+   * Set callback for schedule state changes.
+   */
+  void set_state_change_callback(StateChangeCallback callback) {
+    this->state_change_callback_ = callback;
   }
 
   // -------------------------------------------------------------------------
@@ -534,6 +547,7 @@ protected:
 
   ScheduleCallback schedule_callback_;
   WriteCallback write_callback_;
+  StateChangeCallback state_change_callback_;
 
   std::function<void(std::function<void()>, uint32_t)> set_timeout_callback_;
 

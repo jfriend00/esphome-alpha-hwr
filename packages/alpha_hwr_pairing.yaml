@@ -130,6 +130,14 @@ alpha_hwr:
       name: "Start Count"
    operating_hours:
       name: "Operating Hours"
+
+   # Clock Sync Diagnostics
+   clock_diff:
+      name: "Clock Drift"
+      id: hwr_clock_diff
+   last_clock_sync:
+      name: "Last Clock Sync"
+      id: hwr_last_clock_sync
    
    # Control Mode Display
    control_mode:

@@ -144,6 +144,9 @@ void AlphaHwrComponent::setup() {
         this->set_timeout(delay_ms, std::move(callback));
       });
 
+  schedule_service_.set_state_change_callback(
+      [this](bool enabled) { this->publish_schedule_json(); });
+
   // Initialize schedule text sensor with "Loading..." state
 #ifdef USE_TEXT_SENSOR
   if (this->schedule_text_sensor_) {
@@ -173,17 +176,51 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
     this->read_device_info();
   });
 
-  // Sync pump clock
+  // Sync pump clock (Read time first to calculate drift, then sync)
   this->set_timeout(2000, [this]() {
     ESP_LOGD(TAG, "Performing initial pump clock sync...");
-    this->time_service_.set_clock_async([this](bool success) {
-      if (success) {
-        ESP_LOGD(TAG, "Initial pump clock sync successful");
-        this->last_time_sync_timestamp_ = millis();
+
+    // First read the pump clock to measure drift
+    this->time_service_.get_clock_async([this](ESPTime pump_time) {
+      if (pump_time.is_valid()) {
+        time_t now = ::time(nullptr);
+        // Calculate drift (Pump Time - System Time)
+        // If pump is ahead, diff is positive. If pump is behind, diff is
+        // negative.
+        double diff = difftime(pump_time.timestamp, now);
+
+        ESP_LOGI(TAG, "Pump clock drift before sync: %.0f seconds", diff);
+
+        if (this->clock_diff_sensor_) {
+          this->clock_diff_sensor_->publish_state(diff);
+        }
       } else {
-        ESP_LOGW(TAG,
-                 "Initial pump clock sync failed - will retry in 24 hours");
+        ESP_LOGW(TAG, "Could not read pump clock for drift measurement");
+        // Publish NAN to indicate invalid/unknown drift
+        if (this->clock_diff_sensor_) {
+          this->clock_diff_sensor_->publish_state(NAN);
+        }
       }
+
+      // Now sync the clock
+      this->time_service_.set_clock_async([this](bool success) {
+        if (success) {
+          ESP_LOGD(TAG, "Initial pump clock sync successful");
+          this->last_time_sync_timestamp_ = millis();
+
+          // Update last sync time sensor
+          if (this->last_clock_sync_sensor_) {
+            time_t now = ::time(nullptr);
+            struct tm *tm_info = localtime(&now);
+            char buf[32];
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+            this->last_clock_sync_sensor_->publish_state(buf);
+          }
+        } else {
+          ESP_LOGW(TAG,
+                   "Initial pump clock sync failed - will retry in 24 hours");
+        }
+      });
     });
   });
 
@@ -290,11 +327,76 @@ void AlphaHwrComponent::check_and_sync_time() {
       if (success) {
         ESP_LOGD(TAG, "Daily pump clock sync successful");
         this->last_time_sync_timestamp_ = millis();
+
+        // Update last sync time sensor
+        if (this->last_clock_sync_sensor_) {
+          time_t now = ::time(nullptr);
+          struct tm *tm_info = localtime(&now);
+          char buf[32];
+          strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+          this->last_clock_sync_sensor_->publish_state(buf);
+        }
       } else {
         ESP_LOGW(TAG, "Daily pump clock sync failed - will retry next update");
       }
     });
   }
+}
+
+void AlphaHwrComponent::read_device_info() {
+  device_info_service_.read_device_info_async([this](bool success) {
+    if (success) {
+      ESP_LOGI(TAG, "Device info read completed successfully");
+      // Publish device info strings to text sensors
+      if (this->product_name_sensor_) {
+        this->product_name_sensor_->publish_state(
+            device_info_service_.get_product_name());
+      }
+      if (this->serial_number_sensor_) {
+        this->serial_number_sensor_->publish_state(
+            device_info_service_.get_serial_number());
+      }
+      if (this->software_version_sensor_) {
+        this->software_version_sensor_->publish_state(
+            device_info_service_.get_software_version());
+      }
+      if (this->hardware_version_sensor_) {
+        this->hardware_version_sensor_->publish_state(
+            device_info_service_.get_hardware_version());
+      }
+      if (this->ble_version_sensor_) {
+        this->ble_version_sensor_->publish_state(
+            device_info_service_.get_ble_version());
+      }
+    } else {
+      ESP_LOGW(TAG, "Device info read failed");
+    }
+  });
+}
+
+void AlphaHwrComponent::read_pump_clock() {
+  ESP_LOGI(TAG, "Manual pump clock read requested");
+
+  time_service_.get_clock_async([this](ESPTime pump_time) {
+    if (pump_time.is_valid()) {
+      time_t now = ::time(nullptr);
+      double diff = difftime(pump_time.timestamp, now);
+
+      ESP_LOGI(TAG, "Pump clock read successful: %04d-%02d-%02d %02d:%02d:%02d",
+               pump_time.year, pump_time.month, pump_time.day_of_month,
+               pump_time.hour, pump_time.minute, pump_time.second);
+      ESP_LOGI(TAG, "Clock drift: %.0f seconds", diff);
+
+      if (this->clock_diff_sensor_) {
+        this->clock_diff_sensor_->publish_state(diff);
+      }
+    } else {
+      ESP_LOGW(TAG, "Pump clock read failed or returned invalid time");
+      if (this->clock_diff_sensor_) {
+        this->clock_diff_sensor_->publish_state(NAN);
+      }
+    }
+  });
 }
 
 void AlphaHwrComponent::authenticate() {
