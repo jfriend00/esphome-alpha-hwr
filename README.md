@@ -1,6 +1,6 @@
 # ALPHA HWR Component for ESPHome
 
-ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides full bi-directional BLE control and monitoring via the GENI protocol, with seamless Home Assistant integration.
+ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides bi-directional BLE control and monitoring via the GENI protocol with Home Assistant integration.
 
 ## Features
 
@@ -15,14 +15,14 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides
 - Start/stop pump (switch)
 - Control mode selection: Temperature Control, Constant Speed, Constant Flow, Constant Pressure, Proportional Pressure, AutoAdapt
 - Mode-specific setpoints (temperature range, RPM, flow, pressure)
-- Cycle time on/off adjustments
+- Cycle time adjustments
 - AutoAdapt toggle
 
 ### Schedule Management
 - Read/write weekly pump schedules (7 days, configurable start/end times)
 - Single event (one-time) schedule support with date/time
 - Schedule enable/disable switch
-- Schedule editor UI with day, layer, start/end time inputs
+- Schedule editor with day, layer, start/end time inputs
 
 ### Device Information & Diagnostics
 - Serial number, product name, software/hardware/BLE versions
@@ -34,7 +34,7 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides
 ### Automatic Features
 - Daily pump RTC synchronization via SNTP
 - Auto-reconnection on BLE disconnect
-- Persistent BLE bonding (pair once, works forever)
+- Persistent BLE bonding
 
 ---
 
@@ -50,7 +50,7 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides
 
 ### 1. Discover Your Pump's MAC Address
 
-Use a BLE scanner app (e.g., nRF Connect) or the discovery utility:
+Use a BLE scanner app (e.g., nRF Connect) or run:
 
 ```bash
 esphome run components/alpha_hwr/discovery_example.yaml
@@ -73,7 +73,7 @@ pump_mac: "3C:E0:02:XX:XX:XX"  # Your pump's MAC
 
 ### 3. Create Device Configuration
 
-See `hwr-pump-example.yaml` for a complete reference configuration. The minimal setup:
+See `hwr-pump-example.yaml` for a complete reference configuration. Minimal setup:
 
 ```yaml
 esphome:
@@ -133,10 +133,10 @@ esphome run hwr-pump.yaml
 ## Bluetooth Pairing
 
 ### Pairing Procedure
-1. **Configure** `enable_pairing: true` in your YAML
-2. **Enter Pairing Mode**: Press and hold the pump's Bluetooth button until the icon flashes
-3. **Flash & Boot**: The ESP32 will auto-detect and bond with the pump
-4. **Verify**: Check logs for `✓ BLE authentication complete`
+1. Configure `enable_pairing: true` in your YAML
+2. Enter Pairing Mode: Press and hold the pump's Bluetooth button until the icon flashes
+3. Flash & Boot: The ESP32 will auto-detect and bond with the pump
+4. Verify: Check logs for BLE authentication completion
 
 Once paired, encryption keys are stored permanently. No need to re-pair unless you factory reset the ESP32 or pump.
 
@@ -144,13 +144,13 @@ Once paired, encryption keys are stored permanently. No need to re-pair unless y
 
 | Feature | Basic (No Pairing) | Enhanced (Paired) |
 |---------|-------------------|-------------------|
-| Flow, head, power, RPM, temp | ✅ | ✅ |
-| Grid/DC voltage, motor current | ❌ | ✅ |
-| Inlet pressure | ❌ | ✅ |
-| PCB/control box temperatures | ❌ | ✅ |
-| Pump control (start/stop/mode) | ❌ | ✅ |
-| Schedule management | ❌ | ✅ |
-| Device info, event log, history | ❌ | ✅ |
+| Flow, head, power, RPM, temp | Yes | Yes |
+| Grid/DC voltage, motor current | No | Yes |
+| Inlet pressure | No | Yes |
+| PCB/control box temperatures | No | Yes |
+| Pump control (start/stop/mode) | No | Yes |
+| Schedule management | No | Yes |
+| Device info, event log, history | No | Yes |
 
 ---
 
@@ -233,6 +233,48 @@ Once paired, encryption keys are stored permanently. No need to re-pair unless y
 
 ---
 
+## Schedule Card Installation
+
+The `alpha-hwr-schedule-card` is a custom Lovelace card for interactive schedule management. It provides a more user-friendly interface than individual number/button inputs.
+
+### Installation Steps
+
+1. **Add the card repository to Home Assistant**:
+   - Go to Settings > Devices & Services > Automations & Scenes
+   - Open your Home Assistant configuration directory
+   - Add this to your `configuration.yaml`:
+     ```yaml
+     homeassistant:
+       packages:
+         alpha_hwr_lovelace: !include packages/lovelace.yaml
+     ```
+
+2. **Or use HACS (recommended)**:
+   - Install HACS if you haven't already: https://hacs.xyz/docs/setup/prerequisites
+   - Add the custom repository: https://github.com/eman/alpha-hwr-schedule-card
+   - Search for "alpha-hwr-schedule-card" in HACS
+   - Click Install
+   - Restart Home Assistant
+
+3. **Add the card to a dashboard**:
+   - Edit your Home Assistant dashboard
+   - Click "Create New Card" or edit an existing card
+   - Select "Custom: Alpha HWR Schedule Card"
+   - Configure the entity IDs:
+     ```yaml
+     type: custom:alpha-hwr-schedule-card
+     weekly_schedule: text_sensor.hwr_pump_weekly_schedule
+     single_events: text_sensor.hwr_pump_single_events
+     set_schedule_service: esphome.hwr_pump_set_schedule_entry
+     clear_schedule_service: esphome.hwr_pump_clear_schedule_entry
+     single_event_service: esphome.hwr_pump_set_single_event
+     clear_single_event_service: esphome.hwr_pump_clear_single_event
+     ```
+
+Alternatively, see `docs/schedule-management.md` for programmatic schedule management via automations and the REST API.
+
+---
+
 ## Architecture
 
 The component follows a layered, service-based architecture matching the [Python reference implementation](https://github.com/eman/alpha-hwr):
@@ -263,11 +305,11 @@ components/alpha_hwr/
 
 ### Key Design Decisions
 
-- **Non-blocking transport**: Command queue + FSM ensures ESPHome's event loop is never blocked
-- **50ms command pacing**: Prevents pump buffer overflows
-- **Wildcard response matching**: Handles pump firmware quirks (SubID 0 responses)
-- **Daily time sync**: Automatic RTC synchronization via SNTP
-- **Boot-resilient data reads**: Device info, event log, etc. read on every boot regardless of auth state
+- Non-blocking transport: Command queue + FSM ensures ESPHome's event loop is never blocked
+- 50ms command pacing: Prevents pump buffer overflows
+- Wildcard response matching: Handles pump firmware quirks (SubID 0 responses)
+- Daily time sync: Automatic RTC synchronization via SNTP
+- Boot-resilient data reads: Device info, event log, etc. read on every boot regardless of auth state
 
 ---
 
@@ -276,7 +318,7 @@ components/alpha_hwr/
 ### Device Not Discovered
 - Ensure pump is powered on with BLE enabled
 - Move ESP32 closer (0.5–2m)
-- Only one BLE client can connect at a time — disconnect phone apps first
+- Only one BLE client can connect at a time; disconnect phone apps first
 
 ### Connection Loops / Disconnects
 Enable debug logging:
@@ -289,13 +331,13 @@ logger:
 ```
 
 ### No Telemetry After Boot
-- Wait 10–15 seconds for the full boot sequence (auth → device info → schedules → event log → history)
-- Check logs for `✓ Authentication handshake complete`
+- Wait 10–15 seconds for the full boot sequence (auth > device info > schedules > event log > history)
+- Check logs for authentication completion
 
 ### Pairing Failures
-- **"Confirm Value Mismatch" (0x04)**: Pump not in pairing mode — hold Bluetooth button until icon flashes
-- **"Timeout" (0x07)**: Move ESP32 closer to pump
-- **"Encryption Key Missing" (0x05)**: Re-flash ESP32 to clear stored bonds
+- "Confirm Value Mismatch" (0x04): Pump not in pairing mode; hold Bluetooth button until icon flashes
+- "Timeout" (0x07): Move ESP32 closer to pump
+- "Encryption Key Missing" (0x05): Re-flash ESP32 to clear stored bonds
 
 ### Setpoints Show "Unknown"
 Setpoints only display for the currently active control mode. Switch to a mode to see its setpoint.

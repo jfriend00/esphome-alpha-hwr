@@ -315,9 +315,11 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE)
+        return NAN;
       float val = id(pump).get_cached_temp_min();
       if (!std::isnan(val)) return val;
-      return {};
+      return NAN;
     set_action:
       - lambda: |-
           float max_temp = id(pump).get_cached_temp_max();
@@ -347,9 +349,11 @@ number:
     update_interval: 5s
     disabled_by_default: false
     lambda: |-
+      if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE)
+        return NAN;
       float val = id(pump).get_cached_temp_max();
       if (!std::isnan(val)) return val;
-      return {};
+      return NAN;
     set_action:
       - lambda: |-
           float min_temp = id(pump).get_cached_temp_min();
@@ -445,3 +449,6 @@ number:
               ESP_LOGW("number", "Failed to update cycle time");
             }
           });
+
+
+

@@ -87,6 +87,7 @@ alpha_hwr:
    # Temperature Sensors (all)
    temp_media:
      name: "Water Temperature"
+     id: temp_media_sensor
    temp_pcb:
      name: "PCB Temperature"
    temp_control_box:
@@ -110,16 +111,19 @@ alpha_hwr:
    event_log:
       name: "Event Log"
       entity_category: diagnostic
+      internal: true
    
    # History Trends Display
    history:
       name: "History Trends"
       entity_category: diagnostic
+      internal: true
    
    # Cycle Timestamps (last 10 cycles)
    cycle_timestamps:
       name: "Cycle Timestamps"
       entity_category: diagnostic
+      internal: true
    
    # Operating Statistics (Diagnostic)
    start_count:
