@@ -160,7 +160,7 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
       break;
     
     default:
-      ESP_LOGW(TAG, "Unhandled OpSpec: 0x%02X", opspec);
+      ESP_LOGD(TAG, "Unhandled OpSpec: 0x%02X", opspec);
       break;
   }
 }

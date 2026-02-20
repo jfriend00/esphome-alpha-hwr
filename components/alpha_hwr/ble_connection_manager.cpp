@@ -98,7 +98,7 @@ void BLEConnectionManager::dump_services() {
       ESP_LOGW(TAG, "No characteristics found in service!");
     }
   } else {
-    ESP_LOGW(TAG, "Service NOT found! Expected UUID: %s", service_uuid_.to_string().c_str());
+    char uuid_str[37]; ESP_LOGW(TAG, "Service NOT found! Expected UUID: %s", service_uuid_.to_str(uuid_str));
   }
 }
 
@@ -230,7 +230,7 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
       if (chr) {
         subscribe_to_notifications();
       } else {
-        ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_string().c_str());
+        char uuid_str[37]; ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_str(uuid_str));
       }
     } else {
       // Service NOT found - implement retry logic

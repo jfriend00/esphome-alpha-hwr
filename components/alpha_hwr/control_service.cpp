@@ -109,7 +109,10 @@ void ControlService::read_setpoints_from_pump() {
     size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, packet_raw);
     std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
     
-    this->transport_.send_command(packet, 91, 430,
+    // Use wildcard matching (0, 0) like Python reference's match_class10_response,
+    // because the pump responds with OpSpec 0x15 whose frame layout doesn't follow
+    // the standard [ObjH][ObjL][SubH][SubL] order that explicit matching expects.
+    this->transport_.send_command(packet, 0, 0,
       [this](bool ok, const uint8_t* payload, size_t payload_len) {
         if (!ok || payload_len < 12) {
           ESP_LOGW(TAG, "Failed to read temp range (success=%d, len=%zu)", ok, payload_len);
