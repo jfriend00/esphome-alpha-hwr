@@ -284,6 +284,7 @@ number:
     name: "Constant Flow Setpoint"
     id: constant_flow_setpoint
     icon: "mdi:water-pump"
+    device_class: volume_flow_rate
     unit_of_measurement: "m³/h"
     min_value: 0.1
     max_value: 10.0
@@ -313,6 +314,7 @@ number:
     name: "Temperature Range Min"
     id: temp_range_min
     icon: "mdi:thermometer-low"
+    device_class: temperature
     unit_of_measurement: "°C"
     min_value: 20
     max_value: 70
@@ -347,6 +349,7 @@ number:
     name: "Temperature Range Max"
     id: temp_range_max
     icon: "mdi:thermometer-high"
+    device_class: temperature
     unit_of_measurement: "°C"
     min_value: 20
     max_value: 70
@@ -410,6 +413,7 @@ number:
     name: "Cycle Time ON"
     id: cycle_time_on
     icon: "mdi:timer-play"
+    device_class: duration
     unit_of_measurement: "min"
     min_value: 1
     max_value: 60
@@ -436,6 +440,7 @@ number:
     name: "Cycle Time OFF"
     id: cycle_time_off
     icon: "mdi:timer-pause"
+    device_class: duration
     unit_of_measurement: "min"
     min_value: 1
     max_value: 60

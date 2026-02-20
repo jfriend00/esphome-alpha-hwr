@@ -61,6 +61,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_FLOW): sensor.sensor_schema(
             unit_of_measurement="m³/h",
             accuracy_decimals=3,
+            device_class="volume_flow_rate",
             state_class=STATE_CLASS_MEASUREMENT,
         ),
         cv.Optional(CONF_HEAD): sensor.sensor_schema(
@@ -118,6 +119,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_INLET_PRESSURE): sensor.sensor_schema(
             unit_of_measurement="bar",
             accuracy_decimals=2,
+            device_class="pressure",
             state_class=STATE_CLASS_MEASUREMENT,
         ),
         cv.Optional(CONF_PAIRING_STATUS): binary_sensor.binary_sensor_schema(
@@ -180,6 +182,7 @@ CONFIG_SCHEMA = cv.Schema(
             unit_of_measurement="h",
             accuracy_decimals=1,
             icon="mdi:timer-sand",
+            device_class="duration",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
@@ -187,6 +190,7 @@ CONFIG_SCHEMA = cv.Schema(
             unit_of_measurement="s",
             accuracy_decimals=0,
             icon="mdi:timer-sand",
+            device_class="duration",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             state_class=STATE_CLASS_MEASUREMENT,
         ),

@@ -174,6 +174,12 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
   this->set_timeout(1000, [this]() {
     ESP_LOGD(TAG, "Reading device information...");
     this->read_device_info();
+
+    // Chain: read operating statistics after device info
+    this->set_timeout(2000, [this]() {
+      ESP_LOGD(TAG, "Reading operating statistics...");
+      this->read_statistics();
+    });
   });
 
   // Sync pump clock (Read time first to calculate drift, then sync)
@@ -372,6 +378,24 @@ void AlphaHwrComponent::read_device_info() {
       ESP_LOGW(TAG, "Device info read failed");
     }
   });
+}
+
+void AlphaHwrComponent::read_statistics() {
+  device_info_service_.read_statistics_async(
+      [this](bool success, uint32_t start_count, float operating_hours) {
+        if (success) {
+          ESP_LOGI(TAG, "Statistics read successful: %u starts, %.1f hours",
+                   start_count, operating_hours);
+          if (this->start_count_sensor_) {
+            this->start_count_sensor_->publish_state(start_count);
+          }
+          if (this->operating_hours_sensor_) {
+            this->operating_hours_sensor_->publish_state(operating_hours);
+          }
+        } else {
+          ESP_LOGW(TAG, "Statistics read failed");
+        }
+      });
 }
 
 void AlphaHwrComponent::read_pump_clock() {

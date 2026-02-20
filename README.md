@@ -4,37 +4,11 @@ ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides
 
 ## Features
 
-### Real-time Monitoring
-- Flow rate (m³/h), head pressure (m), inlet pressure (bar)
-- Power consumption (W), motor RPM, motor current (A)
-- Grid voltage (V), DC voltage (V)
-- Water temperature, PCB temperature, control box temperature
-- Active alarms and warnings with human-readable descriptions
-
-### Pump Control
-- Start/stop pump (switch)
-- Control mode selection: Temperature Control, Constant Speed, Constant Flow, Constant Pressure, Proportional Pressure, AutoAdapt
-- Mode-specific setpoints (temperature range, RPM, flow, pressure)
-- Cycle time adjustments
-- AutoAdapt toggle
-
-### Schedule Management
-- Read/write weekly pump schedules (7 days, configurable start/end times)
-- Single event (one-time) schedule support with date/time
-- Schedule enable/disable switch
-- Schedule editor with day, layer, start/end time inputs
-
-### Device Information & Diagnostics
-- Serial number, product name, software/hardware/BLE versions
-- Operating statistics: total start count, lifetime operating hours
-- Event log: last 20 pump start/stop events with timestamps
-- History trends: flow, head, temperature, power-on hours (10-point series)
-- Cycle timestamps: last 10 pump cycle start times
-
-### Automatic Features
-- Daily pump RTC synchronization via SNTP
-- Auto-reconnection on BLE disconnect
-- Persistent BLE bonding
+- **Telemetry**: Flow rate, head/inlet pressure, power, RPM, current, voltage, temperatures, alarms/warnings
+- **Control**: Start/stop, control mode selection (Temperature, Constant Speed/Flow/Pressure, Proportional Pressure, AutoAdapt), mode-specific setpoints
+- **Schedules**: Read/write weekly schedules and one-time events
+- **Diagnostics**: Device info strings, operating statistics, event log, history trends
+- **Automatic**: Daily RTC sync via SNTP, auto-reconnect, persistent BLE bonding
 
 ---
 
@@ -154,85 +128,6 @@ Once paired, encryption keys are stored permanently. No need to re-pair unless y
 
 ---
 
-## Home Assistant Entities
-
-### Sensors (Telemetry)
-
-| Entity | Type | Unit | Description |
-|--------|------|------|-------------|
-| Flow Rate | sensor | m³/h | Water flow through pump |
-| Head Pressure | sensor | m | Differential pressure |
-| Power Consumption | sensor | W | Electrical power draw |
-| Motor Speed | sensor | RPM | Motor rotation speed |
-| Water Temperature | sensor | °C | Fluid temperature |
-| Grid Voltage | sensor | V | AC input voltage |
-| DC Voltage | sensor | V | DC bus voltage |
-| Motor Current | sensor | A | Current draw |
-| Inlet Pressure | sensor | bar | Water inlet pressure |
-| PCB Temperature | sensor | °C | Circuit board temperature |
-| Control Box Temperature | sensor | °C | Enclosure temperature |
-| Active Alarms | text_sensor | — | Current alarm descriptions |
-| Active Warnings | text_sensor | — | Current warning descriptions |
-
-### Controls
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| Pump Running | switch | Start/stop the pump |
-| Remote Mode | switch | Enable remote control (required for mode changes) |
-| Temperature AutoAdapt | switch | Toggle AutoAdapt learning mode |
-| Schedule Enabled | switch | Enable/disable weekly schedule |
-| Pump Control Mode | select | Choose operating mode |
-| Temperature Range Min/Max | number | Temperature setpoints (°C/°F) |
-| Constant Speed Setpoint | number | RPM target (300-4200) |
-| Constant Flow Setpoint | number | Flow target (m³/h) |
-| Constant Pressure Setpoint | number | Pressure target (m) |
-| Proportional Pressure Setpoint | number | Proportional pressure target (m) |
-| Cycle Time On/Off | number | Cycle timing (seconds) |
-
-### Schedule Editor
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| Schedule Editor Day | select | Mon–Sun day selector |
-| Schedule Editor Layer | select | Schedule layer (0–4) |
-| Schedule Start Hour/Minute | number | Entry start time |
-| Schedule End Hour/Minute | number | Entry end time |
-| Save Schedule Entry | button | Write entry to pump |
-| Clear Schedule Entry | button | Remove entry from pump |
-
-### Single Events
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| Single Event Start/End Month/Day/Hour/Minute | number | Event date/time |
-| Add Single Event | button | Write one-time event to pump |
-| Single Event Clear Slot | number | Slot number to clear |
-| Clear Single Event | button | Remove one-time event |
-| Refresh Single Events | button | Re-read events from pump |
-| Single Events | text_sensor | Active one-time events display |
-
-### Diagnostics
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| Serial Number | text_sensor | Pump serial number |
-| Product Name | text_sensor | Device model name |
-| Software Version | text_sensor | Firmware version |
-| Hardware Version | text_sensor | Hardware revision |
-| BLE Version | text_sensor | Bluetooth firmware |
-| Start Count | sensor | Total pump starts |
-| Operating Hours | sensor | Lifetime operating hours |
-| Event Log | text_sensor | Last 20 start/stop events |
-| History Trends | text_sensor | 10-point trend data |
-| Cycle Timestamps | text_sensor | Last 10 cycle times |
-| Weekly Schedule | text_sensor | Current schedule display |
-| Control Mode | text_sensor | Active control mode |
-| Pairing Status | binary_sensor | BLE bond status |
-| Uptime | sensor | ESP32 uptime |
-
----
-
 ## Schedule Card Installation
 
 The `alpha-hwr-schedule-card` is a custom Lovelace card for interactive schedule management. It provides a more user-friendly interface than individual number/button inputs.
@@ -275,77 +170,9 @@ Alternatively, see `docs/schedule-management.md` for programmatic schedule manag
 
 ---
 
-## Architecture
-
-The component follows a layered, service-based architecture matching the [Python reference implementation](https://github.com/eman/alpha-hwr):
-
-```
-components/alpha_hwr/
-├── alpha_hwr.h/cpp              # Main component (thin facade, orchestration)
-├── core::                       # Foundation layer
-│   ├── transport.h/cpp          # BLE I/O, command queue, FSM transaction manager
-│   ├── session.h/cpp            # Connection state machine
-│   ├── auth.h/cpp               # Authentication handshake
-│   └── ble_connection_manager   # BLE connection lifecycle
-├── protocol::                   # Protocol layer (stateless)
-│   ├── codec.h/cpp              # Endianness-safe encoding/decoding, CRC
-│   ├── frame_builder.h/cpp      # Build GENI request packets
-│   ├── frame_parser.h/cpp       # Parse GENI responses
-│   └── telemetry_decoder.h/cpp  # Decode Class 10 DataObjects
-└── services::                   # Business logic layer
-    ├── telemetry_service        # Sensor readings and polling
-    ├── control_service          # Start/stop, modes, setpoints
-    ├── schedule_service         # Weekly schedule management
-    ├── device_info_service      # Device ID strings + operating statistics
-    ├── time_service             # Pump RTC synchronization
-    ├── event_log_service        # Start/stop event history
-    ├── history_service          # Trend data + cycle timestamps
-    └── sensor_publisher         # Map telemetry to ESPHome sensors
-```
-
-### Key Design Decisions
-
-- Non-blocking transport: Command queue + FSM ensures ESPHome's event loop is never blocked
-- 50ms command pacing: Prevents pump buffer overflows
-- Wildcard response matching: Handles pump firmware quirks (SubID 0 responses)
-- Daily time sync: Automatic RTC synchronization via SNTP
-- Boot-resilient data reads: Device info, event log, etc. read on every boot regardless of auth state
-
----
-
-## Troubleshooting
-
-### Device Not Discovered
-- Ensure pump is powered on with BLE enabled
-- Move ESP32 closer (0.5–2m)
-- Only one BLE client can connect at a time; disconnect phone apps first
-
-### Connection Loops / Disconnects
-Enable debug logging:
-```yaml
-logger:
-  level: DEBUG
-  logs:
-    alpha_hwr: DEBUG
-    esp32_ble_client: DEBUG
-```
-
-### No Telemetry After Boot
-- Wait 10–15 seconds for the full boot sequence (auth > device info > schedules > event log > history)
-- Check logs for authentication completion
-
-### Pairing Failures
-- "Confirm Value Mismatch" (0x04): Pump not in pairing mode; hold Bluetooth button until icon flashes
-- "Timeout" (0x07): Move ESP32 closer to pump
-- "Encryption Key Missing" (0x05): Re-flash ESP32 to clear stored bonds
-
-### Setpoints Show "Unknown"
-Setpoints only display for the currently active control mode. Switch to a mode to see its setpoint.
-
----
-
 ## References
 
 - **Protocol Documentation**: [https://eman.github.io/alpha-hwr/](https://eman.github.io/alpha-hwr/)
 - **Python Reference Implementation**: [https://github.com/eman/alpha-hwr](https://github.com/eman/alpha-hwr)
 - **ESPHome BLE Client**: [https://esphome.io/components/ble_client/](https://esphome.io/components/ble_client/)
+- **Component Architecture**: [docs/architecture.md](docs/architecture.md)
