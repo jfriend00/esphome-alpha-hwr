@@ -54,34 +54,18 @@ esphome:
   name: hwr-pump
   friendly_name: "HWR Pump"
 
+substitutions:
+  mac_address: "3C:E0:02:XX:XX:XX"  # Your pump's MAC
+
+packages:
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
+  alpha_hwr_controls: github://eman/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@main
+
 esp32:
   board: esp32-c3-devkitm-1
   variant: esp32c3
   framework:
     type: esp-idf  # Required for stable BLE
-
-external_components:
-  - source:
-      type: local
-      path: .
-    components: [alpha_hwr]
-
-packages:
-  alpha_hwr_pairing: !include packages/alpha_hwr_pairing.yaml
-  alpha_hwr_controls: !include packages/alpha_hwr_controls.yaml
-
-esp32_ble_tracker:
-  scan_parameters:
-    interval: 1.1s
-    window: 1.1s
-
-ble_client:
-  - mac_address: !secret pump_mac
-    id: hwr_pump_client
-
-alpha_hwr:
-  ble_client_id: hwr_pump_client
-  enable_pairing: true
 
 wifi:
   ssid: !secret wifi_ssid
