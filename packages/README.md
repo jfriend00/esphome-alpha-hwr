@@ -20,11 +20,7 @@ substitutions:
   mac_address: "AA:BB:CC:DD:EE:FF"
 
 packages:
-  alpha_hwr: !include packages/alpha_hwr_base.yaml
-
-esphome:
-  name: my-hwr-pump
-# ... rest of your config
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_base.yaml@main
 ```
 
 ---
@@ -46,7 +42,7 @@ substitutions:
   mac_address: "AA:BB:CC:DD:EE:FF"
 
 packages:
-  alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
 
 esphome:
   name: my-hwr-pump
@@ -73,7 +69,7 @@ esphome:
      mac_address: "3C:E0:02:50:98:BF"  # Your pump's MAC
    
    packages:
-     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+     alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
    
    esphome:
      name: hwr-pump-basement
@@ -102,7 +98,7 @@ You can customize sensor names and add filters by overriding the package:
 
 ```yaml
 packages:
-  alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
 
 # Override specific sensor configurations
 alpha_hwr:
@@ -118,7 +114,7 @@ Or add additional sensors to the same device:
 
 ```yaml
 packages:
-  alpha_hwr: !include packages/alpha_hwr_base.yaml
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_base.yaml@main
 
 sensor:
   - platform: wifi_signal

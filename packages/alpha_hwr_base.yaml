@@ -28,9 +28,7 @@
 # ==============================================================================
 
 external_components:
-  - source:
-      type: local
-      path: components
+  - source: github://eman/esphome-alpha-hwr@main
     components: [alpha_hwr]
 
 esp32_ble_tracker:
