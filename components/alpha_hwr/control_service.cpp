@@ -77,8 +77,14 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
     cached_setpoint_ = setpoint;
   }
   
-  ESP_LOGI(TAG, "Control mode from notification: %s (op_mode=%d, setpoint=%.4f, raw=%.4f)",
-           get_mode_name(current_mode_), operation_mode, cached_setpoint_, setpoint);
+  // Derive pump enabled state from operation_mode:
+  // AUTO (0) or USER_DEFINED (4) = enabled, STOP (1) = disabled
+  pump_enabled_ = (operation_mode != static_cast<uint8_t>(OperationMode::STOP));
+  pump_enabled_valid_ = true;
+  
+  ESP_LOGI(TAG, "Control mode from notification: %s (op_mode=%d, setpoint=%.4f, raw=%.4f, enabled=%s)",
+           get_mode_name(current_mode_), operation_mode, cached_setpoint_, setpoint,
+           pump_enabled_ ? "YES" : "NO");
   
   // Notify callback if set
   if (mode_change_callback_) {
@@ -256,6 +262,10 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
               mode_valid_ = true;
               cached_operation_mode_ = operation_mode;
               
+              // Derive pump enabled state from operation_mode
+              pump_enabled_ = (operation_mode != static_cast<uint8_t>(OperationMode::STOP));
+              pump_enabled_valid_ = true;
+              
               // Extract and cache setpoint (big-endian float at offset+3)
               if (payload_len >= (size_t)(offset + 7)) {
                 cached_setpoint_ = protocol::decode_float_be(&payload[offset + 3]);
@@ -328,6 +338,10 @@ bool ControlService::start(uint8_t mode) {
     }
   }
 
+  // Pump is now enabled (user started it)
+  pump_enabled_ = true;
+  pump_enabled_valid_ = true;
+
   ESP_LOGI(TAG, "Pump start command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }
@@ -354,6 +368,10 @@ bool ControlService::stop(uint8_t mode) {
   }
 
   // NOTE: Python reference does NOT update _current_mode in stop()
+  // Pump is now disabled (user stopped it)
+  pump_enabled_ = false;
+  pump_enabled_valid_ = true;
+
   ESP_LOGI(TAG, "Pump stop command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }

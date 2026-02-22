@@ -330,6 +330,12 @@ public:
   bool get_remote_enabled() const {
     return control_service_.get_remote_enabled();
   }
+  bool is_pump_enabled_valid() const {
+    return control_service_.is_pump_enabled_valid();
+  }
+  bool is_pump_enabled() const {
+    return control_service_.is_pump_enabled();
+  }
   static const char *get_control_mode_name(services::ControlMode mode) {
     return services::ControlService::get_mode_name(mode);
   }

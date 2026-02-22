@@ -275,6 +275,21 @@ class ControlService {
     */
    bool get_remote_enabled() const { return is_remote_mode_enabled_; }
    
+   /**
+    * Check if pump enabled state has been determined.
+    * @return True if we've received operation_mode from pump or a user command
+    */
+   bool is_pump_enabled_valid() const { return pump_enabled_valid_; }
+   
+   /**
+    * Get whether the pump is enabled (operating in its configured mode).
+    * Enabled means the pump will operate per its control mode (e.g., cycling
+    * the motor on/off in temperature range mode). Disabled means explicitly stopped.
+    * Distinct from motor running (RPM > 0): enabled pump may have idle motor.
+    * @return True if pump is enabled, false if explicitly stopped/disabled
+    */
+   bool is_pump_enabled() const { return pump_enabled_; }
+
    /** Get cached setpoint for current mode (NAN if not yet read from pump). */
    float get_cached_setpoint() const { return cached_setpoint_; }
    /** Get cached temperature range min (NAN if not yet read). */
@@ -394,6 +409,8 @@ class ControlService {
     ControlMode current_mode_{ControlMode::NONE};
     bool mode_valid_{false};  // Track if we've received a real mode from the pump
     bool is_remote_mode_enabled_{false};  // Track remote mode state
+    bool pump_enabled_{false};       // Pump enabled (AUTO/USER_DEFINED) vs stopped (STOP)
+    bool pump_enabled_valid_{false}; // Whether pump_enabled_ has been determined
     std::function<void(std::function<void()>, uint32_t)> schedule_callback_;
     std::function<void(ControlMode, uint8_t, float)> mode_change_callback_;
      std::function<void()> config_commit_callback_;
