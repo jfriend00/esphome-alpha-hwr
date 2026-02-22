@@ -65,8 +65,8 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
   }
   
   // Log summary
-  ESP_LOGD(TAG, "Flow/Head: %.3f m³/h, %.2f m, P_in=%.2f bar",
-           flow.flow_m3h, flow.head_m,
+  ESP_LOGD(TAG, "Flow/Head: %.3f m³/h, %.2f m (%.2f kPa), P_in=%.2f bar",
+           flow.flow_m3h, flow.head_m, flow.head_m * 9.80665f,
            flow.has_inlet_pressure ? flow.inlet_pressure_bar : NAN);
   
   // Publish flow rate
@@ -74,9 +74,9 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
     flow_sensor_->publish_state(flow.flow_m3h);
   }
   
-  // Publish head pressure
+  // Publish head pressure (convert meters of head to kPa for HA auto-conversion)
   if (flow.has_head && head_sensor_ != nullptr) {
-    head_sensor_->publish_state(flow.head_m);
+    head_sensor_->publish_state(flow.head_m * 9.80665f);
   }
   
   // Publish inlet pressure (often NaN on HWR models)

@@ -65,8 +65,9 @@ CONFIG_SCHEMA = cv.Schema(
             state_class=STATE_CLASS_MEASUREMENT,
         ),
         cv.Optional(CONF_HEAD): sensor.sensor_schema(
-            unit_of_measurement="m",
+            unit_of_measurement="kPa",
             accuracy_decimals=2,
+            device_class="pressure",
             state_class=STATE_CLASS_MEASUREMENT,
         ),
         cv.Optional(CONF_POWER): sensor.sensor_schema(
