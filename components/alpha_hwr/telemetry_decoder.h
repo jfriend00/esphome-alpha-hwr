@@ -9,7 +9,7 @@
  * The Alpha HWR pump sends telemetry using Class 10 DataObjects:
  * 
  * 1. **Motor State** (OpSpec 0x30 responses)
- *    - Grid voltage, current, power, speed, converter temperature
+ *    - AC voltage, current, power, speed, converter temperature
  * 
  * 2. **Flow/Pressure** (OpSpec 0x2B responses)
  *    - Flow rate, head, inlet pressure, outlet pressure

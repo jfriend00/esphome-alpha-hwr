@@ -103,7 +103,7 @@ Once paired, encryption keys are stored permanently. No need to re-pair unless y
 | Feature | Basic (No Pairing) | Enhanced (Paired) |
 |---------|-------------------|-------------------|
 | Flow, head, power, RPM, temp | Yes | Yes |
-| Grid/DC voltage, motor current | No | Yes |
+| AC/DC voltage, motor current | No | Yes |
 | Inlet pressure | No | Yes |
 | PCB/control box temperatures | No | Yes |
 | Pump control (start/stop/mode) | No | Yes |

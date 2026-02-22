@@ -28,7 +28,7 @@ MotorStateTelemetry decode_motor_state_response(const uint8_t* data, size_t len)
   // [5] = Speed (RPM) at offset 33
   // [6] = Converter temp (°C) at offset 37
   
-  // Grid voltage (offset 13, float[0])
+  // AC voltage (offset 13, float[0])
   if (len >= 17) {
     float voltage_ac = decode_float_be(data, 13);
     if (!std::isnan(voltage_ac) && voltage_ac >= 0 && voltage_ac <= 500) {

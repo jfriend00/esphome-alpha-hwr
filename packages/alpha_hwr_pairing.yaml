@@ -7,7 +7,7 @@
 #
 # Enhanced Telemetry Included:
 # - All sensors from alpha_hwr_base.yaml PLUS:
-# - Grid Voltage (V) - Requires pairing
+# - AC Voltage (V) - Requires pairing
 # - DC Voltage (V) - Requires pairing
 # - Motor Current (A) - Requires pairing
 # - Inlet Pressure (bar) - Requires pairing
@@ -61,7 +61,7 @@ alpha_hwr:
    
    # Enhanced Electrical (requires pairing)
    voltage:
-     name: "Grid Voltage"
+     name: "AC Voltage"
    voltage_dc:
      name: "DC Voltage"
    current:
