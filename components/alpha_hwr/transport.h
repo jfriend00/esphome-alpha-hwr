@@ -302,7 +302,7 @@ class Transport {
    * @param data First byte of notification
    * @return true if this is a frame start byte
    */
-  bool is_frame_start(uint8_t byte) const;
+  static bool is_frame_start(uint8_t byte);
 
   /**
    * Extract expected packet length from buffer.

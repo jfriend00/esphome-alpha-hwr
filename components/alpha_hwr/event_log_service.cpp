@@ -29,8 +29,7 @@ void EventLogService::read_metadata_async(
     std::function<void(bool, const EventLogMetadata &)> on_complete) {
   if (!session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot read event log: session not ready");
-    EventLogMetadata empty;
-    if (on_complete) on_complete(false, empty);
+    if (on_complete) on_complete(false, EventLogMetadata{});
     return;
   }
 
@@ -52,27 +51,18 @@ void EventLogService::read_metadata_async(
       [this, on_complete](bool success, const uint8_t *payload, size_t payload_len) {
     if (!success || payload_len < 10) {  // 3 sub-header + 7 data minimum
       ESP_LOGW(TAG, "Event log metadata read failed (success=%d, len=%zu)", success, payload_len);
-      EventLogMetadata empty;
-      if (on_complete) on_complete(false, empty);
+      if (on_complete) on_complete(false, EventLogMetadata{});
       return;
     }
 
     // Data starts at payload + 3 (sub-header: 3 bytes, same as schedule/history)
     const uint8_t *data = payload + 3;
-    size_t data_len = payload_len - 3;
 
-    if (data_len >= 7) {
-      metadata_.cycle_counter = ((uint16_t)data[0] << 8) | data[1];
-      metadata_.available_entries = ((uint16_t)data[2] << 8) | data[3];
-      metadata_.max_entries = ((uint16_t)data[4] << 8) | data[5];
-      ESP_LOGI(TAG, "Event log: cycle=%d, entries=%d/%d",
-               metadata_.cycle_counter, metadata_.available_entries, metadata_.max_entries);
-    } else {
-      ESP_LOGW(TAG, "Event log metadata data too short: %zu bytes", data_len);
-      EventLogMetadata empty;
-      if (on_complete) on_complete(false, empty);
-      return;
-    }
+    metadata_.cycle_counter = ((uint16_t)data[0] << 8) | data[1];
+    metadata_.available_entries = ((uint16_t)data[2] << 8) | data[3];
+    metadata_.max_entries = ((uint16_t)data[4] << 8) | data[5];
+    ESP_LOGI(TAG, "Event log: cycle=%d, entries=%d/%d",
+             metadata_.cycle_counter, metadata_.available_entries, metadata_.max_entries);
 
     if (on_complete) on_complete(true, metadata_);
   }, 5000);
@@ -84,8 +74,7 @@ void EventLogService::read_entries_async(
   // First read metadata to know how many entries
   read_metadata_async([this, on_complete](bool success, const EventLogMetadata &meta) {
     if (!success) {
-      std::vector<EventLogEntry> empty;
-      if (on_complete) on_complete(false, empty);
+      if (on_complete) on_complete(false, std::vector<EventLogEntry>{});
       return;
     }
 

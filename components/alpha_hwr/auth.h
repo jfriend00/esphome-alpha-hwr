@@ -60,7 +60,7 @@ class Authentication {
   /**
    * @brief Construct an Authentication handler
    */
-  Authentication(Transport &transport);
+  explicit Authentication(Transport &transport);
   
   /**
    * @brief Set the scheduler callback

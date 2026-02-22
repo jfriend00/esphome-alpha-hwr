@@ -77,8 +77,14 @@ void ControlService::update_mode_from_notification(uint8_t mode, uint8_t operati
     cached_setpoint_ = setpoint;
   }
   
-  ESP_LOGI(TAG, "Control mode from notification: %s (op_mode=%d, setpoint=%.4f, raw=%.4f)",
-           get_mode_name(current_mode_), operation_mode, cached_setpoint_, setpoint);
+  // Derive pump enabled state from operation_mode:
+  // AUTO (0) or USER_DEFINED (4) = enabled, STOP (1) = disabled
+  pump_enabled_ = (operation_mode != static_cast<uint8_t>(OperationMode::STOP));
+  pump_enabled_valid_ = true;
+  
+  ESP_LOGI(TAG, "Control mode from notification: %s (op_mode=%d, setpoint=%.4f, raw=%.4f, enabled=%s)",
+           get_mode_name(current_mode_), operation_mode, cached_setpoint_, setpoint,
+           pump_enabled_ ? "YES" : "NO");
   
   // Notify callback if set
   if (mode_change_callback_) {
@@ -256,6 +262,10 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
               mode_valid_ = true;
               cached_operation_mode_ = operation_mode;
               
+              // Derive pump enabled state from operation_mode
+              pump_enabled_ = (operation_mode != static_cast<uint8_t>(OperationMode::STOP));
+              pump_enabled_valid_ = true;
+              
               // Extract and cache setpoint (big-endian float at offset+3)
               if (payload_len >= (size_t)(offset + 7)) {
                 cached_setpoint_ = protocol::decode_float_be(&payload[offset + 3]);
@@ -328,6 +338,10 @@ bool ControlService::start(uint8_t mode) {
     }
   }
 
+  // Pump is now enabled (user started it)
+  pump_enabled_ = true;
+  pump_enabled_valid_ = true;
+
   ESP_LOGI(TAG, "Pump start command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }
@@ -354,6 +368,10 @@ bool ControlService::stop(uint8_t mode) {
   }
 
   // NOTE: Python reference does NOT update _current_mode in stop()
+  // Pump is now disabled (user stopped it)
+  pump_enabled_ = false;
+  pump_enabled_valid_ = true;
+
   ESP_LOGI(TAG, "Pump stop command sent (mode=%d)", static_cast<uint8_t>(target));
   return true;
 }
@@ -405,7 +423,7 @@ bool ControlService::enable_remote_mode() {
 
    // Class 3: 03 C1 07
    // Reference: control.py lines 329-332
-   uint8_t apdu[3] = {0x03, 0xC1, 0x07};
+   const uint8_t apdu[3] = {0x03, 0xC1, 0x07};
    
    uint8_t packet_raw[32];
    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
@@ -432,7 +450,7 @@ bool ControlService::enable_remote_mode() {
 
    // Class 3: 03 C1 06
    // Reference: control.py lines 358-361
-   uint8_t apdu[3] = {0x03, 0xC1, 0x06};
+   const uint8_t apdu[3] = {0x03, 0xC1, 0x06};
    
    uint8_t packet_raw[32];
    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
@@ -494,7 +512,6 @@ void ControlService::send_configuration_commit() {
 bool ControlService::send_control_request(ControlMode mode, bool start, float setpoint) {
   // Reference: control.py::_send_control_request() lines 233-284
   // Payload: [2F 01 00 00 07 00][Flag][Mode][Suffix/Setpoint(4)]
-  uint8_t mode_val = static_cast<uint8_t>(mode);
 
   ControlModeMapping mapping;
   if (!get_class10_mapping(mode, mapping)) {
@@ -841,7 +858,7 @@ void ControlService::set_cycle_time_control_async(uint8_t on_minutes, uint8_t of
   // Reference: control.py::set_cycle_time_control() lines 1010-1055
   auto write_cycle_config = [this, on_minutes, off_minutes, callback]() {
     // Payload: [00 00][OFF_min][01 42 02][ON_min][FB]  (8 bytes)
-    uint8_t struct_payload[8] = {
+    const uint8_t struct_payload[8] = {
       0x00, 0x00,           // Header
       off_minutes,          // Byte 2: OFF time
       0x01, 0x42, 0x02,     // Fixed magic bytes

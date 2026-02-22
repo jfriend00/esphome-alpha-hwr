@@ -87,7 +87,7 @@ void TimeService::set_clock_async(std::function<void(bool)> callback) {
   }
   
   // Convert to local time struct
-  struct tm *timeinfo = localtime(&current_time);
+  const struct tm *timeinfo = localtime(&current_time);
   
   // Create ESPTime from tm struct
   ESPTime now;

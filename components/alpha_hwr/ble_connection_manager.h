@@ -67,7 +67,7 @@ class BLEConnectionManager {
  private:
   void subscribe_to_notifications();
   void handle_connection_opened(const esp_ble_gattc_cb_param_t *param);
-  void handle_service_discovered(const esp_ble_gattc_cb_param_t *param);
+  static void handle_service_discovered(const esp_ble_gattc_cb_param_t *param);
   void handle_service_discovery_complete(esp_gatt_if_t gattc_if);
   void handle_notification(const esp_ble_gattc_cb_param_t *param);
   void handle_auth_complete(const esp_ble_gap_cb_param_t *param);

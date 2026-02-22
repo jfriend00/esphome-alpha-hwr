@@ -78,7 +78,7 @@ class TimeService {
    * @param dt ESPTime to set
    * @return Complete GENI frame ready to send
    */
-  std::vector<uint8_t> build_set_clock_packet(const ESPTime &dt);
+  static std::vector<uint8_t> build_set_clock_packet(const ESPTime &dt);
 
   /**
    * @brief Parse clock response data.
@@ -89,7 +89,7 @@ class TimeService {
    * @param len Data length
    * @return ESPTime parsed from response, or empty ESPTime on failure
    */
-  ESPTime parse_clock_response(const uint8_t *data, size_t len);
+  static ESPTime parse_clock_response(const uint8_t *data, size_t len);
 };
 
 }  // namespace services

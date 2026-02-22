@@ -3,7 +3,8 @@
 # ==============================================================================
 #
 # This package provides comprehensive UI controls for the Grundfos ALPHA HWR pump:
-# - Pump run/stop switch
+# - Pump enable/disable switch (controls whether pump operates in its configured mode)
+# - Pump motor active indicator (shows if motor is physically running)
 # - Schedule enable/disable switch
 # - Remote mode buttons (enable/disable)
 # - Control mode selector (10 operating modes)
@@ -22,31 +23,32 @@
 
 # Ensure switch and button components are included
 switch:
-  # Pump Run/Stop Control
-  # Toggle pump on/off based on motor speed
+  # Pump Enable/Disable Control
+  # Controls whether the pump is enabled to operate in its configured mode.
+  # When enabled, the motor may cycle on/off per the control mode (e.g., temperature range).
+  # When disabled, the pump is explicitly stopped and will not run.
   - platform: template
-    name: "Pump Running"
-    id: pump_running_switch
+    name: "Pump Enabled"
+    id: pump_enabled_switch
     icon: "mdi:pump"
     optimistic: false
     lambda: |-
-      float speed = id(motor_speed).state;
-      if (std::isnan(speed)) return {};
-      return speed > 0;
+      if (!id(pump).is_pump_enabled_valid()) return {};
+      return id(pump).is_pump_enabled();
     turn_on_action:
       - lambda: |-
-          ESP_LOGI("switch", "Starting pump (enabling remote mode first)...");
+          ESP_LOGI("switch", "Enabling pump (enabling remote mode first)...");
           id(pump).enable_remote();
           id(pump).pump_start();
-          // Immediate UI feedback while motor spins up
-          id(pump_running_switch).publish_state(true);
+          // Immediate UI feedback
+          id(pump_enabled_switch).publish_state(true);
     turn_off_action:
       - lambda: |-
-          ESP_LOGI("switch", "Stopping pump...");
+          ESP_LOGI("switch", "Disabling pump...");
           id(pump).pump_stop();
-          // Immediate UI feedback while motor spins down
-          id(pump_running_switch).publish_state(false);
-  
+          // Immediate UI feedback
+          id(pump_enabled_switch).publish_state(false);
+
   # Schedule Enable/Disable Control
   - platform: template
     name: "Schedule Enabled"
@@ -464,3 +466,16 @@ number:
 
 
 
+binary_sensor:
+  # Pump Motor Active (read-only indicator)
+  # Shows whether the motor is physically spinning. In temperature range or
+  # cycle time modes, this will toggle on/off as the pump maintains setpoints.
+  - platform: template
+    name: "Pump Motor Active"
+    id: pump_motor_active
+    icon: "mdi:engine"
+    device_class: running
+    lambda: |-
+      float speed = id(motor_speed).state;
+      if (std::isnan(speed)) return {};
+      return speed > 0;
