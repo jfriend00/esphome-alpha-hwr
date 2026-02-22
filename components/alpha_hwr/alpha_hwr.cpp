@@ -217,7 +217,7 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
           // Update last sync time sensor
           if (this->last_clock_sync_sensor_) {
             time_t now = ::time(nullptr);
-            struct tm *tm_info = localtime(&now);
+            const struct tm *tm_info = localtime(&now);
             char buf[32];
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
             this->last_clock_sync_sensor_->publish_state(buf);
@@ -337,7 +337,7 @@ void AlphaHwrComponent::check_and_sync_time() {
         // Update last sync time sensor
         if (this->last_clock_sync_sensor_) {
           time_t now = ::time(nullptr);
-          struct tm *tm_info = localtime(&now);
+          const struct tm *tm_info = localtime(&now);
           char buf[32];
           strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
           this->last_clock_sync_sensor_->publish_state(buf);

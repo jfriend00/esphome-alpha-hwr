@@ -38,7 +38,7 @@ bool BLEConnectionManager::is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDev
   }
   
   // Secondary Discovery Method: Check for service UUID
-  for (auto &svc_uuid : device.get_service_uuids()) {
+  for (const auto &svc_uuid : device.get_service_uuids()) {
     if (svc_uuid == service_uuid) {
       ESP_LOGI(TAG, "Found ALPHA HWR pump via service UUID");
       return true;

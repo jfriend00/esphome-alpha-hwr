@@ -970,9 +970,8 @@ void ScheduleService::read_single_events_async(
     std::function<void(bool, const std::vector<SingleEvent> &)> on_complete) {
   if (!this->session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot read single events: session not ready");
-    std::vector<SingleEvent> empty;
     if (on_complete)
-      on_complete(false, empty);
+      on_complete(false, std::vector<SingleEvent>{});
     return;
   }
 

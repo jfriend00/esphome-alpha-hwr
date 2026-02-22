@@ -490,7 +490,7 @@ class ControlService {
    * @param mapping Output mapping (mode byte + suffix)
    * @return True if mode supported in Class 10
    */
-  bool get_class10_mapping(ControlMode mode, ControlModeMapping &mapping);
+  static bool get_class10_mapping(ControlMode mode, ControlModeMapping &mapping);
 };
 
 }  // namespace services

@@ -438,7 +438,7 @@ public:
    * are identical (06:00)"
    * - "Overlap detected: Monday layer 0: 06:00-08:00 overlaps with 07:00-09:00"
    */
-  bool validate_entries(const std::vector<ScheduleEntry> &entries,
+  static bool validate_entries(const std::vector<ScheduleEntry> &entries,
                         std::vector<std::string> *errors);
 
   // -------------------------------------------------------------------------
@@ -467,7 +467,7 @@ public:
    * Note: Entries are automatically sorted by day and time. Only enabled
    * entries are displayed.
    */
-  bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries,
+  static bool get_schedule_display_string(const std::vector<ScheduleEntry> &entries,
                                    std::string *result);
 
   // -------------------------------------------------------------------------

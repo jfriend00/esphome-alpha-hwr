@@ -104,8 +104,8 @@ size_t build_command_info(uint8_t class_byte, uint32_t register_addr,
   }
   
   // OpSpec: INFO operation (bits 7-6 = 00), length = register bytes
-  const uint8_t OS_INFO = 0;  // Operation code for INFO
-  uint8_t op_length_byte = (OS_INFO << 6) | reg_len;
+  // OS_INFO = 0x00, so OpSpec byte is just the register length
+  uint8_t op_length_byte = reg_len;
   
   // Calculate frame length
   size_t length = 1 + 1 + 1 + 1 + reg_len;  // ServiceID + Source + Class + OpSpec + Register

@@ -54,8 +54,7 @@ void HistoryService::read_trends_async(
     std::function<void(bool, const std::vector<TrendSeries> &)> on_complete) {
   if (!session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot read history: session not ready");
-    std::vector<TrendSeries> empty;
-    if (on_complete) on_complete(false, empty);
+    if (on_complete) on_complete(false, std::vector<TrendSeries>{});
     return;
   }
 
@@ -156,8 +155,7 @@ void HistoryService::read_cycle_timestamps_async(
     int count, std::function<void(bool, const std::vector<uint32_t> &)> on_complete) {
   if (!session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot read cycle timestamps: session not ready");
-    std::vector<uint32_t> empty;
-    if (on_complete) on_complete(false, empty);
+    if (on_complete) on_complete(false, std::vector<uint32_t>{});
     return;
   }
 

@@ -87,7 +87,7 @@ class SensorPublisher {
   void set_voltage_dc_sensor(sensor::Sensor *sensor) { voltage_dc_sensor_ = sensor; }
   void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
-  void set_outlet_pressure_sensor(sensor::Sensor *sensor) { /* Removed: HWR pump lacks this sensor */ }
+  static void set_outlet_pressure_sensor(sensor::Sensor * /*sensor*/) { /* Removed: HWR pump lacks this sensor */ }
 
 #ifdef USE_TEXT_SENSOR
   void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { alarms_sensor_ = sensor; }
@@ -165,7 +165,7 @@ class SensorPublisher {
 #endif
 
   // Helper to format code list as comma-separated string
-  std::string format_codes(const std::vector<uint16_t>& codes);
+  static std::string format_codes(const std::vector<uint16_t>& codes);
 
   // Logging tag
   static constexpr const char* TAG = "alpha_hwr.publisher";

@@ -46,7 +46,7 @@ class TelemetryService {
   /**
    * Constructor
    */
-  TelemetryService(core::Transport &transport);
+  explicit TelemetryService(core::Transport &transport);
 
   /**
    * Destructor

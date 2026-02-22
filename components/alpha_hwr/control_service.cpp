@@ -423,7 +423,7 @@ bool ControlService::enable_remote_mode() {
 
    // Class 3: 03 C1 07
    // Reference: control.py lines 329-332
-   uint8_t apdu[3] = {0x03, 0xC1, 0x07};
+   const uint8_t apdu[3] = {0x03, 0xC1, 0x07};
    
    uint8_t packet_raw[32];
    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
@@ -450,7 +450,7 @@ bool ControlService::enable_remote_mode() {
 
    // Class 3: 03 C1 06
    // Reference: control.py lines 358-361
-   uint8_t apdu[3] = {0x03, 0xC1, 0x06};
+   const uint8_t apdu[3] = {0x03, 0xC1, 0x06};
    
    uint8_t packet_raw[32];
    size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
@@ -512,7 +512,6 @@ void ControlService::send_configuration_commit() {
 bool ControlService::send_control_request(ControlMode mode, bool start, float setpoint) {
   // Reference: control.py::_send_control_request() lines 233-284
   // Payload: [2F 01 00 00 07 00][Flag][Mode][Suffix/Setpoint(4)]
-  uint8_t mode_val = static_cast<uint8_t>(mode);
 
   ControlModeMapping mapping;
   if (!get_class10_mapping(mode, mapping)) {
@@ -859,7 +858,7 @@ void ControlService::set_cycle_time_control_async(uint8_t on_minutes, uint8_t of
   // Reference: control.py::set_cycle_time_control() lines 1010-1055
   auto write_cycle_config = [this, on_minutes, off_minutes, callback]() {
     // Payload: [00 00][OFF_min][01 42 02][ON_min][FB]  (8 bytes)
-    uint8_t struct_payload[8] = {
+    const uint8_t struct_payload[8] = {
       0x00, 0x00,           // Header
       off_minutes,          // Byte 2: OFF time
       0x01, 0x42, 0x02,     // Fixed magic bytes

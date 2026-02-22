@@ -127,8 +127,8 @@ public:
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) {
     sensor_publisher_.set_inlet_pressure_sensor(sensor);
   }
-  void set_outlet_pressure_sensor(
-      sensor::Sensor *sensor) { /* Removed: HWR pump lacks this sensor */ }
+  static void set_outlet_pressure_sensor(
+      sensor::Sensor * /*sensor*/) { /* Removed: HWR pump lacks this sensor */ }
   void set_pairing_status_binary_sensor(binary_sensor::BinarySensor *sensor) {
     pairing_status_sensor_ = sensor;
   }
@@ -496,7 +496,8 @@ public:
             if (this->event_log_text_sensor_) {
               std::string display = event_log_service_.format_display();
               if (display.size() > 255) {
-                display = display.substr(0, 252) + "...";
+                display.resize(252);
+                display += "...";
               }
               this->event_log_text_sensor_->publish_state(display);
             }
@@ -517,7 +518,8 @@ public:
             if (this->history_text_sensor_) {
               std::string display = history_service_.format_display();
               if (display.size() > 255) {
-                display = display.substr(0, 252) + "...";
+                display.resize(252);
+                display += "...";
               }
               this->history_text_sensor_->publish_state(display);
             }
@@ -542,7 +544,7 @@ public:
               std::string display;
               for (const auto &ts : timestamps) {
                 time_t t = ts;
-                struct tm *tm_info = localtime(&t);
+                const struct tm *tm_info = localtime(&t);
                 char buf[32];
                 strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", tm_info);
                 if (!display.empty())
@@ -550,7 +552,8 @@ public:
                 display += buf;
               }
               if (display.size() > 255) {
-                display = display.substr(0, 252) + "...";
+                display.resize(252);
+                display += "...";
               }
               this->cycle_timestamps_text_sensor_->publish_state(display);
             }
@@ -704,7 +707,8 @@ public:
 
     // Safety: HA limits entity state to 255 characters
     if (json.size() > 255) {
-      json = json.substr(0, 252) + "...";
+      json.resize(252);
+      json += "...";
       ESP_LOGW(TAG, "Schedule JSON truncated to 255 chars");
     }
 

@@ -121,7 +121,7 @@ void Transport::send_command(const std::vector<uint8_t>& packet, uint16_t expect
   ESP_LOGV(TAG, "Command queued (queue size: %zu)", this->command_queue_.size());
 }
 
-bool Transport::is_frame_start(uint8_t byte) const {
+bool Transport::is_frame_start(uint8_t byte) {
   return (byte == FRAME_START_RESPONSE || byte == FRAME_START_REQUEST);
 }
 
@@ -454,11 +454,7 @@ bool Transport::try_dispatch_response(const uint8_t* data, size_t len) {
     if (it->object_id == packet_obj_id && it->sub_id == packet_sub_id) {
       ESP_LOGV(TAG, "Response handler matched for Object %d SubID %d", packet_obj_id, packet_sub_id);
 
-      // Extract payload: skip header (10 bytes) and CRC (2 bytes)
-      const uint8_t* payload = data + 10;
-      size_t payload_len = len - 12;
-
-      // Invoke callback
+      // Invoke callback with payload (header already stripped at line 271)
       if (it->callback) {
         it->callback(payload, payload_len);
         ESP_LOGV(TAG, "Response handler invoked with %d bytes payload", payload_len);
