@@ -12,6 +12,7 @@
 #include <iostream>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 // Test result tracking (same framework as test_protocol.cpp)
 int tests_passed = 0;
