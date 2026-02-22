@@ -1,5 +1,6 @@
 # Compiled binaries (test executables)
 test_protocol
+test_control_state
 calc_test_crcs
 verify_crc
 

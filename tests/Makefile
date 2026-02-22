@@ -6,14 +6,17 @@ CXXFLAGS = -std=c++11 -Wall -Wextra -O2 -I.
 LDFLAGS =
 
 # Test executables
-TESTS = test_protocol
+TESTS = test_protocol test_control_state
 
 # Default target
 all: $(TESTS)
 
-# Build test executable
+# Build test executables
 test_protocol: test_protocol.cpp protocol.h
 	$(CXX) $(CXXFLAGS) test_protocol.cpp -o test_protocol $(LDFLAGS)
+
+test_control_state: test_control_state.cpp
+	$(CXX) $(CXXFLAGS) test_control_state.cpp -o test_control_state $(LDFLAGS)
 
 # Run tests
 test: $(TESTS)
@@ -21,6 +24,11 @@ test: $(TESTS)
 	@echo "Running Protocol Tests..."
 	@echo "=========================================="
 	@./test_protocol
+	@echo ""
+	@echo "=========================================="
+	@echo "Running Control State Tests..."
+	@echo "=========================================="
+	@./test_control_state
 
 # Alternative targets for specific compilers
 test-gcc: CXX = g++
