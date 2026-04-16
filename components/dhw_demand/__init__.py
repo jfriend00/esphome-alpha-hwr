@@ -46,6 +46,8 @@ CONF_INLET_PRESSURE_DEMAND_FLOOR = "inlet_pressure_demand_floor"
 CONF_PUMP_FLOW_COLLAPSE_THRESHOLD = "pump_flow_collapse_threshold"
 CONF_MOTOR_CURRENT_SPIKE_THRESHOLD = "motor_current_spike_threshold"
 CONF_PUMP_POWER_SPIKE_THRESHOLD = "pump_power_spike_threshold"
+CONF_PUMP_HEAD_RATE = "pump_head_rate"
+CONF_PUMP_HEAD_RATE_THRESHOLD = "pump_head_rate_threshold"
 CONF_FLOW_LATCH_SECONDS = "flow_latch_seconds"
 CONF_SESSION_GAP_TOLERANCE_SECONDS = "session_gap_tolerance_seconds"
 
@@ -83,6 +85,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_TANK_LOWER_TEMP): cv.use_id(sensor.Sensor),
             cv.Optional(CONF_DHW_CHARGE): cv.use_id(sensor.Sensor),
             cv.Optional(CONF_DHW_IN_USE): cv.use_id(sensor.Sensor),
+            cv.Optional(CONF_PUMP_HEAD_RATE): cv.use_id(sensor.Sensor),
 
             # ── Detection thresholds ─────────────────────────────────────────
             cv.Optional(CONF_PUMP_OFF_CURRENT_THRESHOLD, default=0.03):
@@ -102,6 +105,8 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_MOTOR_CURRENT_SPIKE_THRESHOLD, default=0.001):
                 cv.positive_float,
             cv.Optional(CONF_PUMP_POWER_SPIKE_THRESHOLD, default=5.0):
+                cv.positive_float,
+            cv.Optional(CONF_PUMP_HEAD_RATE_THRESHOLD, default=3.0):
                 cv.positive_float,
             cv.Optional(CONF_FLOW_LATCH_SECONDS, default=30):
                 cv.positive_int,
@@ -145,6 +150,7 @@ async def to_code(config):
         CONF_TANK_LOWER_TEMP: "set_tank_lower_temp_sensor",
         CONF_DHW_CHARGE: "set_dhw_charge_sensor",
         CONF_DHW_IN_USE: "set_dhw_in_use_sensor",
+        CONF_PUMP_HEAD_RATE: "set_pump_head_rate_sensor",
     }
     for conf_key, setter in _input_map.items():
         if sens_id := config.get(conf_key):
@@ -170,6 +176,8 @@ async def to_code(config):
         config[CONF_MOTOR_CURRENT_SPIKE_THRESHOLD]))
     cg.add(var.set_pump_power_spike_threshold(
         config[CONF_PUMP_POWER_SPIKE_THRESHOLD]))
+    cg.add(var.set_pump_head_rate_threshold(
+        config[CONF_PUMP_HEAD_RATE_THRESHOLD]))
     cg.add(var.set_flow_latch_seconds(
         config[CONF_FLOW_LATCH_SECONDS]))
     cg.add(var.set_session_gap_tolerance_seconds(

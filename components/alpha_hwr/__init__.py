@@ -33,6 +33,7 @@ CONF_VOLTAGE = "voltage"
 CONF_VOLTAGE_DC = "voltage_dc"
 CONF_CURRENT = "current"
 CONF_INLET_PRESSURE = "inlet_pressure"
+CONF_HEAD_RATE = "head_rate"
 CONF_PAIRING_STATUS = "pairing_status"
 CONF_ENABLE_PAIRING = "enable_pairing"
 CONF_ALARMS = "alarms"
@@ -122,6 +123,13 @@ CONFIG_SCHEMA = cv.Schema(
             accuracy_decimals=2,
             device_class="pressure",
             state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_HEAD_RATE): sensor.sensor_schema(
+            unit_of_measurement="kPa/s",
+            accuracy_decimals=3,
+            state_class=STATE_CLASS_MEASUREMENT,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            icon="mdi:gauge",
         ),
         cv.Optional(CONF_PAIRING_STATUS): binary_sensor.binary_sensor_schema(
             device_class=DEVICE_CLASS_CONNECTIVITY,
@@ -254,6 +262,10 @@ async def to_code(config):
     if CONF_INLET_PRESSURE in config:
         sens = await sensor.new_sensor(config[CONF_INLET_PRESSURE])
         cg.add(var.set_inlet_pressure_sensor(sens))
+
+    if CONF_HEAD_RATE in config:
+        sens = await sensor.new_sensor(config[CONF_HEAD_RATE])
+        cg.add(var.set_head_rate_sensor(sens))
 
     if CONF_PAIRING_STATUS in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_PAIRING_STATUS])

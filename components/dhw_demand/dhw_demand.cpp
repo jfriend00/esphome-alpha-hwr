@@ -12,6 +12,19 @@ void DhwDemandComponent::setup() {
     flow_buf_[i] = NAN;
   }
   prev_tick_ms_ = millis();
+
+  // Register callback so head_rate_peak_ is updated at notification rate (~1–2 Hz).
+  // Using the peak within each 10s window ensures transients aren't missed at tick time.
+  if (pump_head_rate_ != nullptr) {
+    pump_head_rate_->add_on_state_callback([this](float rate) {
+      if (!std::isnan(rate)) {
+        float abs_rate = std::fabs(rate);
+        if (abs_rate > head_rate_peak_)
+          head_rate_peak_ = abs_rate;
+      }
+    });
+  }
+
   ESP_LOGI(TAG, "DHW Demand Detector initialised (update interval %.0f s)",
            get_update_interval() / 1000.0f);
 }
@@ -36,6 +49,8 @@ void DhwDemandComponent::dump_config() {
                 motor_current_spike_threshold_);
   ESP_LOGCONFIG(TAG, "    pump_power_spike: %.1f W/s",
                 pump_power_spike_threshold_);
+  ESP_LOGCONFIG(TAG, "    pump_head_rate: %.1f kPa/s",
+                pump_head_rate_threshold_);
   ESP_LOGCONFIG(TAG, "    flow_latch: %d s", flow_latch_seconds_);
   ESP_LOGCONFIG(TAG, "    session_gap_tolerance: %d s",
                 session_gap_tolerance_seconds_);
@@ -88,8 +103,9 @@ bool DhwDemandComponent::flow_latch_active_() {
 
 bool DhwDemandComponent::detect_pump_on_(float motor_speed,
                                           float motor_current) {
+  // Threshold mirrors Python: pump_off = motor_speed < 10 RPM
   if (!std::isnan(motor_speed))
-    return motor_speed > 0.0f;
+    return motor_speed >= 10.0f;
   if (!std::isnan(motor_current))
     return motor_current >= pump_off_current_threshold_;
   return false;
@@ -179,7 +195,8 @@ float DhwDemandComponent::detect_pump_on_continuation_(
 
 float DhwDemandComponent::detect_pump_on_deterministic_(
     float inlet_deriv, float inlet_psi, float pump_flow,
-    float current_deriv, float power_deriv, const char **method_out) {
+    float current_deriv, float power_deriv, float head_rate_peak,
+    const char **method_out) {
   int votes = 0;
 
   // Signal 1: Pressure transient (valve-open shock)
@@ -204,13 +221,19 @@ float DhwDemandComponent::detect_pump_on_deterministic_(
   if (!std::isnan(power_deriv) && power_deriv > pump_power_spike_threshold_)
     votes++;
 
+  // Signal 6: Head-pressure rate spike — corroborating only.
+  // Captured at ~1–2 Hz via callback so valve-open transients aren't missed.
+  // Only counts when at least one other signal has voted to avoid false triggers.
+  if (votes >= 1 && head_rate_peak > pump_head_rate_threshold_)
+    votes++;
+
   if (votes == 0)
     return 0.0f;
 
-  // Confidence scales with vote count (see Python conf_map).
-  static const float conf_map[6] = {0.0f, 0.50f, 0.65f, 0.80f, 0.90f, 0.95f};
-  float confidence =
-      (votes < 6) ? conf_map[votes] : 1.0f;
+  // Confidence scales with vote count; cap at 0.95 (votes not independent).
+  // Index 0 unused; indices 1–6 map 1–5+ votes.
+  static const float conf_map[7] = {0.0f, 0.50f, 0.65f, 0.80f, 0.90f, 0.95f, 0.95f};
+  float confidence = (votes < 7) ? conf_map[votes] : 0.95f;
 
   *method_out = "deterministic_pump_on";
   return confidence;
@@ -297,20 +320,61 @@ void DhwDemandComponent::update() {
   flow_buf_head_ = (flow_buf_head_ + 1) % DROPLET_BUF_SIZE;
 
   // ── 4. Determine pump state ───────────────────────────────────────────────
-  bool pump_on = detect_pump_on_(motor_speed, motor_current);
+  // When both motor sensors are NaN (BLE disconnected), forward-fill the last
+  // known pump state.  This mirrors Python DemandDetector._last_row() which
+  // forward-fills all columns from the most recent non-null row in the window.
+  // Default is "on" (conservative): avoids entering the pump-OFF branch when
+  // the pump may already be running and the Droplet is showing recirculation
+  // flow (~2.2 GPM), which would cause a false "deterministic_flow" detection.
+  bool pump_state_known =
+      !std::isnan(motor_speed) || !std::isnan(motor_current);
+  bool pump_on;
+  if (pump_state_known) {
+    pump_on = detect_pump_on_(motor_speed, motor_current);
+    last_known_pump_on_ = pump_on;
+    pump_state_ever_known_ = true;
+  } else {
+    // Unknown state — forward-fill or use conservative default.
+    pump_on = pump_state_ever_known_ ? last_known_pump_on_ : true;
+    ESP_LOGD(TAG, "Pump state unknown (BLE gap) — forward-filling as %s",
+             pump_on ? "ON" : "OFF");
+  }
 
   // Track pump-on transition for continuation detection.
-  // We use prev_flow_ (captured *before* this tick) so the stored
-  // value reflects the last pump-off reading rather than the current pump-on
-  // reading.  observed_pump_off_ guards against a false trigger at boot when
-  // prev_pump_on_ starts as false but the pump is already running.
-  if (!pump_on) {
+  //
+  // pump_confirmed_off mirrors Python's forward-fill + "not np.isnan(spd) and spd < 10":
+  //   - True when a real sensor reading shows pump off.
+  //   - True when forward-filling from a last-known-OFF state
+  //     (Python would fill speed = 0 RPM → pump_off = True for those rows).
+  //   - False when defaulting to ON at boot or when last-known was ON.
+  //     (Conservative: prevents the Droplet's recirculation flow from
+  //      triggering a pump-off false positive through the NaN gap.)
+  //
+  // observed_pump_off_ guards against a false trigger at boot when prev_pump_on_
+  // starts as false but the pump is already running.  Only set it on a confirmed
+  // off reading so that a BLE reconnect (NaN → known-on) does not falsely prime
+  // the continuation path.
+  bool pump_confirmed_off;
+  if (pump_state_known) {
+    pump_confirmed_off = !pump_on;
+  } else {
+    // Forward-filled: treat as confirmed-off only if last-known was off.
+    pump_confirmed_off = pump_state_ever_known_ && !last_known_pump_on_;
+  }
+  if (pump_confirmed_off) {
     observed_pump_off_ = true;
     pre_pump_on_flow_ = NAN;  // Clear stale transition state
   }
-  if (!prev_pump_on_ && pump_on && observed_pump_off_) {
+
+  // Only capture pre_pump_on_flow_ when the PREVIOUS tick was confirmed off.
+  // This mirrors Python's "not np.isnan(spd) and spd < 10" check which
+  // requires a pump-off reading (real or forward-filled from known-OFF) to
+  // count as pre-pump demand evidence.  NaN-gap ticks where the last-known
+  // state was ON do not qualify, preventing false continuation detections
+  // on BLE reconnect when the pump was already running through the gap.
+  if (!prev_pump_on_ && pump_on && observed_pump_off_ && prev_pump_confirmed_off_) {
     // Pump just turned ON — record the Droplet flow from the previous tick
-    // (the last pump-off observation).
+    // (the last confirmed pump-off observation).
     pre_pump_on_flow_ = prev_flow_;
     ESP_LOGD(TAG, "Pump turned ON; pre-pump flow: %.2f GPM",
              std::isnan(pre_pump_on_flow_) ? -1.0f
@@ -318,6 +382,7 @@ void DhwDemandComponent::update() {
   }
   prev_flow_ = flow;
   prev_pump_on_ = pump_on;
+  prev_pump_confirmed_off_ = pump_confirmed_off;
 
   // ── 5. Run detection branch ───────────────────────────────────────────────
   bool demand = false;
@@ -350,7 +415,8 @@ void DhwDemandComponent::update() {
     } else {
       confidence = detect_pump_on_deterministic_(inlet_deriv, inlet_psi,
                                                   pump_flow, current_deriv,
-                                                  power_deriv, &method);
+                                                  power_deriv, head_rate_peak_,
+                                                  &method);
       if (confidence > 0.0f) {
         demand = true;
         demand_level = 0.3f;  // Moderate: hydraulic signals are indirect
@@ -369,6 +435,9 @@ void DhwDemandComponent::update() {
   // ── 7. Publish & session tracking ─────────────────────────────────────────
   publish_result_(demand, confidence, demand_level, method);
   update_session_(demand);
+
+  // Reset peak tracker for next window (callback will repopulate it between ticks)
+  head_rate_peak_ = 0.0f;
 
   ESP_LOGV(TAG,
            "tick: pump=%s demand=%s conf=%.2f level=%.2f method=%s "

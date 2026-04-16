@@ -8,6 +8,7 @@
  */
 
 #include "sensor_publisher.h"
+#include "esphome/core/hal.h"
 #include <cmath>
 
 namespace esphome {
@@ -77,6 +78,33 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
   // Publish head pressure (convert meters of head to kPa for HA auto-conversion)
   if (flow.has_head && head_sensor_ != nullptr) {
     head_sensor_->publish_state(flow.head_m * 9.80665f);
+  }
+
+  // Compute and publish head pressure rate of change (kPa/s) at notification rate (~1–2 Hz).
+  // This high-frequency derivative captures hydraulic shocks (valve openings) that the
+  // 10-second polling loop would miss.
+  if (flow.has_head) {
+    float head_kpa = flow.head_m * 9.80665f;
+    uint32_t now_ms = millis();
+
+    if (!std::isnan(prev_head_kpa_) && prev_head_time_ms_ != 0) {
+      float dt_s = (float)(now_ms - prev_head_time_ms_) / 1000.0f;
+
+      if (dt_s > 3.0f) {
+        // Large gap (e.g., BLE reconnect): baseline is stale — reset without publishing.
+        ESP_LOGD(TAG, "Head rate: resetting baseline after %.1f s gap", dt_s);
+      } else if (dt_s >= 0.1f) {
+        float rate_kpa_s = (head_kpa - prev_head_kpa_) / dt_s;
+        ESP_LOGV(TAG, "Head rate: %.3f kPa/s (dt=%.2f s)", rate_kpa_s, dt_s);
+        if (head_rate_sensor_ != nullptr) {
+          head_rate_sensor_->publish_state(rate_kpa_s);
+        }
+      }
+      // dt < 0.1s: duplicate or jitter — skip without updating baseline
+    }
+
+    prev_head_kpa_ = head_kpa;
+    prev_head_time_ms_ = now_ms;
   }
   
   // Publish inlet pressure (often NaN on HWR models)

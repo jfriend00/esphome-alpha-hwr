@@ -88,6 +88,7 @@ class SensorPublisher {
   void set_current_sensor(sensor::Sensor *sensor) { current_sensor_ = sensor; }
   void set_inlet_pressure_sensor(sensor::Sensor *sensor) { inlet_pressure_sensor_ = sensor; }
   static void set_outlet_pressure_sensor(sensor::Sensor * /*sensor*/) { /* Removed: HWR pump lacks this sensor */ }
+  void set_head_rate_sensor(sensor::Sensor *sensor) { head_rate_sensor_ = sensor; }
 
 #ifdef USE_TEXT_SENSOR
   void set_alarms_text_sensor(text_sensor::TextSensor *sensor) { alarms_sensor_ = sensor; }
@@ -158,6 +159,11 @@ class SensorPublisher {
   sensor::Sensor *voltage_dc_sensor_{nullptr};
   sensor::Sensor *current_sensor_{nullptr};
   sensor::Sensor *inlet_pressure_sensor_{nullptr};
+  sensor::Sensor *head_rate_sensor_{nullptr};
+
+  // State for head-pressure derivative (computed at ~1–2 Hz from passive notifications)
+  float prev_head_kpa_{NAN};
+  uint32_t prev_head_time_ms_{0};
 
 #ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *alarms_sensor_{nullptr};

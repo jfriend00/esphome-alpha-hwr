@@ -44,6 +44,7 @@ class DhwDemandComponent : public PollingComponent {
   void set_tank_lower_temp_sensor(sensor::Sensor *s) { tank_lower_temp_ = s; }
   void set_dhw_charge_sensor(sensor::Sensor *s) { dhw_charge_ = s; }
   void set_dhw_in_use_sensor(sensor::Sensor *s) { dhw_in_use_ = s; }
+  void set_pump_head_rate_sensor(sensor::Sensor *s) { pump_head_rate_ = s; }
 
   // ── Threshold setters ──────────────────────────────────────────────────────
   void set_pump_off_current_threshold(float v) {
@@ -71,6 +72,7 @@ class DhwDemandComponent : public PollingComponent {
   void set_session_gap_tolerance_seconds(int v) {
     session_gap_tolerance_seconds_ = v;
   }
+  void set_pump_head_rate_threshold(float v) { pump_head_rate_threshold_ = v; }
 
  protected:
   // ── Detection helpers ──────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ class DhwDemandComponent : public PollingComponent {
                                      const char **method_out);
   float detect_pump_on_deterministic_(float inlet_deriv, float inlet_psi,
                                       float pump_flow, float current_deriv,
-                                      float power_deriv,
+                                      float power_deriv, float head_rate_peak,
                                       const char **method_out);
 
   void publish_result_(bool demand, float confidence, float demand_level,
@@ -112,6 +114,7 @@ class DhwDemandComponent : public PollingComponent {
   sensor::Sensor *tank_lower_temp_{nullptr};
   sensor::Sensor *dhw_charge_{nullptr};
   sensor::Sensor *dhw_in_use_{nullptr};
+  sensor::Sensor *pump_head_rate_{nullptr};
 
   // ── Thresholds (defaults match Python DetectorConfig) ─────────────────────
   float pump_off_current_threshold_{0.03f};    // A
@@ -123,8 +126,12 @@ class DhwDemandComponent : public PollingComponent {
   float pump_flow_collapse_threshold_{0.2f};   // GPM
   float motor_current_spike_threshold_{0.001f};  // A/s
   float pump_power_spike_threshold_{5.0f};     // W/s
+  float pump_head_rate_threshold_{3.0f};       // kPa/s
   int flow_latch_seconds_{30};                 // s
   int session_gap_tolerance_seconds_{60};      // s
+
+  // ── Head-rate peak tracker (updated by callback at ~1–2 Hz; reset per tick) ─
+  float head_rate_peak_{0.0f};  // Maximum |kPa/s| seen since last update()
 
   // ── Circular buffer — Droplet flow (30 samples × 10 s = 5 min) ───────────
   float flow_buf_[DROPLET_BUF_SIZE];
@@ -137,11 +144,21 @@ class DhwDemandComponent : public PollingComponent {
   float prev_dhw_charge_{NAN};
   float prev_pump_power_{NAN};
 
+  // ── Pump state tracking ───────────────────────────────────────────────────
+  // When both motor sensors are NaN (BLE disconnect), forward-fill the last
+  // known pump state instead of defaulting to "off".  Matches Python's
+  // _last_row() behaviour which fills NaN rows from the most recent valid row.
+  // Default: true (conservative — avoids false pump-off detections at boot or
+  // after a long disconnect when the pump may already be running).
+  bool last_known_pump_on_{true};
+  bool pump_state_ever_known_{false};
+
   // ── Pump-on transition tracking (for continuation detection) ──────────────
   bool prev_pump_on_{false};
-  bool observed_pump_off_{false};       // True once we have seen at least one pump-off tick
+  bool observed_pump_off_{false};       // True once we have seen a CONFIRMED pump-off tick
+  bool prev_pump_confirmed_off_{false}; // True when previous tick had confirmed pump-off
   float prev_flow_{NAN};           // Flow from the *previous* tick
-  float pre_pump_on_flow_{NAN};    // Flow captured from the last pump-off tick
+  float pre_pump_on_flow_{NAN};    // Flow captured from the last confirmed pump-off tick
 
   // ── Tick timing ───────────────────────────────────────────────────────────
   uint32_t prev_tick_ms_{0};

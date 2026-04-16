@@ -77,6 +77,10 @@ alpha_hwr:
      name: "Flow Rate"
    head:
      name: "Head Pressure"
+   head_rate:
+     id: pump_head_rate_sensor
+     name: "Head Pressure Rate"
+     entity_category: diagnostic
    
    # Pressure Sensors (requires pairing)
    inlet_pressure:

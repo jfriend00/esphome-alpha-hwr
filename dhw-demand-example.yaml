@@ -38,10 +38,18 @@ packages:
   alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
   dhw_demand: github://eman/esphome-alpha-hwr/packages/dhw_demand_detector.yaml@main
 
+# Override component source to use local development files instead of GitHub cache.
+# Remove or comment this block when deploying from the published GitHub packages.
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha_hwr, dhw_demand]
+
 esp32:
   board: esp32dev
   framework:
-    type: arduino
+    type: esp-idf
 
 wifi:
   ssid: !secret wifi_ssid
@@ -68,6 +76,8 @@ alpha_hwr:
     id: flow_rate_sensor
   inlet_pressure:
     id: inlet_pressure_sensor
+  head_rate:
+    id: pump_head_rate_sensor
 
 # ── Unit-converted pump sensor intermediates ──────────────────────────────────
 #
@@ -111,5 +121,6 @@ dhw_demand:
   inlet_pressure: dhw_inlet_pressure_psi
   pump_flow:      dhw_pump_flow_gpm
   pump_power:     pump_power_sensor
+  pump_head_rate: pump_head_rate_sensor
   # Optional: comment out if no NWP500
   dhw_in_use:     dhw_in_use_flag

@@ -82,7 +82,7 @@ Note: `hwr-pump-example.yaml` is for documentation and compilation testing only 
 * **PR/Commit Messages**: Clearly state what changed and what was tested.
 * **README updates**: If a new feature is added (e.g., a "Boost Mode" switch), update the `README.md` and `hwr-pump-example.yaml` Config section immediately.
 
-## 6. Architecture: Layered Service-Based Design ✅
+## 6. Architecture: Layered Service-Based Design
 
 The ESPHome component follows the same layered, service-based architecture as the [Python Reference Implementation](reference/alpha-hwr/src/alpha_hwr). This architecture separates concerns, improves testability, and makes the codebase maintainable.
 
@@ -176,7 +176,7 @@ components/alpha_hwr/
 
 ## 7. Current Status & Implementation Progress
 
-### ✅ Completed Features
+### Completed Features
 
 #### Phase 1-2: Telemetry & Authentication (COMPLETE)
 
@@ -202,19 +202,6 @@ components/alpha_hwr/
 * [x] Schedule validation logic
 * [x] Write packet construction matches Python reference
 * [x] **Schedule write persistence** (RESOLVED via Non-Blocking Transaction Manager)
-
-### 🔄 Current Status: Component Fully Functional & Architecturally Aligned
-
-**Architecture Status:** ✅ **COMPLETE** - The component uses a robust, layered architecture with a non-blocking transaction manager that perfectly matches the Python reference implementation's logic while respecting ESPHome's single-threaded constraints.
-
-**What Works:**
-
-* **Non-Blocking BLE Transactions**: All operations use a command queue and FSM to prevent event loop starvation.
-* **Schedule Persistence**: Writes successfully persist to pump flash storage (verified via hardware read-back).
-* **Command Pacing**: Automatic 50ms delay between packets/fragments ensures pump processing time.
-* **Flexible Response Matching**: Handles pump firmware quirks (e.g., SubID 0 responses for non-zero requests).
-* **Full Telemetry**: All registers (Motor, Flow, Pressure, Temp, Alarms) are polled and published correctly.
-* **Bi-directional Control**: Start/Stop, Mode changes, and Schedule management are fully operational.
 
 ## 8. The Solution: Non-Blocking BLE Transaction Manager
 
@@ -263,541 +250,140 @@ The layered architecture is now in place. When adding new features:
 7. **Integration**: Hook the service into the main `AlphaHwrComponent` class (add accessors as needed).
 8. **Verify**: Compile `hwr-pump-example.yaml`, flash `hwr-pump.yaml`, and test on hardware.
 
-## 10. Development Session History
 
-### Session: 2026-02-11 - Part 2: Non-Blocking Transaction Manager & Schedule Persistence Success
+---
 
-**Goal:** Resolve schedule write persistence issue and implement robust BLE request-response transactions.
+## 10. Component: `dhw_demand` — DHW Demand Detector
 
-**What We Did:**
+### 10.1 Background & Motivation
 
-1. **Implemented Non-Blocking Transport Layer**
-   * Created a command queue (`std::deque<Command>`) in `core::Transport`.
-   * Implemented a 3-state FSM (`IDLE`, `SENDING_CHUNKS`, `AWAITING_RESPONSE`) in `loop()`.
-   * Added 50ms pacing between packet fragments and commands.
-   * Implemented chunked sending for large packets (53-byte schedules).
+The `components/dhw_demand` component addresses a fundamental ambiguity in hot-water recirculation systems: **a flow sensor in the DHW circuit cannot distinguish closed-loop recirculation from an occupant actually opening a fixture**. The Droplet D1 sensor sits inline in the DHW circuit and reports flow regardless of source — when the ALPHA HWR pump is running a nonzero reading may be recirculation only, demand only, or both simultaneously. The ALPHA HWR's internal flow sensor (0–0.53 GPM) is blind to demand when the pump is idle.
 
-2. **Resolved Schedule Persistence Blocker**
-   * Discovered that the pump requires active ACK consumption within a 3-second window to commit data to flash.
-   * Implemented asynchronous response matching by Object ID and Sub-ID.
-   * Handled the pump's `SubID 0` response quirk.
-   * **Verified:** Successfully wrote a test schedule and read it back from the pump's flash.
+The theoretical foundation is fully documented in the companion research project:
 
-3. **Service Integration & Cleanup**
-   * Refactored `TelemetryService`, `ControlService`, `ScheduleService`, and `Authentication` to use the unified `transport_.send_command()` API.
-   * Removed obsolete `WriteCallback` and `SchedulerCallback` patterns.
-   * Updated Home Assistant button lambdas to be asynchronous for better UI feedback.
+* **`docs/hot-water-research.md`** — exhaustive treatment of hydrodynamic and thermodynamic signatures that separate recirculation from genuine DHW demand. Key insight: the instant an occupant opens a valve the system topology changes from **closed-loop** to **open-loop**, producing measurable hydraulic transients (pressure drop, flow-rate collapse at the pump, current/power spike) that cannot be explained by normal recirculation.
+* **`docs/esp32-detector.md`** — describes how the detection algorithm is ported to an ESP32/ESPHome environment, including sensor requirements, memory footprint, threshold defaults, and the MQTT output format.
 
-**Current State:**
+**Design philosophy:** We take a **heuristic, threshold-based approach** — no ML, no model training, no InfluxDB dependency. Each physical signal votes independently; confidence is computed from vote weight and count. The thresholds are derived from observed hardware behaviour and can be tuned without reflashing via ESPHome `substitutions`.
 
-* **Device:** Fully operational and stable (10.0.1.86).
-* **Telemetry:** Streaming smoothly with paced polling.
-* **Schedules:** Persistence fixed; bi-directional management fully functional.
-* **Architecture:** Layered, service-based, and non-blocking.
+### 10.2 Architecture
 
+`DhwDemandComponent` is a standalone `PollingComponent` (default 10 s tick) in namespace `esphome::dhw_demand`. It has **no dependency on `alpha_hwr`** — pump telemetry sensors are wired in by the YAML config, so the component works whether the pump sensors come from `alpha_hwr` or any other source.
 
-### Session: 2026-02-11 - Part 3: Object 86 Sub 6 Response Parsing Fix
-
-**Goal:** Fix Object 86 Sub 6 (control mode read) which was timing out despite correct packet sending.
-
-**What We Did:**
-
-1. **Identified Response Parsing Bug**
-   * Discovered that Object/Sub-ID bytes were being parsed in reverse order
-   * Python reference shows frame structure: `[ObjH][ObjL][SubH][SubL]`
-   * C++ code was incorrectly parsing as: Sub-ID at bytes 6-7, Obj-ID at bytes 8-9
-   * Actually correct order: Obj-ID at bytes 6-7, Sub-ID at bytes 8-9
-
-2. **Applied Fix**
-   * Corrected byte parsing in `Transport::try_dispatch_response()` (two locations)
-   * Extended Object 86 timeout from 3s to 5s for slower reads
-   * Added comprehensive debug logging to trace Object 86 packet flow
-
-3. **Added Logging Infrastructure**
-   * Log full packet hex when sending Object 86 requests
-   * Log all Class 10 packets when awaiting Object 86 response
-   * Helps diagnose response matching issues
-
-**Current Discovery:**
-
-* **Parsing Fix:** ✓ Confirmed correct - swapped bytes 6-7 (Object) and 8-9 (Sub-ID)
-* **Object 86 Response:** Still timing out even with correct parsing
-  - Request packet sends correctly: `27 07 E7 F8 0A 03 56 00 06 3A A5`
-  - No response packets received during 5-second window
-  - Other Class 10 reads (schedules, telemetry) work perfectly
-  - **Hypothesis:** This specific pump instance (10.0.1.86) may not support Object 86 Sub 6 via BLE
-  - **Evidence:** Device successfully authenticates and reads other Class 10 objects
-
-**Next Steps:**
-
-1. Verify on different pump hardware or Python reference client
-2. Check if Object 86 requires different authentication level
-3. Possible fallback: Use Class 3 register-based mode reading instead
-4. Document Object 86 limitation if confirmed device-specific
-
-**Code Quality:**
-
-* Maintained layered architecture principles
-* Added non-invasive debug logging
-* Extended timeout respects protocol constraints
-* Ready for production with current telemetry/schedule functionality intact
-
-
-### Session: 2026-02-11 - Part 4: Control Mode via Passive Notifications (COMPLETE)
-
-**Goal:** Implement control mode reading using passive notifications instead of Object 86 Sub 6 queries.
-
-**Discovery:**
-
-After analyzing Python reference implementation and device logs, we discovered that:
-1. **The pump does NOT respond to Object 86 Sub 6 queries with unicast responses**
-2. **Instead, it sends PASSIVE NOTIFICATIONS automatically during/after authentication**
-3. These notifications use OpSpec 0x0E, Object 0x2F01, Sub 1
-4. Python's matcher function accepts ANY Class 10 packet (only checks `p[4] == 0x0A`)
-5. The actual data arrives in passive notifications sent by the pump autonomously
-
-**What We Did:**
-
-1. **Added Passive Notification Handler to TelemetryService**
-   * Modified `telemetry_service.cpp` to decode Object 0x2F01, Sub 1 notifications
-   * Extracts control mode byte, operation mode, and setpoint from payload
-   * Payload format: `[00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes float)]`
-
-2. **Added Control Mode Update Method to ControlService**
-   * Created `update_mode_from_notification(mode, operation_mode, setpoint)` method
-   * Updates internal `current_mode_` state from passive notifications
-   * Logs mode changes: `"Control mode updated from passive notification: <mode_name>"`
-
-3. **Connected Services**
-   * Added `set_control_service()` method to TelemetryService
-   * Updated `alpha_hwr.cpp` to link TelemetryService → ControlService
-   * Removed the failing `get_mode_async()` query from authentication sequence
-
-4. **Successfully Compiled and Deployed**
-   * Fixed function name (`decode_float_be` instead of `read_float_be`)
-   * Uploaded firmware to device (10.0.1.86)
-   * Code compiles cleanly and runs stably
-
-**Implementation Details:**
-
-```cpp
-// TelemetryService handles OpSpec 0x0E passive notifications
-case 0x0E:  // Passive notification
-  handle_passive_notification(data, len);
-  break;
-
-// Decodes Object 0x2F01, Sub 1 and calls:
-if (control_service_) {
-  control_service_->update_mode_from_notification(control_mode, operation_mode, setpoint);
-}
+```
+components/dhw_demand/
+├── __init__.py       # ESPHome config schema; all inputs/outputs/thresholds optional
+├── dhw_demand.h      # DhwDemandComponent class definition
+└── dhw_demand.cpp    # Detection logic, session tracking, publish helpers
 ```
 
-**Verification Status:**
+### 10.3 Sensor Inputs
 
-✅ **Code Complete**: All changes implemented and deployed
-✅ **Architecture**: Follows Python reference implementation 1:1
-✅ **Compilation**: Builds successfully, no errors
-✅ **Runtime**: Device stable, telemetry/schedules working normally
+All inputs are optional — missing sensors produce `NAN` and the affected detection paths are simply skipped.
 
-⏳ **Testing Pending**: Passive notifications only occur during authentication handshake. Device maintained BLE connection through restarts, so authentication didn't re-trigger. To fully verify:
-- Power cycle the pump (not ESP32) to force BLE disconnect
-- Monitor logs during authentication sequence
-- Look for: `"Control mode updated from passive notification: Temperature Range Control (op_mode=0, setpoint=XX.XX)"`
+#### Pump telemetry (sourced from `alpha_hwr` sensors)
 
-**Files Modified:**
+| Config key | Signal | Notes |
+|---|---|---|
+| `motor_speed` | RPM | Primary pump-state indicator |
+| `motor_current` | A | Fallback pump-state; current-spike derivative |
+| `inlet_pressure` | PSI | Pressure transient derivative; absolute low-pressure floor |
+| `pump_flow` | GPM | Pump-side flow collapse (reads 0 when pump is off) |
+| `pump_power` | W | Power-spike derivative |
 
-* `components/alpha_hwr/control_service.h` - Added `update_mode_from_notification()` declaration
-* `components/alpha_hwr/control_service.cpp` - Implemented mode update from notifications
-* `components/alpha_hwr/telemetry_service.h` - Added `set_control_service()` and forward declaration
-* `components/alpha_hwr/telemetry_service.cpp` - Added Object 0x2F01 Sub 1 handler, calls ControlService
-* `components/alpha_hwr/alpha_hwr.cpp` - Removed `get_mode_async()` query, linked services
+#### Supplementary sensors (fetched from Home Assistant via `platform: homeassistant`)
 
-**Outcome:**
+| Config key | Signal | Notes |
+|---|---|---|
+| `flow` | GPM | Droplet D1 inline DHW circuit meter; detects **both** recirculation and demand flow — only unambiguous when pump is off; **30-sample circular buffer** (5 min at 10 s grid) |
+| `tank_lower_temp` | °F | Tank thermal collapse derivative |
+| `dhw_charge` | % | DHW charge-drop derivative |
+| `dhw_in_use` | boolean (as float) | NWP500 native flag; corroborates demand when pump is off |
 
-✅ **COMPLETE** - Control mode is now read via passive notifications (the correct protocol method)
-✅ **VERIFIED** - Code matches Python reference implementation behavior
-✅ **DEPLOYED** - Firmware running on hardware (10.0.1.86)
-✅ **STABLE** - All existing functionality (telemetry, schedules, control) working normally
+### 10.4 Detection Algorithm
 
-The feature is production-ready. The next natural authentication cycle (pump power cycle or BLE disconnect) will trigger the passive notification and populate the control mode automatically.
+The tick runs in `update()` every 10 seconds. Steps:
 
+1. **Read sensors & compute derivatives** — `Δx/Δt` using actual elapsed ms so jitter in the update interval doesn't bias rates.
+2. **Push Droplet flow into 30-sample circular buffer** — used by the falling-edge latch.
+3. **Determine pump state** — `motor_speed > 0` preferred; `motor_current ≥ pump_off_current_threshold` fallback.
+4. **Run the appropriate detection branch** (pump-off or pump-on).
+5. **DHW-in-use confidence boost** — +0.05 if `nwp500_dhw_in_use` corroborates demand.
+6. **Publish results** and **update session tracking**.
 
-### Session: 2026-02-11 - Part 5: Device Information Service Implementation (COMPLETE)
+#### Pump-OFF branch
 
-**Goal:** Implement a DeviceInfoService to read device identification strings (serial number, software version, hardware version, BLE version, product name) using Class 7 string commands.
+When the pump is off the Droplet D1 reads only genuine demand flow, making it the unambiguous ground-truth signal. Three signals vote independently:
 
-**What We Did:**
+| Signal | Condition | Weight |
+|---|---|---|
+| Droplet flow | `flow > flow_threshold` (0.3 GPM) | 1.0 |
+| Thermal collapse | `Δtemp/Δt < −thermal_collapse_rate` (0.05 °F/s) | 0.9 |
+| Charge drop | `Δcharge/Δt < −dhw_charge_drop_rate` (0.005 %/s) AND tank not warming | 0.7 |
 
-1. **Created DeviceInfoService Infrastructure**
-   * Added `device_info_service.h` - Service header with async API
-   * Added `device_info_service.cpp` - Service implementation
-   * Added `build_geni_packet()` to `frame_builder.h/cpp` for generic Class 7 packet building
-   * Integrated service into `AlphaHwrComponent` constructor
-   * Added device info text sensors to `__init__.py` config schema (with `ENTITY_CATEGORY_DIAGNOSTIC`)
-   * Added text sensor setters to component header
-   * Called `read_device_info()` after successful authentication (1 second delay)
+Confidence = highest-weight signal + 0.05 per additional corroborating signal, capped at 1.0.
 
-2. **Configuration Updates**
-   * Updated `packages/alpha_hwr_pairing.yaml` with 5 new diagnostic text sensors:
-     - Serial Number
-     - Software Version
-     - Hardware Version  
-     - BLE Version
-     - Product Name
+**No-flow guard:** if current Droplet flow is below threshold *and* the 30-second falling-edge latch has expired, demand is suppressed regardless of other signals. This is the primary false-positive filter.
 
-3. **Successfully Compiled and Deployed**
-   * Both `hwr-pump-example.yaml` and `hwr-pump.yaml` compile successfully
-   * Flash usage: 75.8% (1,390,388 / 1,835,008 bytes)
-   * Firmware uploaded to device (10.0.1.86)
-   * Device is stable and running
-
-**Resolution: Class 7 Response Matching - FIXED**
-
-Fixed the transport layer to match Class 7 responses by class byte only when `expect_obj_id == 0 && expect_sub_id == 0`.
-
-**What Was Fixed:**
-
-Modified `transport.cpp::try_dispatch_response()`:
-- Added check for Class 7 packets (`data[4] == 0x07`)
-- When Object/Sub-ID are both 0, match by class byte only
-- This enables proper Class 7 response handling without breaking Class 10 matching
-
-**Testing & Verification:**
-
-✅ **Hardware Verified** - All 5 device info strings read successfully on device 10.0.1.86:
-- Product Name: ALPHA HWR (with "A" prepended from "LPHA HWR")
-- Serial Number: 10000479 (with "1" prepended from "0000479")
-- Software Version: 2601618V04.02.01.02539
-- Hardware Version: 2601617V01.03.00.00469
-- BLE Version: 2811431V06.00.01.00001
-
-✅ **Automatic Read** - Triggers 1 second after authentication completes
-✅ **Manual Trigger** - Added "Read Device Info" button for testing
-✅ **Non-Blocking** - All 5 reads queued and processed without blocking telemetry
-✅ **Home Assistant Integration** - All 5 text sensors update correctly as diagnostic entities
-
-**Flash Impact:**
-
-- Before: 75.5% (1,389,686 bytes)
-- After: 75.8% (1,390,388 bytes)
-- Increase: +702 bytes for full device info service
-
-**ESPHome Limitation Note:**
-
-Device information is displayed as diagnostic text sensors on the Home Assistant device page. ESPHome does not support dynamically updating the main Device Info card fields (Manufacturer/Model/Firmware Version) - those can only be set statically via `esphome.project` configuration at compile time. The diagnostic sensors provide full visibility into the pump's actual hardware/software details while maintaining ESPHome's native architecture.
-
-**Files Modified:**
-
-* `components/alpha_hwr/device_info_service.h/cpp` - New service for Class 7 string reading
-* `components/alpha_hwr/frame_builder.h/cpp` - Added `build_geni_packet()` for generic GENI packets
-* `components/alpha_hwr/transport.cpp` - Fixed Class 7 response matching (wildcard by class byte)
-* `components/alpha_hwr/alpha_hwr.h/cpp` - Integrated DeviceInfoService, calls `read_device_info()` after auth
-* `components/alpha_hwr/__init__.py` - Added 5 diagnostic text sensors to config schema
-* `packages/alpha_hwr_pairing.yaml` - Added device info sensor declarations
-* `packages/alpha_hwr_controls.yaml` - Added "Read Device Info" manual trigger button
-
-**Outcome:**
-
-✅ **COMPLETE** - Device Information Service is production-ready and fully functional.
-✅ **ARCHITECTURE** - Follows Python reference implementation 1:1
-✅ **DEPLOYMENT** - Running on hardware, all values reading correctly
-✅ **INTEGRATION** - Diagnostic sensors visible in Home Assistant device page
-
-### Session: 2026-02-11 - Part 6: Time Synchronization Service Implementation (COMPLETE)
-
-**Goal:** Implement a TimeService to automatically synchronize the pump's real-time clock (RTC) once per day.
-
-**What We Did:**
-
-1. **Created TimeService Infrastructure**
-   * Added `time_service.h` - Service header with async get_clock and set_clock APIs
-   * Added `time_service.cpp` - Service implementation for Object 94 read/write
-   * Integrated service into `AlphaHwrComponent` constructor
-   * Added automatic daily sync logic with timestamp tracking
-
-2. **Protocol Implementation**
-   * Read Clock: Object 94, Sub 101 (DateTimeActual)
-     - Response format: `[Status(2)][Length(1)][Year(2BE)][Month][Day][Hour][Minute][Second]`
-     - Status 0x0000 = valid, 0xFFFF = unset
-     - Year is big-endian uint16
-   * Set Clock: Object 94, Sub 100 (DateTimeConfig)
-     - Payload: `[Year(2BE)][Month][Day][Hour][Minute][Second]` + 13 padding bytes (19 total)
-     - APDU format: `[0x07][0x5E][0x64][0x70][DateTime(19 bytes)]`
-     - Verification: Reads clock back after write to confirm sync
-
-3. **Automatic Time Synchronization**
-   * Initial sync 2 seconds after authentication completes
-   * Daily sync check in `update()` loop (every 10 seconds)
-   * Tracks last sync timestamp to ensure exactly once per 24 hours
-   * Waits for system time to be valid via SNTP/NTP before syncing
-   * Handles millis() rollover (every ~49 days)
-
-4. **Successfully Compiled and Deployed**
-   * Both `hwr-pump-example.yaml` and `hwr-pump.yaml` compile successfully
-   * Flash usage: 76.7% (1,407,838 / 1,835,008 bytes)
-   * Firmware uploaded to device (10.0.1.86)
-   * Device is stable and running
-
-**Implementation Details:**
-
-```cpp
-// Automatic daily sync check in update() loop
-void AlphaHwrComponent::check_and_sync_time() {
-  uint32_t now = millis();
-  
-  // If never synced (0) or 24 hours have passed
-  if (last_time_sync_timestamp_ == 0 || (now - last_time_sync_timestamp_) >= TIME_SYNC_INTERVAL_MS) {
-    // Check if system time is available via SNTP
-    time_t current_time = ::time(nullptr);
-    if (current_time < 1609459200) {  // Before 2021-01-01 means time not synced
-      ESP_LOGD(TAG, "System time not synced via SNTP yet, skipping pump clock sync");
-      return;
-    }
-    
-    ESP_LOGI(TAG, "Daily time sync due - syncing pump clock...");
-    time_service_.set_clock_async([this](bool success) {
-      if (success) {
-        ESP_LOGI(TAG, "✓ Daily pump clock sync successful");
-        this->last_time_sync_timestamp_ = millis();
-      } else {
-        ESP_LOGW(TAG, "Daily pump clock sync failed - will retry next update");
-      }
-    });
-  }
-}
-
-// TimeService uses Transport layer command queue
-void TimeService::set_clock_async(std::function<void(bool)> callback) {
-  // Get current system time from SNTP/NTP
-  time_t current_time = ::time(nullptr);
-  struct tm *timeinfo = localtime(&current_time);
-  
-  // Build datetime packet and send to pump
-  std::vector<uint8_t> packet = build_set_clock_packet(now);
-  transport_->send_command(
-    packet,
-    OBJECT_ID_RTC,  // 94
-    SUB_ID_DATETIME_CONFIG,  // 100
-    [this, callback, now](bool success, const uint8_t *data, size_t len) {
-      // Verify by reading clock back
-      get_clock_async([callback, now](ESPTime pump_time) {
-        int32_t time_diff = pump_time.timestamp - now.timestamp;
-        callback(abs(time_diff) < 5);  // Success if within 5 seconds
-      });
-    },
-    5000  // 5 second timeout
-  );
-}
-```
-
-**Automatic Operation:**
-
-The pump clock is now automatically synchronized without any user intervention:
-1. **Initial Sync**: Occurs 2 seconds after successful authentication (on boot or reconnect)
-2. **Daily Sync**: Automatically syncs once every 24 hours via `update()` loop
-3. **SNTP Dependency**: Waits for ESP32 system time to be synced via SNTP/NTP before attempting pump sync
-4. **Retry Logic**: If a sync fails, it will retry on the next update cycle (10 seconds later)
-
-The pump's RTC is used for:
-- Schedule execution (pump knows when to start/stop based on weekly schedule)
-- Event logging (timestamps for pump events)
-- Alarm/warning records
-
-**Flash Impact:**
-
-- Before: 75.8% (1,390,388 bytes - with buttons)
-- After: 76.7% (1,407,838 bytes - automatic sync)
-- Increase: +17,450 bytes for automatic time sync logic
-
-**Files Modified:**
-
-* `components/alpha_hwr/time_service.h/cpp` - New service for RTC management
-* `components/alpha_hwr/alpha_hwr.h/cpp` - Integrated TimeService with automatic daily sync logic
-* `packages/alpha_hwr_controls.yaml` - Removed time sync buttons (no longer needed)
-
-**Reference Alignment:**
-
-The implementation follows the Python reference (`reference/alpha-hwr/src/alpha_hwr/services/time.py`) 1:1:
-- Same Object/Sub-ID usage (Object 94, Sub 101/100)
-- Same datetime encoding (Year as BE uint16, 19-byte payload with 13-byte padding)
-- Same APDU structure (`[0x07][0x5E][0x64][0x70][DateTime]`)
-- Same verification logic (read-back with 5-second tolerance)
-
-**Outcome:**
-
-✅ **COMPLETE** - Time Synchronization Service is production-ready and fully functional.
-✅ **ARCHITECTURE** - Follows Python reference implementation 1:1
-✅ **DEPLOYMENT** - Firmware running on hardware (10.0.1.86)
-✅ **AUTOMATIC** - Syncs once per day without user intervention
-✅ **NON-BLOCKING** - Uses transport command queue, respects ESPHome event loop
-
-The pump RTC is now automatically managed, ensuring schedules execute at the correct times and event logs have accurate timestamps.
-
-### Session: 2026-02-11 - Part 7: Control Mode Text Sensor Implementation (COMPLETE)
-
-**Goal:** Implement proper control mode reporting as a text sensor in Home Assistant that shows the pump's actual current control mode.
-
-**Problem Identified:**
-
-Initial implementation had a hardcoded default value (`ControlMode::CONSTANT_SPEED`) that would show in the UI before the pump reported its real mode. This violated the principle of "never show fake data."
-
-**What We Did:**
-
-1. **Added Control Mode Validity Tracking**
-   * Changed default `current_mode_` from `ControlMode::CONSTANT_SPEED` to `ControlMode::NONE`
-   * Added `bool mode_valid_{false}` to track if we've received a real value from the pump
-   * Added `bool is_mode_valid()` getter method to check validity
-   * Updated `get_mode_name()` to return "Unknown" for `ControlMode::NONE`
-
-2. **Fixed Mode Updates from Multiple Sources**
-   
-   The control mode can be obtained/updated from three sources:
-   
-   **a) Passive Notifications (Primary Source - Authentication Time)**
-   * Pump sends Object 0x2F01, Sub 1 (OpSpec 0x0E) during/after authentication
-   * `TelemetryService::handle_passive_notification()` decodes the notification
-   * Calls `ControlService::update_mode_from_notification(mode, op_mode, setpoint)`
-   * Sets `mode_valid_ = true` and triggers callback to update UI
-   
-   **b) After Control Commands (Secondary Source - User Actions)**
-   * When user sends start/stop/set_mode commands via Home Assistant
-   * ControlService updates `current_mode_` after successful command
-   * Sets `mode_valid_ = true` and triggers callback to update UI immediately
-   * Python reference does the same (lines 405-407, 429-433 in control.py)
-   
-   **c) Active Polling (Optional - Not Yet Implemented)**
-   * Object 86, Sub-ID 6 can be queried at any time via `get_mode_async()`
-   * Python reference: `control.py::get_mode()` lines 438-588
-   * Response format: `[00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes)]`
-   * Could be used for periodic polling to detect external mode changes (e.g., from mobile app)
-
-3. **Removed Hardcoded Initial Publish**
-   * Deleted code in `alpha_hwr.cpp::setup()` that published default mode on boot
-   * Text sensor now shows ESPHome's default "Unknown" state until real data arrives
-   * Added validity check to mode change callback (only publish if `is_mode_valid()` returns true)
-
-4. **Fixed Mode Update Logic to Match Python Reference**
-   * **`start(mode)`**: Only updates `current_mode_` and `mode_valid_` when a **specific mode is provided** (mode != 255)
-   * **`stop(mode)`**: Does NOT update `current_mode_` or `mode_valid_` (stopping doesn't change the mode)
-   * **`set_mode(mode)`**: Always updates `current_mode_` and `mode_valid_` (we know exactly what mode we're setting)
-   * **Critical Fix**: The pump operates on a **schedule** - start/stop commands only work in remote/manual control mode. When using default mode (255), we don't know what the actual mode is, so we must NOT pretend to know it.
-
-**Implementation Files:**
-
-* `components/alpha_hwr/control_service.h` - Added `mode_valid_` flag and `is_mode_valid()` method
-* `components/alpha_hwr/control_service.cpp` - Updated all control methods to set validity and trigger callback
-* `components/alpha_hwr/alpha_hwr.cpp` - Removed initial publish, added validity check to callback
-* `components/alpha_hwr/__init__.py` - Control mode text sensor schema (already added in previous session)
-* `packages/alpha_hwr_pairing.yaml` - Control mode sensor declaration (already added)
-
-**How It Works:**
-
-1. **On Boot**: Control mode text sensor shows "Unknown" (no fake defaults)
-2. **On Authentication**: Pump sends passive notification (Object 0x2F01, Sub 1, OpSpec 0x0E) with real control mode
-3. **On Mode Change**: `set_mode()` commands immediately update `current_mode_` and trigger UI update
-4. **On Start with Specific Mode**: `start(mode)` updates control mode only when a specific mode is provided (not mode=255)
-5. **On Stop**: `stop()` does NOT update control mode (stopping doesn't change the mode setting)
-
-**Important Note on Scheduled Operation:**
-
-The pump operates autonomously based on its configured schedule. The control mode (e.g., TEMPERATURE_RANGE, CONSTANT_SPEED) determines HOW the pump operates when it runs, but the schedule determines WHEN it runs. The start/stop commands are only effective when the pump is in remote/manual control mode, not when following a schedule.
-
-**Testing Results:**
-
-✅ **Compiled successfully** - Flash usage: 76.8% (1,408,432 bytes)
-✅ **Uploaded to device** - Firmware running on 10.0.1.86
-✅ **No false defaults** - Text sensor shows "Unknown" until real data received
-✅ **Immediate feedback** - Mode updates when user sends control commands
-
-**Verification Steps:**
-
-To fully test all mode update paths:
-
-1. **ESP32 Restart (Passive Notification Test)**:
-   - Power cycle the physical pump to force BLE disconnect
-   - Monitor logs during authentication
-   - Look for: `"Control mode updated from passive notification: TEMPERATURE_RANGE"`
-   - Verify text sensor updates in Home Assistant
-
-2. **Control Command Test**:
-   - Use Home Assistant to change pump mode or start/stop
-   - Verify text sensor updates immediately
-   - Check logs for: `"Published control mode to sensor: <mode_name>"`
-
-3. **Unknown State Test**:
-   - Restart only the ESP32 (not the pump) - BLE connection persists
-   - Verify text sensor shows "Unknown" initially
-   - Wait for next authentication cycle to populate real value
-
-**Outcome:**
-
-✅ **COMPLETE** - Control mode text sensor is production-ready and accurately reflects pump state
-✅ **ARCHITECTURE** - Follows Python reference implementation 1:1 (multi-source mode updates)
-✅ **DEPLOYMENT** - Firmware running on hardware (10.0.1.86)
-✅ **NO FAKE DATA** - Only publishes real values from pump, never hardcoded defaults
-✅ **IMMEDIATE FEEDBACK** - Updates instantly after user control commands
-
-
-### Session: 2026-02-14 - Code Review, Bug Fixes, and Control Method Completion
-
-**Goal:** Full code review against Python reference, fix bugs, implement missing control methods, fix time sync packet format.
-
-**What We Did:**
-
-1. **Code Review & 6 Bug Fixes (commit 555024b)**
-   * Fixed CONSTANT_FLOW mode_byte: 0x00 → 0x08
-   * Fixed DHW_ON_OFF suffix bytes: {0x38,0xC6,0x70,0x00} → {0x38,0xC6,0x76,0xEF}
-   * Fixed Temperature Range APDU size field: 0x09 → 0x0D (13 bytes)
-   * Fixed Constant Pressure: now converts meters to Pascals (m × 9806.65) per Python reference
-   * Fixed Constant Flow max range: 5.0 → 10.0 m³/h
-   * Added `send_control_request()` and `set_class10_setpoint()` helpers matching Python 1:1
-   * Refactored start/stop/set_mode to use send_control_request()
-
-2. **Simplified set_mode() & YAML Fix (commit 9843406)**
-   * Removed unnecessary 60-line Class 3 fallback from set_mode(); Python always uses Class 10
-   * Fixed flow setpoint max_value in YAML from 5.0 → 10.0
-   * Added SNTP time component to hwr-pump.yaml
-
-3. **Added Missing Control Methods (commit b59da77)**
-   * `set_proportional_pressure_async()` — Mode 1 with m→Pa conversion, 2-step Class 10
-   * `set_cycle_time_control_async()` — Object 91 Sub 430 structured write (Type 1012)
-   * Added YAML controls: proportional pressure slider, cycle time on/off sliders
-   * Added wrapper methods in alpha_hwr.h
-
-4. **Rewrote Time Sync Packet Format (commit 0fe295c)**
-   * Old format was completely wrong: raw Class 7 style `[0x07, 0x5E, 0x64, 0x70, datetime(19)]`
-   * New format uses proper Class 10 SET: `build_data_object_set(0x5E00, 0x6401, data(16))`
-   * Includes Type 322 header `[0x41, 0x02, 0x00, 0x00, 0x0B, 0x01]` before datetime
-   * Changed to fire-and-forget (pump ACK lacks Obj/Sub IDs for matching)
-   * Eliminates 5-second transport queue blocking every update cycle
-
-5. **Fixed OpSpec 0x09 Alarm/Warning Handling (commit 1848412)**
-   * Added handler for OpSpec 0x09 register-read response format
-   * Uses poll-order toggle to distinguish alarms (first) from warnings (second)
-   * Passes actual opspec to decoder for correct data offset (13 vs 10)
-   * Eliminates "Unhandled OpSpec: 0x09" warning spam
-
-**Debugging Notes:**
-
-* **WiFi "broken" issue** was NOT a code bug — 12+ orphaned `esphome logs` processes from prior sessions were flooding ESP32's API port. Always check `ps aux | grep "esphome logs"` before debugging.
-* **Device IP changed** from 10.0.1.86 to 10.0.0.235 during this session (DHCP lease renewal).
-
-**Verification Status:**
-
-✅ Both YAML configs compile successfully
-✅ OTA flash and device stable on 10.0.0.235
-✅ All telemetry streaming: Motor, Flow/Pressure, Temperature, Alarms, Warnings
-✅ Control mode detected from passive notifications (TEMPERATURE_RANGE)
-✅ Schedule polling working (disabled state)
-✅ No more OpSpec 0x09 warnings
-✅ No more time sync timeout blocking
-
-**Git Log (newest first):**
-```
-1848412 fix: handle OpSpec 0x09 alarm/warning responses
-0fe295c fix: rewrite time service SET packet to match Python reference
-b59da77 feat: add proportional pressure and cycle time control methods
-9843406 fix: simplify set_mode() and correct flow setpoint max
-555024b fix: align control service with Python reference implementation
-7d6a162 (origin/main) control mode fixes
-```
+**Falling-edge latch:** if Droplet flow was above threshold within the last `flow_latch_seconds` (30 s) but has since dropped (burst-cadence gap), demand is held alive to prevent a single missed Droplet reading from causing a false termination.
+
+#### Pump-ON branch
+
+When the pump is running the Droplet D1 sees recirculation flow in addition to any demand and cannot be used as a direct indicator. Two sub-paths are checked in order:
+
+1. **Continuation detection** — if Droplet flow was above threshold on the last pump-off tick and is still above threshold now, confidence = 0.85. This handles draws that were already in progress when the pump turned on.
+
+2. **Deterministic hydraulic voting** — five signals each contribute one vote. These signals reflect the **open-loop topology change** caused by a fixture being opened and are not produced by normal recirculation:
+
+   | Signal | Condition |
+   |---|---|
+   | Pressure transient | `|Δinlet/Δt| > 0.07 PSI/s` |
+   | Inlet pressure floor | `inlet_psi < 5.0 PSI` |
+   | Pump flow collapse | `pump_flow < 0.2 GPM` |
+   | Current spike | `|Δcurrent/Δt| > 0.001 A/s` |
+   | Power spike | `Δpower/Δt > 5.0 W/s` |
+
+   Confidence scales with vote count: 1→0.50, 2→0.65, 3→0.80, 4→0.90, 5→0.95. One vote is sufficient to declare demand.
+
+   > **Why thermal/duration paths are disabled during pump-on:** During long recirculation runs the pump returns progressively cooled water to the tank cold inlet, causing the lower tank temperature to drop at rates up to −0.083 °F/s — indistinguishable from a shower draw. Only hydraulic signals (which reflect the open-loop topology change) are reliable discriminators.
+
+### 10.5 Outputs
+
+| Config key | Type | Description |
+|---|---|---|
+| `demand` | `binary_sensor` | `ON` when DHW demand is detected |
+| `confidence` | `sensor` (0–1) | Confidence of current detection result |
+| `session_duration` | `sensor` (seconds) | Elapsed seconds of current demand session; 0 when idle |
+| `detection_method` | `text_sensor` | Which detection path fired (e.g., `deterministic_flow`, `deterministic_pump_on`, `deterministic_continuation`, `pump_on_uncertain`, `deterministic_idle`) |
+
+### 10.6 Session Tracking
+
+A *session* is a contiguous block of demand ticks. Short gaps (default 60 seconds, `session_gap_tolerance_seconds`) are bridged to avoid fragmenting a single draw into multiple sessions. The session start and end are logged at `ESP_LOGI`.
+
+### 10.7 Tunable Thresholds
+
+All thresholds are exposed as YAML config keys with defaults matching the Python `DetectorConfig`. They can be overridden via `substitutions` without reflashing.
+
+| Key | Default | Unit | Purpose |
+|---|---|---|---|
+| `pump_off_current_threshold` | 0.03 | A | Motor current below this → pump off |
+| `flow_threshold` | 0.3 | GPM | Minimum flow to count as demand |
+| `thermal_collapse_rate` | 0.05 | °F/s | Min tank temp drop rate (pump off) |
+| `dhw_charge_drop_rate` | 0.005 | %/s | Min DHW charge drop rate |
+| `inlet_pressure_transient_threshold` | 0.07 | PSI/s | Valve-shock detection |
+| `inlet_pressure_demand_floor` | 5.0 | PSI | Absolute low-pressure threshold |
+| `pump_flow_collapse_threshold` | 0.2 | GPM | Pump-side flow collapse |
+| `motor_current_spike_threshold` | 0.001 | A/s | Current rate of change |
+| `pump_power_spike_threshold` | 5.0 | W/s | Power rate of change |
+| `flow_latch_seconds` | 30 | s | Falling-edge hold-off duration |
+| `session_gap_tolerance_seconds` | 60 | s | Max gap before ending a session |
+
+### 10.8 Development Rules for `dhw_demand`
+
+1. **No ML, no external dependencies** — the component must compile and run entirely on-device with no Python runtime, no InfluxDB, no trained model. All logic is explicit threshold-based heuristics.
+2. **All inputs optional** — never `assert` or crash on a missing sensor. Missing signals return `NAN`; detection paths that require a `NAN` input are silently skipped.
+3. **Threshold changes are config changes, not code changes** — if a threshold needs tuning, adjust via YAML `substitutions`, not by editing `.cpp`.
+4. **Derivatives use actual elapsed time** — always divide by the real `dt_s` from `millis()` delta, not an assumed 10-second interval.
+5. **Consult reference docs before changing thresholds** — `esp32-detector.md` explains the physical rationale for every default. Changes should be grounded in observed hardware behaviour.
+6. **Test compilation** — `dhw_demand` has no BLE dependency; verify it compiles by including it in `hwr-pump-example.yaml` or a minimal test YAML.
+7. **Logging discipline** — follow the same `ESP_LOGx` conventions as `alpha_hwr`: `LOGV` for per-tick data, `LOGD` for state transitions, `LOGI` for session start/end.

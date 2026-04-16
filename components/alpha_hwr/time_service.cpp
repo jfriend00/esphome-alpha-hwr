@@ -10,6 +10,7 @@
 #include "frame_builder.h"
 #include "codec.h"
 #include "esphome/core/log.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/time.h"
 #include <cstring>
 
