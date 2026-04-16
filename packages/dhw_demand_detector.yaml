@@ -1,0 +1,128 @@
+# ==============================================================================
+# DHW Demand Detector Package — Supplementary Sensors
+# ==============================================================================
+#
+# Imports the Home Assistant supplementary sensors needed by the DHW demand
+# detector and declares the detector component with those sensors wired.
+#
+# This package works standalone (no pump required). Pump telemetry can be
+# added in your main YAML to enable pump-on detection; see the example at
+# dhw-demand-example.yaml.
+#
+# Required substitutions (must be set in your main YAML):
+#   ${flow_entity}            — HA entity ID for flow meter (GPM)
+#   ${tank_lower_temp_entity} — HA entity ID for lower tank temperature (°F)
+#   ${dhw_charge_entity}      — HA entity ID for DHW charge %
+#
+# Optional substitutions:
+#   ${dhw_in_use_entity}      — HA entity ID for DHW in-use flag; set to
+#                               empty string ("") to disable. Default: ""
+#
+# Usage (standalone, no pump):
+#
+#   substitutions:
+#     flow_entity:            sensor.droplet_f5bc_flow_rate
+#     tank_lower_temp_entity: sensor.nwp500_tank_lower_temperature
+#     dhw_charge_entity:      sensor.nwp500_dhw_charge
+#
+#   packages:
+#     dhw_demand: !include packages/dhw_demand_detector.yaml
+#
+# Usage with alpha_hwr pump (see dhw-demand-example.yaml for full example):
+#
+#   substitutions:
+#     # ... supplementary sensor entities above ...
+#     dhw_in_use_entity: sensor.nwp500_dhw_in_use
+#
+#   packages:
+#     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
+#     dhw_demand: !include packages/dhw_demand_detector.yaml
+#
+#   # Then add pump sensor IDs to the dhw_demand component
+#   # in your main YAML — see dhw-demand-example.yaml.
+# ==============================================================================
+
+sensor:
+  # ── Droplet flow meter — GPM (primary demand ground truth) ─────────────────
+  - platform: homeassistant
+    id: dhw_flow
+    entity_id: ${flow_entity}
+    unit_of_measurement: "GPM"
+    accuracy_decimals: 3
+
+  # ── Lower tank temperature — °F (thermal collapse signal) ──────────────────
+  - platform: homeassistant
+    id: dhw_tank_lower_temp
+    entity_id: ${tank_lower_temp_entity}
+    unit_of_measurement: "°F"
+    accuracy_decimals: 2
+
+  # ── DHW charge percentage — % (charge drop signal) ─────────────────────────
+  - platform: homeassistant
+    id: dhw_charge_pct
+    entity_id: ${dhw_charge_entity}
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+
+# ── DHW Demand Detector ────────────────────────────────────────────────────────
+#
+# Wired with supplementary HA sensors only.
+# To add pump telemetry, add the sensor ID keys listed below to this block
+# in your main YAML (this package's dhw_demand: config will be merged):
+#
+#   dhw_demand:
+#     motor_speed:    <your_motor_speed_sensor_id>
+#     motor_current:  <your_motor_current_sensor_id>
+#     inlet_pressure: <inlet_pressure_psi_sensor_id>   # must be in PSI
+#     pump_flow:      <pump_flow_gpm_sensor_id>         # must be in GPM
+#     pump_power:     <pump_power_sensor_id>
+#     # Optional: if NWP500 or equivalent is present
+#     dhw_in_use:     dhw_in_use_flag
+#
+# NOTE: alpha_hwr reports flow in m³/h and pressure in bar.  Create
+# platform: copy sensors with multiply filters to convert before referencing:
+#   1 m³/h = 4.40287 GPM   |   1 bar = 14.5038 PSI
+# See dhw-demand-example.yaml for a complete working configuration.
+
+dhw_demand:
+  # ── Outputs ─────────────────────────────────────────────────────────────────
+  demand:
+    id: dhw_demand_binary
+    name: "DHW Demand"
+    icon: "mdi:water-boiler"
+
+
+  confidence:
+    id: dhw_demand_confidence
+    name: "DHW Detection Confidence"
+    icon: "mdi:gauge"
+    entity_category: diagnostic
+
+  session_duration:
+    id: dhw_session_duration
+    name: "DHW Session Duration"
+    icon: "mdi:timer"
+
+  detection_method:
+    id: dhw_detection_method
+    name: "DHW Detection Method"
+    entity_category: diagnostic
+
+  # ── Supplementary HA sensor inputs ──────────────────────────────────────────
+  flow:    dhw_flow
+  tank_lower_temp: dhw_tank_lower_temp
+  dhw_charge:      dhw_charge_pct
+
+  # ── Detection thresholds ─────────────────────────────────────────────────────
+  # Defaults match Python DetectorConfig. Override in your main YAML if needed.
+  pump_off_current_threshold: 0.03      # A
+  flow_threshold: 0.3           # GPM
+  thermal_collapse_rate: 0.05           # °F/s
+  dhw_charge_drop_rate: 0.005           # %/s
+  inlet_pressure_transient_threshold: 0.07  # PSI/s (only used when pump sensors present)
+  inlet_pressure_demand_floor: 5.0      # PSI   (only used when pump sensors present)
+  pump_flow_collapse_threshold: 0.2     # GPM   (only used when pump sensors present)
+  motor_current_spike_threshold: 0.001  # A/s   (only used when pump sensors present)
+  pump_power_spike_threshold: 5.0       # W/s   (only used when pump sensors present)
+  flow_latch_seconds: 30
+  session_gap_tolerance_seconds: 60
