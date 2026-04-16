@@ -33,7 +33,7 @@ void SensorPublisher::setup_head_rate_callback() {
     uint32_t now_ms = millis();
     if (!std::isnan(prev_head_kpa_) && prev_head_time_ms_ != 0) {
       float dt_s = static_cast<float>(now_ms - prev_head_time_ms_) / 1000.0f;
-      if (dt_s > 3.0f) {
+      if (dt_s > 30.0f) {
         // BLE reconnect gap: stale baseline — reset silently.
         ESP_LOGD(TAG, "Head rate: reset after %.1f s gap", dt_s);
       } else if (dt_s >= 0.1f) {
