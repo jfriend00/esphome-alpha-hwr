@@ -18,6 +18,35 @@ namespace services {
 SensorPublisher::SensorPublisher() {
 }
 
+void SensorPublisher::set_head_rate_sensor(sensor::Sensor *sensor) {
+  head_rate_sensor_ = sensor;
+}
+
+// Called from AlphaHwrComponent::setup() after all sensors are wired.
+// Attaches the derivative computation as a callback on head_sensor_ so it fires
+// every time head pressure is published, regardless of which code path triggered it.
+void SensorPublisher::setup_head_rate_callback() {
+  if (head_sensor_ == nullptr || head_rate_sensor_ == nullptr) {
+    return;
+  }
+  head_sensor_->add_on_state_callback([this](float head_kpa) {
+    uint32_t now_ms = millis();
+    if (!std::isnan(prev_head_kpa_) && prev_head_time_ms_ != 0) {
+      float dt_s = static_cast<float>(now_ms - prev_head_time_ms_) / 1000.0f;
+      if (dt_s > 3.0f) {
+        // BLE reconnect gap: stale baseline — reset silently.
+        ESP_LOGD(TAG, "Head rate: reset after %.1f s gap", dt_s);
+      } else if (dt_s >= 0.1f) {
+        float rate_kpa_s = (head_kpa - prev_head_kpa_) / dt_s;
+        ESP_LOGD(TAG, "Head rate: %.3f kPa/s (dt=%.2f s)", rate_kpa_s, dt_s);
+        head_rate_sensor_->publish_state(rate_kpa_s);
+      }
+    }
+    prev_head_kpa_ = head_kpa;
+    prev_head_time_ms_ = now_ms;
+  });
+}
+
 void SensorPublisher::publish_motor_state(const protocol::MotorStateTelemetry& motor) {
   // Validate that we have at least some valid data
   if (!motor.has_power && !motor.has_speed) {
@@ -80,33 +109,9 @@ void SensorPublisher::publish_flow_pressure(const protocol::FlowPressureTelemetr
     head_sensor_->publish_state(flow.head_m * 9.80665f);
   }
 
-  // Compute and publish head pressure rate of change (kPa/s) at notification rate (~1–2 Hz).
-  // This high-frequency derivative captures hydraulic shocks (valve openings) that the
-  // 10-second polling loop would miss.
-  if (flow.has_head) {
-    float head_kpa = flow.head_m * 9.80665f;
-    uint32_t now_ms = millis();
+  // Compute and publish head pressure rate of change (kPa/s) at notification rate.
+  // Rate computation is handled via head_sensor_ callback registered in setup_head_rate_callback().
 
-    if (!std::isnan(prev_head_kpa_) && prev_head_time_ms_ != 0) {
-      float dt_s = (float)(now_ms - prev_head_time_ms_) / 1000.0f;
-
-      if (dt_s > 3.0f) {
-        // Large gap (e.g., BLE reconnect): baseline is stale — reset without publishing.
-        ESP_LOGD(TAG, "Head rate: resetting baseline after %.1f s gap", dt_s);
-      } else if (dt_s >= 0.1f) {
-        float rate_kpa_s = (head_kpa - prev_head_kpa_) / dt_s;
-        ESP_LOGV(TAG, "Head rate: %.3f kPa/s (dt=%.2f s)", rate_kpa_s, dt_s);
-        if (head_rate_sensor_ != nullptr) {
-          head_rate_sensor_->publish_state(rate_kpa_s);
-        }
-      }
-      // dt < 0.1s: duplicate or jitter — skip without updating baseline
-    }
-
-    prev_head_kpa_ = head_kpa;
-    prev_head_time_ms_ = now_ms;
-  }
-  
   // Publish inlet pressure (often NaN on HWR models)
   if (flow.has_inlet_pressure && inlet_pressure_sensor_ != nullptr) {
     if (!std::isnan(flow.inlet_pressure_bar)) {

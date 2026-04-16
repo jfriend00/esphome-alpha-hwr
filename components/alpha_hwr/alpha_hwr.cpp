@@ -103,6 +103,7 @@ void AlphaHwrComponent::setup() {
   });
 
   telemetry_service_.set_sensor_publisher(&sensor_publisher_);
+  sensor_publisher_.setup_head_rate_callback();
 
   // Set control service reference in telemetry service for passive mode
   // notifications
