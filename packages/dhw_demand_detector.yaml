@@ -14,10 +14,6 @@
 #   ${tank_lower_temp_entity} — HA entity ID for lower tank temperature (°F)
 #   ${dhw_charge_entity}      — HA entity ID for DHW charge %
 #
-# Optional substitutions:
-#   ${dhw_in_use_entity}      — HA entity ID for DHW in-use flag; set to
-#                               empty string ("") to disable. Default: ""
-#
 # Usage (standalone, no pump):
 #
 #   substitutions:
@@ -25,21 +21,22 @@
 #     tank_lower_temp_entity: sensor.nwp500_tank_lower_temperature
 #     dhw_charge_entity:      sensor.nwp500_dhw_charge
 #
+#   external_components:
+#     - source: github://eman/esphome-alpha-hwr@main
+#       components: [dhw_demand]
+#
 #   packages:
-#     dhw_demand: !include packages/dhw_demand_detector.yaml
+#     dhw_demand: github://eman/esphome-alpha-hwr/packages/dhw_demand_detector.yaml@main
 #
 # Usage with alpha_hwr pump (see dhw-demand-example.yaml for full example):
 #
-#   substitutions:
-#     # ... supplementary sensor entities above ...
-#     dhw_in_use_entity: sensor.nwp500_dhw_in_use
-#
 #   packages:
-#     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
-#     dhw_demand: !include packages/dhw_demand_detector.yaml
+#     alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
+#     dhw_demand: github://eman/esphome-alpha-hwr/packages/dhw_demand_detector.yaml@main
 #
-#   # Then add pump sensor IDs to the dhw_demand component
-#   # in your main YAML — see dhw-demand-example.yaml.
+#   # The alpha_hwr package already declares external_components for both
+#   # alpha_hwr and dhw_demand, so no separate declaration is needed.
+#   # See dhw-demand-example.yaml for a complete working configuration.
 # ==============================================================================
 
 sensor:
