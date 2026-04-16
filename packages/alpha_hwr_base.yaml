@@ -31,7 +31,8 @@ external_components:
   - source: github://eman/esphome-alpha-hwr@main
     components: [alpha_hwr, dhw_demand]
 
-
+esp32_ble_tracker:
+  scan_parameters:
     interval: 1.1s
     window: 1.1s
 
