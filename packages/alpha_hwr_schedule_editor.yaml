@@ -2,9 +2,10 @@
 # ALPHA HWR Schedule Editor Package
 # ==============================================================================
 #
-# Provides Home Assistant UI controls for managing individual schedule entries.
-# Use the day selector, time inputs, and save/clear buttons to manage the pump's
-# weekly schedule without writing YAML lambdas.
+# Provides ESPHome services plus internal helper entities for managing
+# individual schedule entries. The helper selects/numbers/buttons are
+# `internal: true` by default and are intended for dashboards or Lovelace cards,
+# while the primary integration surface is the service API defined below.
 #
 # Usage:
 #   packages:

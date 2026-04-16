@@ -175,6 +175,9 @@ public:
   void set_cycle_timestamps_text_sensor(text_sensor::TextSensor *sensor) {
     cycle_timestamps_text_sensor_ = sensor;
   }
+  void set_last_clock_sync_sensor(text_sensor::TextSensor *sensor) {
+    last_clock_sync_sensor_ = sensor;
+  }
 #endif
   // Numeric sensor setters for operating statistics
   void set_start_count_sensor(sensor::Sensor *sensor) {
@@ -185,9 +188,6 @@ public:
   }
   void set_clock_diff_sensor(sensor::Sensor *sensor) {
     clock_diff_sensor_ = sensor;
-  }
-  void set_last_clock_sync_sensor(text_sensor::TextSensor *sensor) {
-    last_clock_sync_sensor_ = sensor;
   }
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
 

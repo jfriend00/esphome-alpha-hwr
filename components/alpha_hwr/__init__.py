@@ -15,7 +15,8 @@ from esphome.const import (
 )
 
 CODEOWNERS = ["@eman"]
-DEPENDENCIES = ["ble_client", "text_sensor"]
+DEPENDENCIES = ["ble_client"]
+AUTO_LOAD = ["binary_sensor", "sensor", "text_sensor"]
 
 alpha_hwr_ns = cg.esphome_ns.namespace("alpha_hwr")
 AlphaHwrComponent = alpha_hwr_ns.class_(

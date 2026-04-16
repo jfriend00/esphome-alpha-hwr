@@ -1,71 +1,72 @@
-# ALPHA HWR Component for ESPHome
+# ESPHome ALPHA HWR + DHW Demand
 
-ESPHome component for Grundfos ALPHA HWR hot water recirculation pumps. Provides bi-directional BLE control and monitoring via the GENI protocol with Home Assistant integration.
+ESPHome repository for two custom components:
 
-## Features
+- `alpha_hwr` — BLE telemetry and control for the Grundfos ALPHA HWR pump
+- `dhw_demand` — on-device DHW demand detection using pump telemetry and/or
+  Home Assistant sensors
 
-- **Telemetry**: Flow rate, head/inlet pressure, power, RPM, current, voltage, temperatures, alarms/warnings
-- **Control**: Start/stop, control mode selection (Temperature, Constant Speed/Flow/Pressure, Proportional Pressure, AutoAdapt), mode-specific setpoints
-- **Schedules**: Read/write weekly schedules and one-time events
-- **Diagnostics**: Device info strings, operating statistics, event log, history trends
-- **Automatic**: Daily RTC sync via SNTP, auto-reconnect, persistent BLE bonding
+The repo also ships reusable package YAML so an external ESPHome config can pull
+in the component stack directly from GitHub.
 
----
+## What each package does
 
-## Hardware Requirements
+| Package | Purpose | Notes |
+| --- | --- | --- |
+| `packages/alpha_hwr_base.yaml` | Basic ALPHA HWR telemetry without BLE pairing | Good starting point for read-only monitoring |
+| `packages/alpha_hwr_pairing.yaml` | Full telemetry, diagnostics, schedules, and paired BLE access | Required for controls and schedule editing |
+| `packages/alpha_hwr_controls.yaml` | Recommended control UI | Adds pump enable, remote mode, schedule toggle, mode select, and setpoint controls |
+| `packages/alpha_hwr_schedule.yaml` | Lighter schedule/remote/mode UI | Simpler alternative to `alpha_hwr_controls.yaml`; avoid combining both unless you want duplicate controls |
+| `packages/alpha_hwr_schedule_editor.yaml` | ESPHome services and helper entities for weekly/single-event editing | Pair with `alpha_hwr_pairing.yaml` |
+| `packages/dhw_demand_detector.yaml` | DHW detector outputs plus Home Assistant supplementary sensors | Works standalone or alongside `alpha_hwr` |
 
-- **ESP32 Board**: ESP32, ESP32-C3, or ESP32-S3 (must support BLE)
-- **Grundfos ALPHA HWR Pump**: Powered on with BLE enabled
-- **Proximity**: Keep within 0.5–2 meters during initial pairing
+## Requirements
 
----
+- **alpha_hwr**: ESP32-class board with BLE (`ESP32`, `ESP32-C3`, `ESP32-S3`)
+- **dhw_demand standalone**: any ESPHome-capable board if you only use Home
+  Assistant-fed sensors
+- `substitutions.mac_address` for the pump packages
+- `api:` enabled if you want Home Assistant services/entities
+- `framework.type: esp-idf` is strongly recommended for BLE-based ALPHA HWR
+  nodes
 
-## Quick Start
+## Basic vs paired `alpha_hwr`
 
-### 1. Discover Your Pump's MAC Address
+| Feature | `alpha_hwr_base.yaml` | `alpha_hwr_pairing.yaml` |
+| --- | --- | --- |
+| Flow, head, water temperature, RPM, power | Yes | Yes |
+| AC/DC voltage, motor current | No | Yes |
+| Inlet pressure | No | Yes |
+| PCB and control-box temperatures | No | Yes |
+| Pairing status | No | Yes |
+| Control mode text sensor | No | Yes |
+| Schedule and single-event text sensors | No | Yes |
+| Start/stop, remote control, schedule toggle, mode/setpoint UI | No | Add `alpha_hwr_controls.yaml` or `alpha_hwr_schedule.yaml` |
+| Device info, history, event log, statistics | No | Yes |
 
-Use a BLE scanner app (e.g., nRF Connect) or run:
+## Using these packages from an external ESPHome config
 
-```bash
-esphome run components/alpha_hwr/discovery_example.yaml
-```
+The package URLs below are meant to be used from another ESPHome project. The
+package files already pull the required external components for `alpha_hwr`.
 
-Look for "Found ALPHA HWR Pump!" and copy the MAC address.
-
-### 2. Configure Secrets
-
-Create `secrets.yaml`:
-
-```yaml
-wifi_ssid: "YourWiFi"
-wifi_password: "YourWiFiPassword"
-ap_password: "FallbackAPPassword"
-api_key: "GenerateARandom32ByteKeyHere"
-ota_password: "SecureOTAPassword"
-pump_mac: "3C:E0:02:XX:XX:XX"  # Your pump's MAC
-```
-
-### 3. Create Device Configuration
-
-See `hwr-pump-example.yaml` for a complete reference configuration. Minimal setup:
+### 1. Basic read-only pump telemetry
 
 ```yaml
 esphome:
   name: hwr-pump
-  friendly_name: "HWR Pump"
+  friendly_name: HWR Pump
 
 substitutions:
-  mac_address: "3C:E0:02:XX:XX:XX"  # Your pump's MAC
+  mac_address: "AA:BB:CC:DD:EE:FF"
 
 packages:
-  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
-  alpha_hwr_controls: github://eman/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@main
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_base.yaml@main
 
 esp32:
   board: esp32-c3-devkitm-1
   variant: esp32c3
   framework:
-    type: esp-idf  # Required for stable BLE
+    type: esp-idf
 
 wifi:
   ssid: !secret wifi_ssid
@@ -76,87 +77,214 @@ api:
     key: !secret api_key
 
 ota:
-  platform: esphome
-  password: !secret ota_password
+  - platform: esphome
+    password: !secret ota_password
 ```
 
-### 4. Build and Flash
+### 2. Full telemetry plus control UI
 
-```bash
-esphome run hwr-pump.yaml
+```yaml
+esphome:
+  name: hwr-pump
+  friendly_name: HWR Pump
+
+substitutions:
+  mac_address: "AA:BB:CC:DD:EE:FF"
+
+packages:
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
+  alpha_hwr_controls: github://eman/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@main
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
 ```
 
----
+### 3. Add schedule editor services
 
-## Bluetooth Pairing
+Add the schedule editor package on top of the paired pump config:
 
-### Pairing Procedure
-1. Configure `enable_pairing: true` in your YAML
-2. Enter Pairing Mode: Press and hold the pump's Bluetooth button until the icon flashes
-3. Flash & Boot: The ESP32 will auto-detect and bond with the pump
-4. Verify: Check logs for BLE authentication completion
+```yaml
+packages:
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
+  alpha_hwr_controls: github://eman/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@main
+  alpha_hwr_schedule_editor: github://eman/esphome-alpha-hwr/packages/alpha_hwr_schedule_editor.yaml@main
+```
 
-Once paired, encryption keys are stored permanently. No need to re-pair unless you factory reset the ESP32 or pump.
+`alpha_hwr_schedule_editor.yaml` exposes ESPHome services such as
+`set_schedule_entry` and `set_single_event`.
 
-### Basic vs Enhanced Mode
+### 4. Standalone `dhw_demand`
 
-| Feature | Basic (No Pairing) | Enhanced (Paired) |
-|---------|-------------------|-------------------|
-| Flow, head, power, RPM, temp | Yes | Yes |
-| AC/DC voltage, motor current | No | Yes |
-| Inlet pressure | No | Yes |
-| PCB/control box temperatures | No | Yes |
-| Pump control (start/stop/mode) | No | Yes |
-| Schedule management | No | Yes |
-| Device info, event log, history | No | Yes |
+When you use `dhw_demand` without `alpha_hwr`, declare the component explicitly
+with `external_components`:
 
----
+```yaml
+esphome:
+  name: dhw-detector
+  friendly_name: DHW Detector
 
-## Schedule Card Installation
+substitutions:
+  flow_entity: sensor.droplet_flow_rate
+  tank_lower_temp_entity: sensor.tank_lower_temperature
+  dhw_charge_entity: sensor.dhw_charge
 
-The `alpha-hwr-schedule-card` is a custom Lovelace card for interactive schedule management. It provides a more user-friendly interface than individual number/button inputs.
+external_components:
+  - source: github://eman/esphome-alpha-hwr@main
+    components: [dhw_demand]
 
-### Installation Steps
+packages:
+  dhw_demand: github://eman/esphome-alpha-hwr/packages/dhw_demand_detector.yaml@main
 
-1. **Add the card repository to Home Assistant**:
-   - Go to Settings > Devices & Services > Automations & Scenes
-   - Open your Home Assistant configuration directory
-   - Add this to your `configuration.yaml`:
-     ```yaml
-     homeassistant:
-       packages:
-         alpha_hwr_lovelace: !include packages/lovelace.yaml
-     ```
+esp32:
+  board: esp32dev
 
-2. **Or use HACS (recommended)**:
-   - Install HACS if you haven't already: https://hacs.xyz/docs/setup/prerequisites
-   - Add the custom repository: https://github.com/eman/alpha-hwr-schedule-card
-   - Search for "alpha-hwr-schedule-card" in HACS
-   - Click Install
-   - Restart Home Assistant
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
-3. **Add the card to a dashboard**:
-   - Edit your Home Assistant dashboard
-   - Click "Create New Card" or edit an existing card
-   - Select "Custom: Alpha HWR Schedule Card"
-   - Configure the entity IDs:
-     ```yaml
-     type: custom:alpha-hwr-schedule-card
-     weekly_schedule: text_sensor.hwr_pump_weekly_schedule
-     single_events: text_sensor.hwr_pump_single_events
-     set_schedule_service: esphome.hwr_pump_set_schedule_entry
-     clear_schedule_service: esphome.hwr_pump_clear_schedule_entry
-     single_event_service: esphome.hwr_pump_set_single_event
-     clear_single_event_service: esphome.hwr_pump_clear_single_event
-     ```
+api:
+ota:
+  - platform: esphome
+```
 
-Alternatively, see `docs/schedule-management.md` for programmatic schedule management via automations and the REST API.
+### 5. Combined `alpha_hwr` + `dhw_demand`
 
----
+If you want pump telemetry plus DHW demand detection, combine the packages and
+wire the pump sensors into the detector:
+
+```yaml
+packages:
+  alpha_hwr: github://eman/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@main
+  alpha_hwr_controls: github://eman/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@main
+  dhw_demand: github://eman/esphome-alpha-hwr/packages/dhw_demand_detector.yaml@main
+
+alpha_hwr:
+  current:
+    id: motor_current_sensor
+  power:
+    id: pump_power_sensor
+  rpm:
+    id: motor_speed_sensor
+  flow:
+    id: flow_rate_sensor
+  inlet_pressure:
+    id: inlet_pressure_sensor
+  head_rate:
+    id: pump_head_rate_sensor
+
+sensor:
+  - platform: copy
+    source_id: flow_rate_sensor
+    id: dhw_pump_flow_gpm
+    internal: true
+    unit_of_measurement: "GPM"
+    filters:
+      - multiply: 4.40287
+
+  - platform: copy
+    source_id: inlet_pressure_sensor
+    id: dhw_inlet_pressure_psi
+    internal: true
+    unit_of_measurement: "PSI"
+    filters:
+      - multiply: 14.5038
+
+dhw_demand:
+  motor_speed: motor_speed_sensor
+  motor_current: motor_current_sensor
+  inlet_pressure: dhw_inlet_pressure_psi
+  pump_flow: dhw_pump_flow_gpm
+  pump_power: pump_power_sensor
+  pump_head_rate: pump_head_rate_sensor
+```
+
+For a complete working version, see `dhw-demand-example.yaml`.
+
+## Local development override
+
+When you are working from a local clone and want ESPHome to build the local
+component sources instead of the cached GitHub copy, add:
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha_hwr, dhw_demand]
+```
+
+That is the pattern used in `dhw-demand-example.yaml`.
+
+## Schedule services and entity names
+
+`alpha_hwr_schedule_editor.yaml` creates ESPHome services. Home Assistant sees
+them as:
+
+- `esphome.<node_name>_set_schedule_entry`
+- `esphome.<node_name>_clear_schedule_entry`
+- `esphome.<node_name>_set_schedule_enabled`
+- `esphome.<node_name>_refresh_schedule`
+- `esphome.<node_name>_set_single_event`
+- `esphome.<node_name>_clear_single_event`
+- `esphome.<node_name>_refresh_single_events`
+
+`<node_name>` comes from `esphome.name` with `-` converted to `_`. Example:
+
+- `esphome.name: hwr-pump`
+- Home Assistant service: `esphome.hwr_pump_set_schedule_entry`
+
+The paired package also publishes schedule text sensors using the same node-name
+prefix, for example `text_sensor.hwr_pump_weekly_schedule`.
+
+More detail and automation examples are in
+[`docs/schedule-management.md`](docs/schedule-management.md).
+
+## Pairing
+
+`alpha_hwr_pairing.yaml` enables BLE pairing and stores the bond in NVS. Typical
+first-time flow:
+
+1. Put the pump into Bluetooth pairing mode.
+2. Flash the ESPHome node with the paired package.
+3. Watch logs for the authentication/pairing sequence to complete.
+
+After that, reconnects reuse the stored bond.
+
+## Examples in this repo
+
+- `hwr-pump-example.yaml` — basic read-only `alpha_hwr`
+- `hwr-pairing-example.yaml` — paired `alpha_hwr`
+- `hwr-pump-schedule-example.yaml` — paired pump with schedule UI/services
+- `dhw-demand-example.yaml` — combined `alpha_hwr` + `dhw_demand` with local
+  component override
+- `hwr-pump.yaml` — real hardware config used for local verification
+
+## Optional Lovelace schedule card
+
+The custom card lives at
+[eman/alpha-hwr-schedule-card](https://github.com/eman/alpha-hwr-schedule-card).
+When configuring it, use your actual node-derived service names, not hard-coded
+`hwr_pump` service IDs.
 
 ## References
 
-- **Protocol Documentation**: [https://eman.github.io/alpha-hwr/](https://eman.github.io/alpha-hwr/)
-- **Python Reference Implementation**: [https://github.com/eman/alpha-hwr](https://github.com/eman/alpha-hwr)
-- **ESPHome BLE Client**: [https://esphome.io/components/ble_client/](https://esphome.io/components/ble_client/)
-- **Component Architecture**: [docs/architecture.md](docs/architecture.md)
+- Protocol docs: <https://eman.github.io/alpha-hwr/reimplementation/>
+- Python reference implementation: <https://github.com/eman/alpha-hwr>
+- ESPHome BLE client docs: <https://esphome.io/components/ble_client/>
+- Architecture notes: [docs/architecture.md](docs/architecture.md)
+- Schedule service usage: [docs/schedule-management.md](docs/schedule-management.md)

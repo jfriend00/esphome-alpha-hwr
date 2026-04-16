@@ -19,6 +19,10 @@
 #
 # ==============================================================================
 
+esphome:
+  name: hwr-pump-schedule-example
+  friendly_name: "HWR Pump (Schedule)"
+
 substitutions:
   mac_address: "00:00:00:00:00:00"  # ← CHANGE THIS to your pump's MAC
 
@@ -52,4 +56,3 @@ ota:
 button:
   - platform: restart
     name: "Restart Device"
-

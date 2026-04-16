@@ -11,8 +11,6 @@
 # - DC Voltage (V) - Requires pairing
 # - Motor Current (A) - Requires pairing
 # - Inlet Pressure (bar) - Requires pairing
-# - Outlet Pressure (bar) - Requires pairing
-# - Converter Temperature (°C)
 # - PCB Temperature (°C)
 # - Control Box Temperature (°C)
 # - Active Alarms (text sensor) - Requires pairing
@@ -163,4 +161,3 @@ alpha_hwr:
    product_name:
       name: "Product Name"
       entity_category: diagnostic
-

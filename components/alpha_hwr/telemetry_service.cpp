@@ -90,9 +90,9 @@ void TelemetryService::on_packet(const uint8_t* data, size_t len) {
   // Parse frame using protocol layer
   protocol::ParsedFrame frame = protocol::parse_frame(data, len);
   
-  // Validate frame structure
-  if (!frame.valid) {
-    ESP_LOGD(TAG, "Invalid frame structure, ignoring");
+  // Validate frame structure and CRC before decoding.
+  if (!protocol::validate_frame_integrity(frame)) {
+    ESP_LOGD(TAG, "Invalid frame integrity, ignoring");
     return;
   }
   
@@ -259,14 +259,15 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
   else if (sub_id == 0x0001 && obj_id == 0x2F01) {
     ESP_LOGI(TAG, "Control mode notification received (Obj 0x2F01, Sub 1)");
     
-    if (len >= 10) {  // Need at least header
+    if (len >= 12) {  // Need header + CRC before payload parsing
       const uint8_t* payload = data + 10;
       size_t payload_len = len - 12;  // Full packet minus header (10) and CRC (2)
       
       // Payload structure: [00 00 XX][control_source][operation_mode][control_mode][setpoint(4 bytes float)]
-      size_t offset = (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) ? 3 : 0;
+      size_t offset =
+          (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) ? 3 : 0;
       
-      if (len >= 10 + offset + 7) {
+      if (payload_len >= offset + 7) {
         uint8_t control_source = payload[offset];
         uint8_t operation_mode = payload[offset + 1];
         uint8_t control_mode = payload[offset + 2];
@@ -284,10 +285,13 @@ void TelemetryService::handle_passive_notification(const uint8_t* data, size_t l
           ESP_LOGW(TAG, "Control service not set, cannot update mode");
         }
       } else {
-        ESP_LOGW(TAG, "Control mode packet too short for parsing: %d bytes (need %d)", len, 10 + offset + 7);
+        ESP_LOGW(TAG,
+                 "Control mode payload too short for parsing: %zu bytes (need >= %zu)",
+                 payload_len, offset + 7);
       }
     } else {
-      ESP_LOGW(TAG, "Control mode packet too short: %d bytes (need at least 10)", len);
+      ESP_LOGW(TAG, "Control mode packet too short: %zu bytes (need at least 12)",
+               len);
     }
   }
   else {

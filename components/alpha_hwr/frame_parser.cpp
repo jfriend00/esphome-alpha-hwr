@@ -78,7 +78,7 @@ ParsedFrame parse_frame(const uint8_t* data, size_t len) {
         opspec == OPSPEC_ALARMS_WARNINGS ||
         opspec == 0x2E ||  // Other register read responses
         opspec == 0x2D) {
-      if (len > 12) {
+      if (len >= 15) {
         // For register read responses, payload starts at offset 13
         result.payload = data + 13;
         result.payload_len = len - 15;  // Subtract header (13 bytes) + CRC (2 bytes)
@@ -88,7 +88,7 @@ ParsedFrame parse_frame(const uint8_t* data, size_t len) {
       }
     } else if (opspec == OPSPEC_PASSIVE_NOTIF || opspec == OPSPEC_ALARMS_READ) {
       // Class 10 Notification/Passive: [Class][OpSpec][SubH][SubL][ObjH][ObjL][Payload...][CRC]
-      if (len > 9) {
+      if (len >= 12) {
         result.sub_id = (data[6] << 8) | data[7];  // Big-endian uint16
         result.obj_id = (data[8] << 8) | data[9];  // Big-endian uint16
         result.payload = data + 10;  // From after ObjID
@@ -96,7 +96,7 @@ ParsedFrame parse_frame(const uint8_t* data, size_t len) {
       }
     } else {
       // Default Class 10 format: Sub-ID and Obj-ID at offsets 6-9
-      if (len > 9) {
+      if (len >= 12) {
         result.sub_id = (data[6] << 8) | data[7];  // Big-endian uint16
         result.obj_id = (data[8] << 8) | data[9];  // Big-endian uint16
         result.payload = data + 10;  // From after ObjID

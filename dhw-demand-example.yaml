@@ -16,10 +16,10 @@ esphome:
 # 4. Flash to your ESP32
 #
 # Sensors published to Home Assistant:
-#   binary_sensor.dhw_demand         — ON when hot water is being drawn
-#   sensor.dhw_detection_confidence  — Detection certainty (0.0–1.0)
-#   sensor.dhw_session_duration      — Seconds since session started (live)
-#   text_sensor.dhw_detection_method — Which signal(s) triggered demand
+#   binary_sensor.dhw_detector_dhw_demand            — ON when hot water is being drawn
+#   sensor.dhw_detector_dhw_detection_confidence     — Detection certainty (0.0–1.0)
+#   sensor.dhw_detector_dhw_session_duration         — Seconds since session started (live)
+#   text_sensor.dhw_detector_dhw_detection_method    — Which signal(s) triggered demand
 #
 # For standalone use (no pump), remove the alpha_hwr package and the
 # pump sensor keys from dhw_demand: below. Pump-off detection via the

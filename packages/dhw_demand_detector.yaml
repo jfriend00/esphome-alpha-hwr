@@ -64,8 +64,10 @@ sensor:
 # ── DHW Demand Detector ────────────────────────────────────────────────────────
 #
 # Wired with supplementary HA sensors only.
-# To add pump telemetry, add the sensor ID keys listed below to this block
-# in your main YAML (this package's dhw_demand: config will be merged):
+# To add pump telemetry, define a top-level dhw_demand: block in your main YAML
+# with the sensor ID keys listed below. ESPHome merges that block with this
+# package's dhw_demand: definition, so only add the keys you want to override or
+# extend.
 #
 #   dhw_demand:
 #     motor_speed:    <your_motor_speed_sensor_id>
@@ -77,7 +79,8 @@ sensor:
 #     dhw_in_use:     dhw_in_use_flag
 #
 # NOTE: alpha_hwr reports flow in m³/h and pressure in bar.  Create
-# platform: copy sensors with multiply filters to convert before referencing:
+# platform: copy sensors with multiply filters to convert before referencing.
+# Do not reuse already-converted sensors here or the thresholds will be wrong:
 #   1 m³/h = 4.40287 GPM   |   1 bar = 14.5038 PSI
 # See dhw-demand-example.yaml for a complete working configuration.
 

@@ -14,11 +14,14 @@
 #
 # Usage:
 #   packages:
-#     alpha_hwr_base: !include packages/alpha_hwr_pairing.yaml
+#     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
 #     alpha_hwr_schedule: !include packages/alpha_hwr_schedule.yaml
 #
 # Note: This package requires the main alpha_hwr component to be configured
 # with an id of 'pump' and a text_sensor for schedule display.
+# It already includes basic remote/mode controls; prefer alpha_hwr_controls.yaml
+# instead if you want the fuller control UI, and avoid combining both packages
+# unless you intentionally want duplicate control entities.
 #
 # ==============================================================================
 

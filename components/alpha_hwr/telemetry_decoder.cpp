@@ -187,9 +187,16 @@ AlarmWarningTelemetry decode_alarms_warnings_response(const uint8_t* data, size_
   // - Bytes 10+: Array of uint16 codes (big-endian)
   
   size_t start_offset = (opspec == 0x09) ? 13 : 10;
+  if (len < 2 || len <= start_offset + 1) {
+    return result;
+  }
+  size_t payload_end = len - 2;  // Exclude CRC bytes at end.
+  if (payload_end <= start_offset) {
+    return result;
+  }
   
   // Parse uint16 array (big-endian)
-  for (size_t i = start_offset; i + 1 < len - 2; i += 2) {  // -2 for CRC at end
+  for (size_t i = start_offset; i + 1 < payload_end; i += 2) {
     uint16_t code = (data[i] << 8) | data[i + 1];
     if (code != 0) {  // Filter out zero codes (mean "no alarm/warning")
       result.codes.push_back(code);

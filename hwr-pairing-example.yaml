@@ -11,9 +11,9 @@ esphome:
 #
 # Enhanced Telemetry Available:
 # - Grid Voltage (AC), Motor Current
-# - All temperatures (Water, Converter, PCB, Control Box)
+# - Water, PCB, and Control Box temperatures
 # - Flow Rate, Head Pressure, Motor Speed, Power
-# - Pairing Status indicator
+# - Pairing Status plus schedule/diagnostic text sensors
 #
 # Setup Instructions:
 # 1. Replace the MAC address below with your pump's BLE MAC address

@@ -63,10 +63,10 @@ void DhwDemandComponent::dump_config() {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 float DhwDemandComponent::read_sensor_(sensor::Sensor *s) {
-  if (s == nullptr)
+  if (s == nullptr || !s->has_state())
     return NAN;
   float v = s->state;
-  return (std::isnan(v) || !s->has_state()) ? NAN : v;
+  return std::isnan(v) ? NAN : v;
 }
 
 float DhwDemandComponent::compute_deriv_(float current, float &prev,
@@ -86,8 +86,11 @@ float DhwDemandComponent::compute_deriv_(float current, float &prev,
 
 bool DhwDemandComponent::flow_latch_active_() {
   // Scan backwards through the circular buffer up to flow_latch_seconds_ / 10
-  // samples.  Any entry above the threshold keeps demand latched.
-  int samples = flow_latch_seconds_ / 10;
+  // samples. Round up so sub-10-second latch values still inspect at least one
+  // sample on the component's default 10s grid.
+  int samples = (flow_latch_seconds_ + 9) / 10;
+  if (samples < 1)
+    samples = 1;
   if (samples > DROPLET_BUF_SIZE)
     samples = DROPLET_BUF_SIZE;
 
@@ -441,11 +444,11 @@ void DhwDemandComponent::update() {
 
   ESP_LOGV(TAG,
            "tick: pump=%s demand=%s conf=%.2f level=%.2f method=%s "
-           "flow=%.2f inlet=%.2f flow=%.2f current=%.3f",
+           "droplet_flow=%.2f inlet_psi=%.2f pump_flow=%.2f motor_current=%.3f",
            pump_on ? "ON" : "OFF", demand ? "ON" : "OFF", confidence,
            demand_level, method,
            std::isnan(flow) ? -1.0f : flow,
-           std::isnan(inlet_psi) ? -1.0f : inlet_psi,
+            std::isnan(inlet_psi) ? -1.0f : inlet_psi,
            std::isnan(pump_flow) ? -1.0f : pump_flow,
            std::isnan(motor_current) ? -1.0f : motor_current);
 }

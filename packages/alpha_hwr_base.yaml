@@ -7,7 +7,7 @@
 #
 # Telemetry Included:
 # - Flow Rate (m³/h)
-# - Head Pressure (m)
+# - Head Pressure (kPa)
 # - Water Temperature (°C)
 # - Motor Speed (RPM)
 # - Power Consumption (W)
@@ -41,6 +41,7 @@ ble_client:
     id: hwr_pump_client
 
 alpha_hwr:
+  id: pump
   ble_client_id: hwr_pump_client
   flow:
     name: "Flow Rate"

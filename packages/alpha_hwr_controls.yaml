@@ -7,12 +7,12 @@
 # - Pump motor active indicator (shows if motor is physically running)
 # - Schedule enable/disable switch
 # - Remote mode buttons (enable/disable)
-# - Control mode selector (10 operating modes)
-# - Schedule refresh button
+# - Control mode selector for the exposed operating modes
+# - Setpoint controls for the supported control modes
 #
 # Usage:
 #   packages:
-#     alpha_hwr_base: !include packages/alpha_hwr_pairing.yaml
+#     alpha_hwr: !include packages/alpha_hwr_pairing.yaml
 #     alpha_hwr_controls: !include packages/alpha_hwr_controls.yaml
 #
 # Requirements:

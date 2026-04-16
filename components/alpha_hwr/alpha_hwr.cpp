@@ -216,6 +216,7 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
           this->last_time_sync_timestamp_ = millis();
 
           // Update last sync time sensor
+#ifdef USE_TEXT_SENSOR
           if (this->last_clock_sync_sensor_) {
             time_t now = ::time(nullptr);
             const struct tm *tm_info = localtime(&now);
@@ -223,6 +224,7 @@ void AlphaHwrComponent::trigger_initial_data_reads() {
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
             this->last_clock_sync_sensor_->publish_state(buf);
           }
+#endif
         } else {
           ESP_LOGW(TAG,
                    "Initial pump clock sync failed - will retry in 24 hours");
@@ -336,6 +338,7 @@ void AlphaHwrComponent::check_and_sync_time() {
         this->last_time_sync_timestamp_ = millis();
 
         // Update last sync time sensor
+#ifdef USE_TEXT_SENSOR
         if (this->last_clock_sync_sensor_) {
           time_t now = ::time(nullptr);
           const struct tm *tm_info = localtime(&now);
@@ -343,6 +346,7 @@ void AlphaHwrComponent::check_and_sync_time() {
           strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
           this->last_clock_sync_sensor_->publish_state(buf);
         }
+#endif
       } else {
         ESP_LOGW(TAG, "Daily pump clock sync failed - will retry next update");
       }
@@ -355,6 +359,7 @@ void AlphaHwrComponent::read_device_info() {
     if (success) {
       ESP_LOGI(TAG, "Device info read completed successfully");
       // Publish device info strings to text sensors
+#ifdef USE_TEXT_SENSOR
       if (this->product_name_sensor_) {
         this->product_name_sensor_->publish_state(
             device_info_service_.get_product_name());
@@ -375,6 +380,7 @@ void AlphaHwrComponent::read_device_info() {
         this->ble_version_sensor_->publish_state(
             device_info_service_.get_ble_version());
       }
+#endif
     } else {
       ESP_LOGW(TAG, "Device info read failed");
     }
