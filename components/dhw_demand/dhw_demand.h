@@ -90,9 +90,10 @@ class DhwDemandComponent : public PollingComponent {
   float detect_pump_on_continuation_(float flow,
                                      const char **method_out);
   float detect_pump_on_deterministic_(float inlet_deriv, float inlet_psi,
-                                      float pump_flow, float current_deriv,
-                                      float power_deriv, float head_rate_peak,
-                                      const char **method_out);
+                                       float pump_flow, float current_deriv,
+                                       float power_deriv, float head_rate_peak,
+                                       bool suppress_transient_votes,
+                                       const char **method_out);
 
   void publish_result_(bool demand, float confidence, float demand_level,
                        const char *method);
@@ -159,6 +160,7 @@ class DhwDemandComponent : public PollingComponent {
   bool prev_pump_confirmed_off_{false}; // True when previous tick had confirmed pump-off
   float prev_flow_{NAN};           // Flow from the *previous* tick
   float pre_pump_on_flow_{NAN};    // Flow captured from the last confirmed pump-off tick
+  uint32_t pump_on_started_ms_{0}; // Start time for startup-transient suppression
 
   // ── Tick timing ───────────────────────────────────────────────────────────
   uint32_t prev_tick_ms_{0};

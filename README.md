@@ -276,10 +276,54 @@ After that, reconnects reuse the stored bond.
 
 ## Optional Lovelace schedule card
 
-The custom card lives at
-[eman/alpha-hwr-schedule-card](https://github.com/eman/alpha-hwr-schedule-card).
-When configuring it, use your actual node-derived service names, not hard-coded
-`hwr_pump` service IDs.
+The schedule card source ships in this repo at
+`homeassistant/www/alpha-hwr-schedule-card.js`. It is a separate Home Assistant
+frontend resource, so ESPHome does not install it automatically.
+
+### Prerequisites
+
+- Use `alpha_hwr_pairing.yaml` so Home Assistant gets the weekly schedule and
+  single-event text sensors.
+- Use `alpha_hwr_schedule_editor.yaml` so Home Assistant gets the
+  `esphome.<node_name>_*` services the card calls when you edit schedules.
+
+### Install the card in Home Assistant
+
+1. Copy `homeassistant/www/alpha-hwr-schedule-card.js` from this repo into your
+   Home Assistant `www` directory.
+   - Home Assistant OS / Supervised: usually `/config/www/alpha-hwr-schedule-card.js`
+   - Container installs: copy it into the mounted config directory under `www/`
+2. In Home Assistant, open **Settings → Dashboards → Resources** and add:
+   - **URL**: `/local/alpha-hwr-schedule-card.js`
+   - **Resource type**: `JavaScript Module`
+3. Refresh the browser, or reload the frontend resources if Home Assistant does
+   not pick up the new card immediately.
+
+### Lovelace example
+
+```yaml
+type: custom:alpha-hwr-schedule-card
+title: Pump Schedule
+device: hwr_pump
+entity: text_sensor.hwr_pump_weekly_schedule
+single_events_entity: text_sensor.hwr_pump_single_events
+```
+
+### Choosing the right names
+
+- `device` must match the ESPHome node-derived service prefix: `esphome.name`
+  with `-` converted to `_`.
+- `entity` should point at the weekly schedule text sensor from the paired
+  package.
+- `single_events_entity` is optional, but enables the card's quick-run and
+  single-event display features.
+
+For example, if `esphome.name: hwr-pump`, then Home Assistant service names use
+`hwr_pump`, so the card config should use:
+
+- `device: hwr_pump`
+- `entity: text_sensor.hwr_pump_weekly_schedule`
+- `single_events_entity: text_sensor.hwr_pump_single_events`
 
 ## References
 

@@ -6,6 +6,8 @@
 namespace esphome {
 namespace dhw_demand {
 
+static const uint32_t PUMP_STARTUP_TRANSIENT_SUPPRESSION_MS = 15000;
+
 void DhwDemandComponent::setup() {
   // Initialise circular buffer to NaN so early ticks don't misread history.
   for (int i = 0; i < DROPLET_BUF_SIZE; i++) {
@@ -199,13 +201,21 @@ float DhwDemandComponent::detect_pump_on_continuation_(
 float DhwDemandComponent::detect_pump_on_deterministic_(
     float inlet_deriv, float inlet_psi, float pump_flow,
     float current_deriv, float power_deriv, float head_rate_peak,
+    bool suppress_transient_votes,
     const char **method_out) {
   int votes = 0;
 
-  // Signal 1: Pressure transient (valve-open shock)
-  if (!std::isnan(inlet_deriv) &&
-      std::abs(inlet_deriv) > inlet_pressure_transient_threshold_)
-    votes++;
+  if (!suppress_transient_votes) {
+    // Pressure/current/power/head-rate spikes also occur when the recirculation
+    // pump itself starts, so ignore them for a short post-start window. During
+    // that window, continuation detection still works and steady-state
+    // open-loop signals below remain active.
+
+    // Signal 1: Pressure transient (valve-open shock)
+    if (!std::isnan(inlet_deriv) &&
+        std::abs(inlet_deriv) > inlet_pressure_transient_threshold_)
+      votes++;
+  }
 
   // Signal 2: Absolute inlet pressure below demand floor (open circuit)
   if (!std::isnan(inlet_psi) && inlet_psi < inlet_pressure_demand_floor_)
@@ -215,20 +225,22 @@ float DhwDemandComponent::detect_pump_on_deterministic_(
   if (!std::isnan(pump_flow) && pump_flow < pump_flow_collapse_threshold_)
     votes++;
 
-  // Signal 4: Current spike (load change at valve opening)
-  if (!std::isnan(current_deriv) &&
-      std::abs(current_deriv) > motor_current_spike_threshold_)
-    votes++;
+  if (!suppress_transient_votes) {
+    // Signal 4: Current spike (load change at valve opening)
+    if (!std::isnan(current_deriv) &&
+        std::abs(current_deriv) > motor_current_spike_threshold_)
+      votes++;
 
-  // Signal 5: Power spike (corroborates current spike)
-  if (!std::isnan(power_deriv) && power_deriv > pump_power_spike_threshold_)
-    votes++;
+    // Signal 5: Power spike (corroborates current spike)
+    if (!std::isnan(power_deriv) && power_deriv > pump_power_spike_threshold_)
+      votes++;
 
-  // Signal 6: Head-pressure rate spike — corroborating only.
-  // Captured at ~1–2 Hz via callback so valve-open transients aren't missed.
-  // Only counts when at least one other signal has voted to avoid false triggers.
-  if (votes >= 1 && head_rate_peak > pump_head_rate_threshold_)
-    votes++;
+    // Signal 6: Head-pressure rate spike — corroborating only.
+    // Captured at ~1–2 Hz via callback so valve-open transients aren't missed.
+    // Only counts when at least one other signal has voted to avoid false triggers.
+    if (votes >= 1 && head_rate_peak > pump_head_rate_threshold_)
+      votes++;
+  }
 
   if (votes == 0)
     return 0.0f;
@@ -367,6 +379,7 @@ void DhwDemandComponent::update() {
   if (pump_confirmed_off) {
     observed_pump_off_ = true;
     pre_pump_on_flow_ = NAN;  // Clear stale transition state
+    pump_on_started_ms_ = 0;
   }
 
   // Only capture pre_pump_on_flow_ when the PREVIOUS tick was confirmed off.
@@ -379,9 +392,10 @@ void DhwDemandComponent::update() {
     // Pump just turned ON — record the Droplet flow from the previous tick
     // (the last confirmed pump-off observation).
     pre_pump_on_flow_ = prev_flow_;
+    pump_on_started_ms_ = now;
     ESP_LOGD(TAG, "Pump turned ON; pre-pump flow: %.2f GPM",
              std::isnan(pre_pump_on_flow_) ? -1.0f
-                                                   : pre_pump_on_flow_);
+                                                    : pre_pump_on_flow_);
   }
   prev_flow_ = flow;
   prev_pump_on_ = pump_on;
@@ -416,10 +430,18 @@ void DhwDemandComponent::update() {
       demand = true;
       demand_level = std::min(1.0f, flow / 2.5f);
     } else {
+      bool suppress_transient_votes =
+          pump_on_started_ms_ != 0 &&
+          (now - pump_on_started_ms_) < PUMP_STARTUP_TRANSIENT_SUPPRESSION_MS;
+      if (suppress_transient_votes) {
+        ESP_LOGD(TAG, "Suppressing startup transient votes (pump on for %.1f s)",
+                 (now - pump_on_started_ms_) / 1000.0f);
+      }
       confidence = detect_pump_on_deterministic_(inlet_deriv, inlet_psi,
-                                                  pump_flow, current_deriv,
-                                                  power_deriv, head_rate_peak_,
-                                                  &method);
+                                                   pump_flow, current_deriv,
+                                                   power_deriv, head_rate_peak_,
+                                                   suppress_transient_votes,
+                                                   &method);
       if (confidence > 0.0f) {
         demand = true;
         demand_level = 0.3f;  // Moderate: hydraulic signals are indirect
