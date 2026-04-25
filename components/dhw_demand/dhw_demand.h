@@ -82,8 +82,10 @@ class DhwDemandComponent : public PollingComponent {
   bool detect_pump_on_(float motor_speed, float motor_current);
 
   // Pump-off branch: returns confidence > 0 if demand detected, else 0
-  float detect_pump_off_(float flow, float temp_deriv,
+  float detect_pump_off_(float flow, bool prev_flow_present,
+                         bool prev_pump_confirmed_off, float temp_deriv,
                          float charge_deriv, float tank_temp,
+                         bool *pre_pump_demand_eligible_out,
                          const char **method_out);
 
   // Pump-on branch: returns confidence > 0 if demand detected, else 0
@@ -158,6 +160,7 @@ class DhwDemandComponent : public PollingComponent {
   bool prev_pump_on_{false};
   bool observed_pump_off_{false};       // True once we have seen a CONFIRMED pump-off tick
   bool prev_pump_confirmed_off_{false}; // True when previous tick had confirmed pump-off
+  bool prev_pre_pump_demand_eligible_{false};
   float prev_flow_{NAN};           // Flow from the *previous* tick
   float pre_pump_on_flow_{NAN};    // Flow captured from the last confirmed pump-off tick
   uint32_t pump_on_started_ms_{0}; // Start time for startup-transient suppression

@@ -118,11 +118,15 @@ bool DhwDemandComponent::detect_pump_on_(float motor_speed,
 
 // ── Pump-OFF detection ────────────────────────────────────────────────────────
 
-float DhwDemandComponent::detect_pump_off_(float flow,
-                                             float temp_deriv,
-                                             float charge_deriv,
-                                             float tank_temp,
-                                             const char **method_out) {
+float DhwDemandComponent::detect_pump_off_(float flow, bool prev_flow_present,
+                                           bool prev_pump_confirmed_off,
+                                           float temp_deriv,
+                                           float charge_deriv,
+                                           float tank_temp,
+                                           bool *pre_pump_demand_eligible_out,
+                                           const char **method_out) {
+  *pre_pump_demand_eligible_out = false;
+
   // Each signal carries a confidence weight (matching Python DemandDetector).
   struct Signal {
     const char *name;
@@ -130,13 +134,18 @@ float DhwDemandComponent::detect_pump_off_(float flow,
   };
   Signal signals[3];
   int count = 0;
+  bool corroborating_signal_present = false;
+  bool onset_corroborating_signal_present = false;
+  bool flow_present = (!std::isnan(flow) && flow > flow_threshold_);
 
-  if (!std::isnan(flow) && flow > flow_threshold_) {
+  if (flow_present) {
     signals[count++] = {"deterministic_flow", 1.0f};
   }
 
   if (!std::isnan(temp_deriv) && temp_deriv < -thermal_collapse_rate_) {
     signals[count++] = {"deterministic_thermal", 0.9f};
+    corroborating_signal_present = true;
+    onset_corroborating_signal_present = true;
   }
 
   if (!std::isnan(charge_deriv) && charge_deriv < -dhw_charge_drop_rate_) {
@@ -144,11 +153,29 @@ float DhwDemandComponent::detect_pump_off_(float flow,
     bool tank_warming = (!std::isnan(temp_deriv) && temp_deriv > 0.001f);
     if (!tank_warming) {
       signals[count++] = {"deterministic_charge", 0.7f};
+      corroborating_signal_present = true;
     }
   }
 
   if (count == 0)
     return 0.0f;
+
+  // Flow onset requires either:
+  // 1. A corroborating signal (thermal collapse or charge drop) to confirm
+  //    immediately, OR
+  // 2. The flow to persist for at least 2 consecutive ticks (debounce against
+  //    single-sample noise).
+  //
+  // Note: Per AGENTS.md §10.4, when pump is OFF the Droplet is the
+  // "unambiguous ground-truth signal", so sustained flow should always be
+  // accepted as demand even without thermal confirmation.
+  if (flow_present && !onset_corroborating_signal_present &&
+      !prev_flow_present) {  // Only suppress on FIRST tick of flow onset
+    *method_out = "flow_onset_pending";
+    return 0.0f;
+  }
+
+  *pre_pump_demand_eligible_out = flow_present;
 
   // Sort descending by weight to find best method.
   for (int i = 0; i < count - 1; i++) {
@@ -171,10 +198,9 @@ float DhwDemandComponent::detect_pump_off_(float flow,
 
   // No-flow guard: if current flow is below threshold and latch has expired,
   // suppress demand.
-  bool flow_present = (!std::isnan(flow) &&
-                       flow > flow_threshold_);
   if (!flow_present && !flow_latch_active_()) {
     *method_out = "no_flow";
+    *pre_pump_demand_eligible_out = false;
     return 0.0f;
   }
 
@@ -321,6 +347,8 @@ void DhwDemandComponent::update() {
   float tank_temp = read_sensor_(tank_lower_temp_);
   float dhw_charge = read_sensor_(dhw_charge_);
   float dhw_in_use = read_sensor_(dhw_in_use_);
+  bool prev_flow_present =
+      !std::isnan(prev_flow_) && prev_flow_ > flow_threshold_;
 
   // ── 2. Compute derivatives ────────────────────────────────────────────────
   float inlet_deriv = compute_deriv_(inlet_psi, prev_inlet_pressure_, dt_s);
@@ -388,29 +416,35 @@ void DhwDemandComponent::update() {
   // count as pre-pump demand evidence.  NaN-gap ticks where the last-known
   // state was ON do not qualify, preventing false continuation detections
   // on BLE reconnect when the pump was already running through the gap.
-  if (!prev_pump_on_ && pump_on && observed_pump_off_ && prev_pump_confirmed_off_) {
-    // Pump just turned ON — record the Droplet flow from the previous tick
-    // (the last confirmed pump-off observation).
-    pre_pump_on_flow_ = prev_flow_;
+  if (!prev_pump_on_ && pump_on) {
+    if (observed_pump_off_ && prev_pump_confirmed_off_ &&
+        prev_pre_pump_demand_eligible_) {
+      // Pump just turned ON — record the previous tick's Droplet flow only if
+      // the previous pump-off tick had non-ambiguous demand evidence.
+      pre_pump_on_flow_ = prev_flow_;
+      ESP_LOGD(TAG, "Pump turned ON; pre-pump flow: %.2f GPM",
+               std::isnan(pre_pump_on_flow_) ? -1.0f
+                                             : pre_pump_on_flow_);
+    } else {
+      pre_pump_on_flow_ = NAN;
+      ESP_LOGD(TAG, "Pump turned ON without confirmed pre-pump demand evidence");
+    }
     pump_on_started_ms_ = now;
-    ESP_LOGD(TAG, "Pump turned ON; pre-pump flow: %.2f GPM",
-             std::isnan(pre_pump_on_flow_) ? -1.0f
-                                                    : pre_pump_on_flow_);
   }
-  prev_flow_ = flow;
-  prev_pump_on_ = pump_on;
-  prev_pump_confirmed_off_ = pump_confirmed_off;
 
   // ── 5. Run detection branch ───────────────────────────────────────────────
   bool demand = false;
   float confidence = 0.0f;
   float demand_level = 0.0f;
   const char *method = "idle";
+  bool pre_pump_demand_eligible = false;
 
   if (!pump_on) {
     // ── Pump-OFF branch ───────────────────────────────────────────────────
-    confidence = detect_pump_off_(flow, temp_deriv, charge_deriv,
-                                  tank_temp, &method);
+    confidence = detect_pump_off_(flow, prev_flow_present,
+                                  prev_pump_confirmed_off_, temp_deriv,
+                                  charge_deriv, tank_temp,
+                                  &pre_pump_demand_eligible, &method);
     if (confidence > 0.0f) {
       demand = true;
       // Demand level: scale by flow if available, else moderate default.
@@ -419,6 +453,8 @@ void DhwDemandComponent::update() {
       } else {
         demand_level = 0.5f;
       }
+    } else if (strcmp(method, "flow_onset_pending") == 0) {
+      confidence = 0.5f;  // Ambiguous onset: wait one full off tick
     } else {
       method = "deterministic_idle";
       confidence = 1.0f;  // High confidence that there is no demand
@@ -456,6 +492,11 @@ void DhwDemandComponent::update() {
   if (demand && !std::isnan(dhw_in_use) && dhw_in_use >= 0.5f) {
     confidence = std::min(1.0f, confidence + 0.05f);
   }
+
+  prev_flow_ = flow;
+  prev_pump_on_ = pump_on;
+  prev_pump_confirmed_off_ = pump_confirmed_off;
+  prev_pre_pump_demand_eligible_ = pre_pump_demand_eligible;
 
   // ── 7. Publish & session tracking ─────────────────────────────────────────
   publish_result_(demand, confidence, demand_level, method);
