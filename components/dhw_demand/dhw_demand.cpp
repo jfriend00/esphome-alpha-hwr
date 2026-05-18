@@ -13,7 +13,7 @@ void DhwDemandComponent::setup() {
   for (int i = 0; i < DROPLET_BUF_SIZE; i++) {
     flow_buf_[i] = NAN;
   }
-  prev_tick_ms_ = millis();
+  // Per-sensor derivative timestamps are initialized to 0 (first-call sentinel).
 
   // Register callback so head_rate_peak_ is updated at notification rate (~1–2 Hz).
   // Using the peak within each 10s window ensures transients aren't missed at tick time.
@@ -72,25 +72,35 @@ float DhwDemandComponent::read_sensor_(sensor::Sensor *s) {
 }
 
 float DhwDemandComponent::compute_deriv_(float current, float &prev,
-                                          float dt_s) {
+                                          uint32_t &prev_ms, uint32_t now) {
   if (std::isnan(current)) {
-    prev = current;
+    // Both prev and prev_ms are intentionally left unchanged so the next valid
+    // reading computes dt_s over the true elapsed time (spanning any NaN gap),
+    // not just a single tick.
     return NAN;
   }
-  if (std::isnan(prev) || dt_s <= 0.0f) {
+  if (std::isnan(prev) || prev_ms == 0) {
     prev = current;
+    prev_ms = now;
+    return NAN;
+  }
+  float dt_s = (float)(now - prev_ms) / 1000.0f;
+  if (dt_s <= 0.0f) {
+    prev = current;
+    prev_ms = now;
     return NAN;
   }
   float deriv = (current - prev) / dt_s;
   prev = current;
+  prev_ms = now;
   return deriv;
 }
 
 bool DhwDemandComponent::flow_latch_active_() {
-  // Scan backwards through the circular buffer up to flow_latch_seconds_ / 10
-  // samples. Round up so sub-10-second latch values still inspect at least one
-  // sample on the component's default 10s grid.
-  int samples = (flow_latch_seconds_ + 9) / 10;
+  // Derive sample count from the actual update interval rather than
+  // hardcoding a 10s assumption.
+  int interval_s = std::max(1, static_cast<int>(get_update_interval() / 1000));
+  int samples = (flow_latch_seconds_ + interval_s - 1) / interval_s;
   if (samples < 1)
     samples = 1;
   if (samples > DROPLET_BUF_SIZE)
@@ -154,6 +164,7 @@ float DhwDemandComponent::detect_pump_off_(float flow, bool prev_flow_present,
     if (!tank_warming) {
       signals[count++] = {"deterministic_charge", 0.7f};
       corroborating_signal_present = true;
+      onset_corroborating_signal_present = true;
     }
   }
 
@@ -332,10 +343,6 @@ void DhwDemandComponent::update_session_(bool demand) {
 
 void DhwDemandComponent::update() {
   uint32_t now = millis();
-  float dt_s = (prev_tick_ms_ == 0)
-                   ? 10.0f
-                   : (float)(now - prev_tick_ms_) / 1000.0f;
-  prev_tick_ms_ = now;
 
   // ── 1. Read current sensor values ─────────────────────────────────────────
   float motor_speed = read_sensor_(motor_speed_);
@@ -350,13 +357,13 @@ void DhwDemandComponent::update() {
   bool prev_flow_present =
       !std::isnan(prev_flow_) && prev_flow_ > flow_threshold_;
 
-  // ── 2. Compute derivatives ────────────────────────────────────────────────
-  float inlet_deriv = compute_deriv_(inlet_psi, prev_inlet_pressure_, dt_s);
+  // ── 2. Compute derivatives (per-sensor dt tracks NAN gaps correctly) ──────
+  float inlet_deriv = compute_deriv_(inlet_psi, prev_inlet_pressure_, prev_inlet_pressure_ms_, now);
   float current_deriv =
-      compute_deriv_(motor_current, prev_motor_current_, dt_s);
-  float temp_deriv = compute_deriv_(tank_temp, prev_tank_lower_temp_, dt_s);
-  float charge_deriv = compute_deriv_(dhw_charge, prev_dhw_charge_, dt_s);
-  float power_deriv = compute_deriv_(pump_power, prev_pump_power_, dt_s);
+      compute_deriv_(motor_current, prev_motor_current_, prev_motor_current_ms_, now);
+  float temp_deriv = compute_deriv_(tank_temp, prev_tank_lower_temp_, prev_tank_lower_temp_ms_, now);
+  float charge_deriv = compute_deriv_(dhw_charge, prev_dhw_charge_, prev_dhw_charge_ms_, now);
+  float power_deriv = compute_deriv_(pump_power, prev_pump_power_, prev_pump_power_ms_, now);
 
   // ── 3. Push Droplet flow into circular buffer ─────────────────────────────
   flow_buf_[flow_buf_head_] = flow;

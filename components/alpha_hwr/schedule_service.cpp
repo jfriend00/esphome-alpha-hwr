@@ -656,12 +656,14 @@ bool ScheduleService::write_entries_async(
         } else {
           ESP_LOGW(TAG,
                    "Async write timeout/error for layer %d - treating as "
-                   "success (per Python reference)",
+                   "success (per Python reference: pump commits on timeout)",
                    layer);
         }
+        // NOTE: Always reports true to match Python reference behavior.
+        // The pump's two-phase commit often times out even on success because
+        // the ACK notification arrives outside the expected window.
         if (on_complete) {
-          on_complete(
-              true); // Always return true to match Python behavior for timeouts
+          on_complete(true);
         }
       },
       3000);
@@ -669,10 +671,12 @@ bool ScheduleService::write_entries_async(
   return true;
 }
 
-bool ScheduleService::clear_entry(const std::string &day, uint8_t layer) {
+void ScheduleService::clear_entry(const std::string &day, uint8_t layer,
+                                   std::function<void(bool)> on_complete) {
   if (!this->session_.is_ready()) {
     ESP_LOGE(TAG, "Cannot clear schedule entry: session not ready");
-    return false;
+    if (on_complete) on_complete(false);
+    return;
   }
 
   // Validate day
@@ -685,35 +689,48 @@ bool ScheduleService::clear_entry(const std::string &day, uint8_t layer) {
   }
   if (!valid_day) {
     ESP_LOGE(TAG, "Invalid day name: %s", day.c_str());
-    return false;
+    if (on_complete) on_complete(false);
+    return;
   }
 
   // Validate layer
   if (layer > 4) {
     ESP_LOGE(TAG, "Invalid layer: %d. Must be 0-4.", layer);
-    return false;
+    if (on_complete) on_complete(false);
+    return;
   }
 
   ESP_LOGI(TAG, "Clearing schedule entry for %s on layer %d...", day.c_str(),
            layer);
 
-  // Read current schedule for this layer
-  std::vector<ScheduleEntry> entries;
-  if (!this->read_entries(&entries, layer)) {
-    ESP_LOGE(TAG, "Failed to read current schedule for layer %d", layer);
-    return false;
-  }
+  // Fully async: read → filter → write, with completion propagation.
+  this->read_entries_async(layer,
+    [this, day, layer, on_complete](bool success, const std::vector<ScheduleEntry> &entries) {
+      if (!success) {
+        ESP_LOGE(TAG, "Failed to read current schedule for layer %d", layer);
+        if (on_complete) on_complete(false);
+        return;
+      }
 
-  // Filter out the entry for the specified day
-  std::vector<ScheduleEntry> filtered_entries;
-  for (const auto &entry : entries) {
-    if (entry.get_day() != day) {
-      filtered_entries.push_back(entry);
-    }
-  }
+      // Filter out the entry for the specified day
+      std::vector<ScheduleEntry> filtered_entries;
+      for (const auto &entry : entries) {
+        if (entry.get_day() != day) {
+          filtered_entries.push_back(entry);
+        }
+      }
 
-  // Write back the filtered entries
-  return this->write_entries(filtered_entries, layer);
+      // Write back the filtered entries asynchronously
+      this->write_entries_async(filtered_entries, layer,
+        [on_complete, day, layer](bool write_success) {
+          if (write_success) {
+            ESP_LOGI(TAG, "Cleared schedule entry for %s on layer %d", day.c_str(), layer);
+          } else {
+            ESP_LOGE(TAG, "Failed to write filtered schedule for layer %d", layer);
+          }
+          if (on_complete) on_complete(write_success);
+        });
+    });
 }
 
 // -------------------------------------------------------------------------
