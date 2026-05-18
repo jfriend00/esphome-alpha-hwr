@@ -253,9 +253,55 @@ The layered architecture is now in place. When adding new features:
 
 ---
 
-## 10. Component: `dhw_demand` — DHW Demand Detector
+## 10. Release Process
 
-### 10.1 Background & Motivation
+### Versioning
+
+Releases follow **semantic versioning** (`vMAJOR.MINOR.PATCH`). Because this library is still pre-1.0, minor version bumps (`v0.x.0`) are used for new features or breaking changes; patch bumps (`v0.x.y`) are used for bug fixes only.
+
+### Creating a Release
+
+1. **Merge all PRs** for the release into `main`.
+2. **Tag and publish** via the GitHub CLI:
+   ```bash
+   gh release create vX.Y.Z \
+     --title "vX.Y.Z — Short description" \
+     --notes-file /tmp/release_notes.md
+   ```
+3. **Update all version pins** in the repository (see below) and commit directly to `main`:
+   ```bash
+   # Bulk-replace the previous tag across all example YAMLs and packages
+   old=vOLD; new=vX.Y.Z
+   sed -i '' "s|@${old}|@${new}|g" \
+     hwr-pump-example.yaml hwr-pairing-example.yaml \
+     hwr-pump-schedule-example.yaml dhw-demand-example.yaml \
+     packages/alpha_hwr_base.yaml packages/alpha_hwr_pairing.yaml \
+     packages/dhw_demand_detector.yaml
+   git add -u && git commit -m "Pin examples and packages to ${new}"
+   git push
+   ```
+
+### Files That Must Be Updated on Every Release
+
+> **Rule**: whenever a new release tag is created, every `@vX.Y.Z` ref in the files below must be updated to the new tag. Failing to do so means users who copy-paste the examples will pull an outdated version.
+
+| File | Role |
+|---|---|
+| `hwr-pump-example.yaml` | Basic pump example |
+| `hwr-pairing-example.yaml` | Pairing example |
+| `hwr-pump-schedule-example.yaml` | Schedule management example |
+| `dhw-demand-example.yaml` | DHW demand detector example |
+| `packages/alpha_hwr_base.yaml` | `external_components` source for base package |
+| `packages/alpha_hwr_pairing.yaml` | `external_components` source for pairing package |
+| `packages/dhw_demand_detector.yaml` | `external_components` source for DHW demand package (including commented examples) |
+
+Do **not** update files under `.esphome/` — that directory is a local build cache and is not committed.
+
+---
+
+## 11. Component: `dhw_demand` — DHW Demand Detector
+
+### 11.1 Background & Motivation
 
 The `components/dhw_demand` component addresses a fundamental ambiguity in hot-water recirculation systems: **a flow sensor in the DHW circuit cannot distinguish closed-loop recirculation from an occupant actually opening a fixture**. The Droplet D1 sensor sits inline in the DHW circuit and reports flow regardless of source — when the ALPHA HWR pump is running a nonzero reading may be recirculation only, demand only, or both simultaneously. The ALPHA HWR's internal flow sensor (0–0.53 GPM) is blind to demand when the pump is idle.
 
@@ -266,7 +312,7 @@ The theoretical foundation is fully documented in the companion research project
 
 **Design philosophy:** We take a **heuristic, threshold-based approach** — no ML, no model training, no InfluxDB dependency. Each physical signal votes independently; confidence is computed from vote weight and count. The thresholds are derived from observed hardware behaviour and can be tuned without reflashing via ESPHome `substitutions`.
 
-### 10.2 Architecture
+### 11.2 Architecture
 
 `DhwDemandComponent` is a standalone `PollingComponent` (default 10 s tick) in namespace `esphome::dhw_demand`. It has **no dependency on `alpha_hwr`** — pump telemetry sensors are wired in by the YAML config, so the component works whether the pump sensors come from `alpha_hwr` or any other source.
 
@@ -277,7 +323,7 @@ components/dhw_demand/
 └── dhw_demand.cpp    # Detection logic, session tracking, publish helpers
 ```
 
-### 10.3 Sensor Inputs
+### 11.3 Sensor Inputs
 
 All inputs are optional — missing sensors produce `NAN` and the affected detection paths are simply skipped.
 
@@ -300,7 +346,7 @@ All inputs are optional — missing sensors produce `NAN` and the affected detec
 | `dhw_charge` | % | DHW charge-drop derivative |
 | `dhw_in_use` | boolean (as float) | NWP500 native flag; corroborates demand when pump is off |
 
-### 10.4 Detection Algorithm
+### 11.4 Detection Algorithm
 
 The tick runs in `update()` every 10 seconds. Steps:
 
@@ -347,7 +393,7 @@ When the pump is running the Droplet D1 sees recirculation flow in addition to a
 
    > **Why thermal/duration paths are disabled during pump-on:** During long recirculation runs the pump returns progressively cooled water to the tank cold inlet, causing the lower tank temperature to drop at rates up to −0.083 °F/s — indistinguishable from a shower draw. Only hydraulic signals (which reflect the open-loop topology change) are reliable discriminators.
 
-### 10.5 Outputs
+### 11.5 Outputs
 
 | Config key | Type | Description |
 |---|---|---|
@@ -356,11 +402,11 @@ When the pump is running the Droplet D1 sees recirculation flow in addition to a
 | `session_duration` | `sensor` (seconds) | Elapsed seconds of current demand session; 0 when idle |
 | `detection_method` | `text_sensor` | Which detection path fired (e.g., `deterministic_flow`, `deterministic_pump_on`, `deterministic_continuation`, `pump_on_uncertain`, `deterministic_idle`) |
 
-### 10.6 Session Tracking
+### 11.6 Session Tracking
 
 A *session* is a contiguous block of demand ticks. Short gaps (default 60 seconds, `session_gap_tolerance_seconds`) are bridged to avoid fragmenting a single draw into multiple sessions. The session start and end are logged at `ESP_LOGI`.
 
-### 10.7 Tunable Thresholds
+### 11.7 Tunable Thresholds
 
 All thresholds are exposed as YAML config keys with defaults matching the Python `DetectorConfig`. They can be overridden via `substitutions` without reflashing.
 
@@ -378,7 +424,7 @@ All thresholds are exposed as YAML config keys with defaults matching the Python
 | `flow_latch_seconds` | 30 | s | Falling-edge hold-off duration |
 | `session_gap_tolerance_seconds` | 60 | s | Max gap before ending a session |
 
-### 10.8 Development Rules for `dhw_demand`
+### 11.8 Development Rules for `dhw_demand`
 
 1. **No ML, no external dependencies** — the component must compile and run entirely on-device with no Python runtime, no InfluxDB, no trained model. All logic is explicit threshold-based heuristics.
 2. **All inputs optional** — never `assert` or crash on a missing sensor. Missing signals return `NAN`; detection paths that require a `NAN` input are silently skipped.
