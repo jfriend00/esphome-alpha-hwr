@@ -20,13 +20,13 @@ static const char *TAG = "alpha_hwr.control";
 const ControlService::ControlModeMapping ControlService::CLASS10_CONTROL_MAP[] = {
     {0x00, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_PRESSURE (0)
     {0x01, {0x45, 0x65, 0x70, 0x00}},  // PROPORTIONAL_PRESSURE (1) - mode_byte 0x01, suffix from _MODE_SUFFIX_MAP
-    {0x02, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_SPEED (2)
+    {0x02, {0x44, 0xCF, 0x80, 0x00}},  // CONSTANT_SPEED (2)
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (3) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (4) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // AUTO_ADAPT (5) - not in _MODE_BYTE_MAP
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (6) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (7) - unused
-    {0x08, {0x45, 0x65, 0x70, 0x00}},  // CONSTANT_FLOW (8) - mode_byte 0x08, suffix same as pressure
+    {0x08, {0x44, 0xCF, 0x80, 0x00}},  // CONSTANT_FLOW (8) - mode_byte 0x08, suffix same as pressure
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (9) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (10) - unused
     {0x00, {0x00, 0x00, 0x00, 0x00}},  // (11) - unused
@@ -537,6 +537,9 @@ bool ControlService::send_control_request(ControlMode mode, bool start, float se
     // Use default suffix bytes from mode map
     memcpy(&payload[8], mapping.suffix, 4);
   }
+  ESP_LOGW(TAG, "CTRL WRITE: mode=%d start=%d setpoint_arg=%.4f -> bytes %02X %02X %02X %02X",
+         static_cast<int>(mode), start, setpoint,
+         payload[8], payload[9], payload[10], payload[11]);
 
   // OpSpec 0x90 = SET + 16 bytes (4 IDs + 12 payload)
   uint8_t apdu[18];
