@@ -36,6 +36,9 @@ void AlphaHwrComponent::setup() {
       [this]() { this->session_.on_connected(); });
 
   ble_manager_.set_disconnection_callback([this]() {
+    this->cancel_timeout("hwr_auth_start");  // kill the stale stabilize->auth timer
+    this->auth_.cancel();                    // invalidate the in-flight handshake chain
+    this->telemetry_service_.stop();         // reset running_ so the next connect is clean
     this->session_.on_disconnected();
     this->transport_.reset();
   });
@@ -47,7 +50,7 @@ void AlphaHwrComponent::setup() {
     this->session_.on_subscribed();
 
     // Wait for pump to stabilize, then authenticate
-    this->set_timeout(2000, [this]() {
+    this->set_timeout("hwr_auth_start", 2000, [this]() {
       ESP_LOGI(TAG, "Pump stabilized. Starting authentication...");
       this->authenticate();
     });
