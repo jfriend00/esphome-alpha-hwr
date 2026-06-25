@@ -1,0 +1,123 @@
+# =============================================================================
+# XIAO ESP32-S3  +  W5500 Ethernet Adapter V1.2 (PoE)  ->  Grundfos ALPHA HWR
+# -----------------------------------------------------------------------------
+# Talks Bluetooth to the pump, exposes telemetry + control to Home Assistant
+# over wired Ethernet. No WiFi, no Bluetooth proxy, no Python library needed.
+# The ESP32 itself is the only thing that touches the pump's single BLE link.
+# =============================================================================
+
+substitutions:
+  # The pump's BLE MAC address. Find it in the Grundfos GO Remote app's list of
+  # paired Bluetooth devices, or read it from this node's logs during the first
+  # pairing scan. Replace the placeholder below.
+  mac_address: "0C:4B:EE:11:B6:C9"
+
+esphome:
+  name: recirc-controller
+  friendly_name: Recirc Controller
+  # V1.2 board + active BLE require a recent ESPHome:
+  min_version: 2025.11.0
+  # Keep the node name clean so Home Assistant entity_ids are predictable
+  # (they will be prefixed hwr_pump_*). Set true only if you run several of
+  # these and need unique hostnames.
+  name_add_mac_suffix: false
+  includes:
+    - "<nvs_flash.h>"
+    - "<esp_gap_ble_api.h>"     # for esp_ble_remove_bond_device()
+    - "<esp_system.h>"          # for esp_restart()
+
+esp32:
+  variant: esp32s3
+  framework:
+    type: esp-idf          # Required for the ALPHA HWR BLE security handshake.
+  # If your ESPHome install insists on an explicit board key, add:
+  #   board: seeed_xiao_esp32s3
+
+# --- Wired network: Seeed XIAO W5500 Adapter V1.2 pin map (official) ---------
+ethernet:
+  type: W5500
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8
+  cs_pin: GPIO2
+  interrupt_pin: GPIO10
+  # DHCP is used by default. For a fixed address, uncomment and edit:
+  # manual_ip:
+  #   static_ip: 192.168.1.50
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+logger:
+  level: INFO
+
+# Home Assistant native API (this is how HA discovers and controls the node).
+api:
+  encryption:
+    key: !secret recirc_api_key
+
+ota:
+  - platform: esphome
+    password: !secret esp32_ota_password
+
+# Handy recovery buttons (optional but recommended on a hard-to-reach node).
+button:
+  - platform: safe_mode
+    name: Safe Mode Boot
+  - platform: factory_reset
+    name: Factory Reset
+  - platform: restart
+    name: "Restart Recirc Controller"
+    id: restart_button
+  - platform: template
+    name: "Clear All NVM"
+    icon: "mdi:bluetooth-off"
+    id: clear_ble_bonds
+    on_press:
+      - lambda: |-
+          ESP_LOGW("custom", "Erasing NVS partition via button press...");
+
+          // Execute the erasure using the globally included Espressif API
+          esp_err_t err = nvs_flash_erase();
+
+          if (err == ESP_OK) {
+            ESP_LOGI("custom", "NVS Erased successfully! Restarting ESP32...");
+          } else {
+            ESP_LOGE("custom", "NVS Erase failed with error code: %d", err);
+          }
+
+          // Flush logs and reboot
+          delay(500);
+          esp_restart();
+  - platform: template
+    name: "Clear Pump BLE Bond"
+    icon: "mdi:bluetooth-remove"
+    id: clear_pump_bond
+    on_press:
+      - lambda: |-
+          // Parse the pump MAC from substitutions into a BLE address.
+          esp_bd_addr_t addr;
+          unsigned int b[6];
+          if (sscanf("${mac_address}", "%x:%x:%x:%x:%x:%x",
+                     &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) {
+            ESP_LOGE("custom", "Could not parse pump MAC '${mac_address}'");
+            return;
+          }
+          for (int i = 0; i < 6; i++) addr[i] = (uint8_t) b[i];
+
+          esp_err_t err = esp_ble_remove_bond_device(addr);
+          if (err == ESP_OK) {
+            ESP_LOGW("custom", "Requested BLE bond removal for ${mac_address}");
+          } else {
+            ESP_LOGE("custom", "esp_ble_remove_bond_device failed: %d", (int) err);
+          }
+
+# --- Grundfos ALPHA HWR component stack --------------------------------------
+packages:
+  alpha_hwr: !include ../packages/alpha_hwr_pairing.yaml
+  alpha_hwr_controls: !include ../packages/alpha_hwr_controls.yaml
+
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: "America/Los_Angeles"
