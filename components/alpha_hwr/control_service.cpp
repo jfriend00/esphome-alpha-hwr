@@ -308,41 +308,48 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
   return true;
 }
 
-bool ControlService::start(uint8_t mode) {
-  // Verify session is authenticated
+bool ControlService::start(uint8_t mode, float speed_rpm) {
   if (session_.get_state() != core::SessionState::READY) {
-    ESP_LOGW(TAG, "Cannot start pump: session not ready (state=%d)", static_cast<int>(session_.get_state()));
+    ESP_LOGW(TAG, "Cannot start pump: session not ready (state=%d)",
+             static_cast<int>(session_.get_state()));
     return false;
   }
 
   ESP_LOGI(TAG, "Starting pump...");
-
-  // Resolve target mode (255 = use current mode)
-  // Reference: control.py::start() lines 183-206
-  if (mode != 255) {
-    current_mode_ = static_cast<ControlMode>(mode);
-  }
-  
+  if (mode != 255) current_mode_ = static_cast<ControlMode>(mode);
   ControlMode target = current_mode_;
-  
-  if (!send_control_request(target, true)) {
+
+  // Constant Speed: assert an explicit setpoint at start instead of the mode's
+  // default suffix. Source priority: caller value (HA input_number, read in the
+  // switch lambda) -> compiled fallback if HA hasn't synced yet (cold boot).
+  float sp = NAN;
+  if (target == ControlMode::CONSTANT_SPEED)
+    sp = std::isnan(speed_rpm) ? FALLBACK_SPEED_RPM : speed_rpm;
+
+  if (!send_control_request(target, true, sp)) {
     ESP_LOGE(TAG, "Failed to send start command");
     return false;
   }
 
-  // Update mode state if a specific mode was requested
-  if (mode != 255) {
-    mode_valid_ = true;
-    if (mode_change_callback_) {
-      mode_change_callback_(current_mode_, 0, 0.0f);
-    }
+  // Keep the dedicated speed register (Sub 13) in sync with what we commanded,
+  // so the readback/UI matches reality. Mirrors set_constant_speed_async step 2.
+  if (target == ControlMode::CONSTANT_SPEED && !std::isnan(sp)) {
+    float v = sp;
+    if (schedule_callback_)
+      schedule_callback_([this, v]() { set_class10_setpoint(v, SUB_SPEED_SETPOINT); }, 400);
+    else
+      set_class10_setpoint(v, SUB_SPEED_SETPOINT);
   }
 
-  // Pump is now enabled (user started it)
+  if (mode != 255) {
+    mode_valid_ = true;
+    if (mode_change_callback_) mode_change_callback_(current_mode_, 0, 0.0f);
+  }
   pump_enabled_ = true;
   pump_enabled_valid_ = true;
 
-  ESP_LOGI(TAG, "Pump start command sent (mode=%d)", static_cast<uint8_t>(target));
+  ESP_LOGI(TAG, "Pump start command sent (mode=%d, speed=%.0f)",
+           static_cast<uint8_t>(target), sp);
   return true;
 }
 

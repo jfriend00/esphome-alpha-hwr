@@ -164,8 +164,8 @@ class ControlService {
    * 
    * Reference: control.py::start() lines 165-234
    */
-  bool start(uint8_t mode = 255);
-  
+    bool start(uint8_t mode = 255, float speed_rpm = NAN);
+    static constexpr float FALLBACK_SPEED_RPM = 1660.0f;   // used only before HA value is available  
   /**
    * Stop the pump.
    * 

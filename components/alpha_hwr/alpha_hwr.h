@@ -291,7 +291,7 @@ private:
 
 public:
   // Control service access methods (for ESPHome switches/buttons)
-  bool pump_start() { return control_service_.start(); }
+  bool pump_start(float speed_rpm = NAN) { return control_service_.start(255, speed_rpm); }
   bool pump_stop() { return control_service_.stop(); }
   bool set_control_mode(services::ControlMode mode) {
     return control_service_.set_mode(mode);

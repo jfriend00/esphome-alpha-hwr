@@ -111,6 +111,20 @@ button:
             ESP_LOGE("custom", "esp_ble_remove_bond_device failed: %d", (int) err);
           }
 
+number:
+  - platform: template
+    name: "Recirc Speed"
+    id: desired_speed_rpm
+    icon: "mdi:speedometer"
+    unit_of_measurement: "RPM"
+    optimistic: true          # this entity IS the source of truth; no pump readback
+    min_value: 1650           # floor-aware
+    max_value: 4500
+    step: 50
+    initial_value: 1650
+    restore_value: true       # <-- the key line: survives reboot via NVS
+    mode: slider
+
 # --- Grundfos ALPHA HWR component stack --------------------------------------
 packages:
   alpha_hwr: !include ../packages/alpha_hwr_pairing.yaml
