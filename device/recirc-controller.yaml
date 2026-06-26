@@ -49,6 +49,27 @@ ethernet:
 
 logger:
   level: INFO
+  # level: VERBOSE
+  # logs:
+  #   # BLE stack — keep these loud, this is what we're hunting
+  #   esp32_ble: VERBOSE
+  #   esp32_ble_client: VERBOSE
+  #   esp32_ble_tracker: DEBUG
+  #   alpha_hwr.ble: VERBOSE
+  #   # Everything else — turn DOWN so it doesn't bury the bond/security lines
+  #   alpha_hwr: INFO
+  #   alpha_hwr.telemetry: INFO
+  #   alpha_hwr.session: INFO
+  #   alpha_hwr.control: INFO
+  #   alpha_hwr.auth: INFO
+  #   number: INFO
+  #   select: INFO
+  #   sensor: WARN
+  #   text_sensor: WARN
+  #   binary_sensor: WARN
+  #   api: WARN
+  #   ota: WARN
+  #  ethernet: INFO
 
 # Home Assistant native API (this is how HA discovers and controls the node).
 api:
