@@ -134,13 +134,112 @@ the single highest-leverage change (the readiness gate) lands early.
 
 **Chunk 1 — DONE.** Verify base doesn't auto-initiate encryption. ✓ (see §4)
 
-**Chunk 2 — Readiness gate (PRIMARY bond-preservation fix).**
-In `handle_connection_opened`, for a *bonded reconnect*, do NOT request encryption
-immediately. Wait until the pump proves ready — use **successful unencrypted
-service discovery** as the readiness signal — then request encryption. This
-prevents the `0x61` that destroys the bond. This is THE fix; everything else makes
-it more robust or less painful when it slips. (Empirical readiness signal preferred
-over a fixed settle-delay, which is a guess.)
+**Chunk 2 — Readiness gate (PRIMARY bond-preservation fix). IMPLEMENTED; Stage 1
+validated. Stage 3 (the real payoff test) still pending.**
+
+*Design:* don't request encryption immediately on connection-open. Wait until the
+pump proves ready — use **successful unencrypted service discovery** as the
+readiness signal — then request encryption. Prevents the `0x61` that destroys the
+bond. This is THE fix; everything else makes it more robust or less painful when it
+slips. (Empirical readiness signal preferred over a fixed settle-delay, which is a
+guess. Confirmed safe: tonight's logs show discovery + CCCD writes succeed
+UNENCRYPTED on this pump, so discovery-first is viable.)
+
+*What was actually changed (Option A — minimal; chose A over fuller "B" that would
+also serialize subscribe/auth, to avoid disturbing the working reconnect chain):*
+- `ble_connection_manager.h`: added one member `bool encryption_requested_{false}`
+  (guards against >1 encryption request per connection, since the discovery-complete
+  handler can re-enter via the retry path). Reset false on each connection-open.
+- `handle_connection_opened`: REMOVED the immediate
+  `esp_ble_set_encryption(..., ESP_BLE_SEC_ENCRYPT)` block. Everything else
+  (callbacks, conn-params, the POST_CONNECT_DELAY_MS discovery-stabilize timer, the
+  `peer_bond_exists()` diagnostic log) unchanged.
+- `handle_service_discovery_complete`: ADDED the encryption request right after the
+  service is confirmed found, before `subscribe_to_notifications()`, guarded by
+  `if (pairing_enabled_ && !encryption_requested_)`. Logs
+  "Pump ready (discovery ok). Requesting encryption/pairing...".
+- The subscribe/auth chain was deliberately NOT reordered (that's the "B" refinement,
+  deferred). encryption + subscription now run concurrently after discovery — proven
+  safe by tonight's logs where subscription (CCCD writes) succeeded while encryption
+  was still resolving. Encryption call now exists in EXACTLY ONE place (the
+  discovery-complete handler) — so the ordering flip is guaranteed by construction,
+  not by runtime timing.
+- The encryption request is intentionally NOT branched on bonded-vs-no-bond: the same
+  `esp_ble_set_encryption(ESP_BLE_SEC_ENCRYPT)` call serves both (stack routes to
+  encrypt-with-bond or pair based on bond state). Keeps Chunk 2 minimal; the
+  bonded-vs-pairing *behavioral* split is Chunk 5/6's job.
+
+*Testing (staircase, safest first):*
+- Stage 0 (compile/boot) — PASS (compile timestamp confirmed).
+- Stage 1 (normal bonded reconnect still works — the safety test; ESP32 reboot, pump
+  untouched, ZERO bond-loss risk because a READY pump never produces the 0x61) —
+  PASS on behavioral evidence: after OTA reboot AND after a deliberate restart, the
+  device reconnected BONDED to READY with full clean telemetry (1648-1653 RPM, 2.3 W,
+  no alarms, Constant Speed @ 1650). A successful bonded reconnect REQUIRES encryption
+  to have fired and succeeded, on exactly the path Chunk 2 modifies → proves the
+  relocated call works and the working path is intact.
+- NOTE on why we never *saw* the ordering flip in a capture: the ESPHome API log
+  stream rides the network link to the ESP32 and DIES when the ESP32 reboots; it
+  re-attaches only after the fast BLE reconnect already happened. So a reboot-
+  triggered BLE sequence is structurally uncatchable over the API logger. Serial/USB
+  logging would catch it (survives reboot) but needs closet access and only shows the
+  SAFE path anyway — not worth a trip. The single-call-site structure already
+  guarantees the flip.
+- Stage 3 (THE payoff test — does the gate actually prevent bond loss when the PUMP
+  is not ready) — **3/3 PASSES (2026-06-26 09:01, 09:17, 09:25), all captured over
+  network.** Each: pump off ~2 min, then on. Every run: first reconnect `Bond state:
+  BONDED` (bond SURVIVED) → `Service discovery complete` → `Pump ready (discovery ok).
+  Requesting encryption` (gate engaged: encryption AFTER discovery) → `Auth mode:
+  0x09` → READY. **NO `0x61`, NO `btm_sec_clr_temp_auth`, NO `0x52` in any run** — the
+  bond-destruction signature is ABSENT across all three. Run 2 (09:17) is the
+  strongest: TWO connection-opens before completion, BONDED on BOTH — the gate held
+  the bond through a bumpy multi-attempt reconnect that would have killed the old
+  code. Reconnects are now instant, no loop.
+  EPISTEMIC STATUS: this is a strong, repeated, mechanism-verified result against a
+  RACE condition — three independent cold power-cycles, mechanism visible each time.
+  That is about as much confidence as empirical testing of a race can give short of
+  indefinite runs. NOT claimed as absolute proof (a race can win on its own), but the
+  pattern is behavior, not luck. **Chunk 2 readiness gate VALIDATED for the
+  real-world pump-power-blip case.** Continue to watch real power events as they
+  happen; treat each clean reconnect as one more data point.
+  OPEN COUNTEREXAMPLE (keep watching): the bond WAS lost earlier the same morning
+  (~08:09) during a DIRTY DUAL-POWER transition (PoE dropped while USB connected →
+  brownout limbo, NOT a clean pump-cycle). That loss was UNCAPTURED (cause unproven:
+  dirty-transition corruption vs. an uncaptured 0x61 vs. NVS corruption). It is a
+  DIFFERENT event class than the 3 clean passes (ESP32 disturbed, not just
+  pump-not-ready). Provisionally attributed to the dual-power mishap; watch whether
+  anything similar recurs on a CLEAN reboot. If it does, there is a second failure
+  mode the gate doesn't cover. If it never recurs on clean reboots, it was the
+  self-inflicted power mess.
+- Stage 1 ORDERING FLIP CONFIRMED OBSERVED (this morning, via an unplanned reconnect):
+  log showed `Bond state: NO BOND → Starting service discovery → Service discovery
+  complete → Pump ready (discovery ok). Requesting encryption/pairing` — encryption
+  fired AFTER discovery, exactly as designed. Gate mechanism is now observed, not just
+  inferred from the single-call-site structure.
+
+**HARDWARE / POWER HAZARD (learned the hard way this morning):**
+This board has BOTH PoE and (when plugged for serial) USB power. Dropping ONE rail
+while the other is connected does NOT cleanly power-cycle — the ESP32 FAILS OVER to
+the other source, producing a dirty brownout/partial-reset in limbo rather than a
+clean off/on. This morning, dropping PoE with USB connected caused exactly this, and
+the BLE bond was LOST during the uncaptured transition (cause unconfirmed — could be
+the dirty transition corrupting state, or a 0x61 reconnect that wasn't captured;
+logging wasn't running through the event so we cannot prove which). LESSON:
+- To reboot cleanly: use the **RESET button** (no power transition at all) or the
+  **HA/API restart** — NOT rail-dropping.
+- Never power-cycle by dropping one source while the other is connected.
+- Note ESP32-reboot-toward-a-READY-pump has historically been the SAFE case (dozens
+  of clean reboots reconnected fine); the dirty dual-power transition is a NEW,
+  self-inflicted failure mode, distinct from the pump-not-ready 0x61 race.
+
+**METHODOLOGICAL NOTE — capturing the destroying cycle:** every bond loss so far
+happened during an UNCAPTURED moment (OTA reboot, power mishap), so we keep seeing
+the aftermath (NO BOND loop) never the act. To settle "does the gate prevent loss":
+logging MUST run BEFORE the trigger. Pump power-cycle (Stage 3) is capturable over
+network (ESP32 stays up). ESP32-reboot scenarios are only capturable over USB serial
+(survives reboot) AND require `hardware_uart: USB_CDC` in the logger config first —
+the default routes full logging to UART0, not the USB-CDC port, so USB shows only a
+sparse partial stream until that's set.
 
 **Chunk 3 — Investigate IDF "don't auto-clear bond on failure" knob (research).**
 Before building the complex backstop, check whether ESP-IDF can be told not to
@@ -154,11 +253,35 @@ Higher-risk / IDF-version-sensitive — justified ONLY by the 30-min re-pair cos
 and only if prevention can't be made airtight.
 
 **Chunk 5 — Patient re-pairing mode (fixes the re-pair race).**
-When re-pairing (no bond, or Re-Pair requested): the ESP32 connects and **waits for
-the pump's Security Request** instead of firing premature Central-initiated
-requests. Catch the pump's offer instead of talking over it. Turns the 20-30 min
-alignment lottery into "press pump button → ESP32 catches it promptly." Enabled by
-Chunk 1's finding (base won't auto-initiate, so the component can stay quiet).
+
+DIAGNOSIS SHARPENED (2 confirmed pairing captures): the re-pair timing is NOT the
+pump failing to enter/stay in pairing mode — the pump offers RELIABLY. The problem
+is the **ESP32 being intermittently un-receptive when the pump offers.** Its ~2s
+connect → fail(0x52) → reconnect loop means that when the pump sends its Security
+Request, the ESP32 may be mid-reconnect, or just fired its own premature
+Central-initiated request, i.e. "talking" (and sending garbage that may disrupt the
+pump's pairing offer) when it should be "listening." Whether the pump's offer lands
+in a receptive moment is LUCK (yesterday 20-30 min unlucky; today ~2 min lucky).
+
+Both successful pairings (last night + this morning 08:39:56) followed the SAME
+pattern: a string of ~1.7s-spaced `0x52` rejections while the ESP32 asks and the
+pump isn't offering, then the instant the PUMP sends
+`BLE security request from device ... - accepting` (GAP SEC_REQ_EVT,
+`ble_connection_manager.cpp:444`), pairing completes in ~1s → `Auth mode: 0x09`.
+**For this pump a new bond is PUMP-INITIATED; the ESP32's own requests only generate
+0x52 noise until the pump offers.** The readiness gate did NOT interfere with pairing
+(discovery → pump security request → 0x09 flowed cleanly).
+
+GOAL: get luck out of the equation. Chunk 5 must make the ESP32 DETERMINISTICALLY
+receptive — connect, go quiet (do NOT fire Central-initiated pairing requests that
+earn 0x52 and may disrupt the pump's offer), and HOLD the connection open in a
+listening state so that whenever the pump offers its Security Request, the ESP32 is
+always ready to accept. Converts pairing from a timing lottery into
+"pump offers → ESP32 accepts," every time. Enabled by Chunk 1's finding (base won't
+auto-initiate, so the component can stay quiet and just handle SEC_REQ_EVT).
+Open implementation question: also suppress/slow the connect-fail-reconnect churn
+during re-pair so the ESP32 isn't repeatedly dropping the connection the pump is
+trying to offer on (hold one connection open rather than churning).
 
 **Chunk 6 — Operator surface (HA-facing).** Mechanical once §5 mechanism works:
 - `repair_requested` flag: persisted (NVS), reversible, auto-clears on pairing
@@ -192,7 +315,17 @@ Pure-diagnostic, no behavior change — keep or quiet later:
   `esp_ble_get_bond_device_num/_list`, compares to `client_->get_remote_bda()`.
 - Logs "Bond state at connection open: BONDED/NO BOND" in `handle_connection_opened`.
 - Logs "Bond present after failure: YES/NO" in `handle_auth_complete` failure branch.
+- (Chunk 2) Logs "Pump ready (discovery ok). Requesting encryption/pairing..." in
+  `handle_service_discovery_complete` — the marker that the readiness gate fired; its
+  position AFTER "Service discovery complete" is the visible proof the gate engaged.
 Recommendation: KEEP — cheap and was invaluable for the whole diagnosis.
+
+Quick log-verification greps (PowerShell):
+- Connection sequence / gate ordering:
+  `Select-String -Path <log> -Pattern "Bond state at connection open|Service discovery complete|Pump ready|Requesting encryption|Auth mode|0x61|0x52|Session:.*READY"`
+- A clean reconnect should read, in order: BONDED -> Service discovery complete ->
+  Pump ready (discovery ok). Requesting encryption -> Auth mode: 0x09 ->
+  Session: AUTHENTICATING -> READY, with NO 0x61.
 
 ---
 
