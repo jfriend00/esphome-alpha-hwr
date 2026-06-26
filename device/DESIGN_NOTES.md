@@ -249,6 +249,96 @@ knob could ship (default 0s) as defense for future family devices with a real re
 need. If Option B is not built, the delay should NOT ship (footgun). Either way default
 must be 0s.
 
+### Chunk 2.5 FINAL — the pump enforces a ~430ms ENCRYPTION-START DEADLINE. The
+### settle delay is DEAD on this pump (any nonzero value fails), independent of Option B.
+
+After Option B was implemented (subscribe gated behind encryption-complete), the 3s
+delay STILL failed — but the failure MOVED and clarified the real constraint. With
+Option B + 3s delay, every cycle: connection open (BONDED) → discovery complete →
+"Service found" → "Waiting 3000ms before requesting encryption" → session label goes
+SERVICE_DISCOVERY→SUBSCRIBING (just a STATE LABEL via on_service_found(); the session
+is a pure state tracker, it does NOT itself write the CCCD) → **Disconnected 0x13 at
+~430ms** — BEFORE encryption is ever requested, BEFORE any CCCD write, with NO
+"Discovery + encryption complete - subscribing" line (try_subscribe_ correctly did NOT
+fire — encryption never completed).
+
+CONCLUSION: the disconnect is NOT a subscribe-ordering problem and NOT an idle-app
+timeout in the multi-second range. **The pump disconnects an idle, discovered-but-
+unencrypted connection ~430ms after service discovery completes.** I.e. the pump
+requires encryption to BEGIN within ~430ms of discovery. This deadline (~430ms) is
+SHORTER than any useful settle delay, so:
+- encryption_settle_delay is FUNDAMENTALLY INCOMPATIBLE with this pump at any nonzero
+  value (500ms already exceeds the ~430ms deadline → that's why 500ms also failed).
+- This is independent of Option B. The delay was always doomed on this pump because
+  the pump won't sit in a discovered-but-unencrypted state.
+- The earlier "~2.2s ceiling" and "subscribe-precedes-encryption" theories were both
+  partial/wrong. The true constraint is the ~430ms post-discovery encryption-start
+  deadline.
+
+IMPACT ON THE FEATURE: encryption_settle_delay must DEFAULT 0s and, for this pump,
+MUST stay 0s. Shipping it upstream is now hard to justify — no known device benefits
+and this device is actively harmed by any nonzero value. LEANING: do NOT ship the
+settle-delay parameter; keep it only as a local test probe (it was valuable — it
+exposed both race #2 and this deadline). Option B is the real, shippable fix.
+
+IMPACT ON TESTING OPTION B: the 3s delay MASKS Option B — the pump hangs up at ~430ms,
+long before encryption is requested, so the encryption→subscribe ordering never gets
+exercised. **Option B can only be validated at 0s delay** (encryption fires immediately
+on discovery, inside the ~430ms window, pump stays connected, THEN we see whether
+subscription correctly waits for encryption-complete). The correct Option B test is at
+0s, watching for: discovery → Requesting encryption → 0x09 → "Discovery + encryption
+complete - subscribing" → CCCD writes → READY (subscribe AFTER 0x09). NEXT: rebuild 0s,
+validate Option B ordering via a logging-first pump power-cycle.
+
+### Option B IMPLEMENTED (subscribe-after-encryption coordination) + 2026-06-26 PM
+### findings, stated strictly to the evidence (with an explicit retraction).
+
+OPTION B AS BUILT: subscription (`subscribe_to_notifications`, incl. the CCCD write
+that the pump 0x13-rejects if unencrypted) was moved OUT of
+`handle_service_discovery_complete` and gated behind a two-flag coordinator
+`try_subscribe_()` that fires once BOTH `discovery_complete_` AND `encryption_complete_`
+are set (set in the discovery handler and in the `handle_auth_complete` success branch
+respectively; all three flags + `subscribed_` reset in `handle_connection_opened`).
+Rationale: discovery (GATTC) and encryption (GAP) complete on separate event queues in
+non-deterministic order; gating on both guarantees subscribe happens over the encrypted
+link regardless of order. (Header: declare `try_subscribe_()`, add the 3 bools.)
+
+EVIDENCE FROM TODAY'S LOGS (what is actually PROVEN):
+- Option B + 0s (stage4.log) and Option B + 3s (stage6.log): EVERY connection-open
+  logged `BONDED`, dozens of cycles, through to the end of each session. → **Option B
+  and the settle delay are BOND-SAFE; neither destroys the bond.** The 3s session was a
+  continuous connect→0x13→reconnect loop (settle delay exceeds the ~430ms deadline) but
+  the bond SURVIVED every cycle. So the settle-delay failures are CONNECTION failures,
+  not bond losses.
+- NO `0x61` (reason=97) anywhere in ANY log today. Every auth failure was `0x52`
+  (reason=82) = "pairing not supported" = the SYMPTOM of an already-missing bond, not a
+  cause. So nothing today exercised the bond-clearing encryption-failure path.
+
+TODAY'S BOND LOSS — single event, CAUSE UNPROVEN: stage6 ended BONDED (12:31:29).
+stage6-2 opened NO BOND (12:32:13). The bond died in that ~44s gap. A reflash (3s→0s,
+OTA upload + ESP32 reboot) happened in that gap. The loss is REAL but its cause is NOT
+established. What is unusual about this gap vs. normal: the reflash immediately followed
+a sustained 0x13-thrashing session (stage6), so "bond already fragile from thrashing"
+and "something in the gap" are as plausible as "the reboot." Uncaptured, as ever.
+
+** RETRACTION (important, to keep our tracks honest): ** mid-session I over-asserted
+that "all bond loss is ESP32-reboot-related." That is WRONG and is hereby retracted.
+It contradicts the established record: (1) the historical, REPEATED bond losses were
+PUMP-POWER-CYCLE losses with the captured `HCI_ERR_KEY_MISSING` evidence (pump reports
+no keys → encryption fails → Bluedroid clears bond) — see §1; the readiness gate
+addresses that and passed Stage 3 3/3. (2) ~50 prior clean ESP32 reboots/reflashes had
+NEVER lost a bond. Promoting today's SINGLE reboot-adjacent loss to "reboots are the
+cause" was exactly the grab-the-nearest-cause error we keep catching. Corrected
+position: the established cause (pump-power-cycle encryption race) STANDS; today's loss
+is a separate, single, UNEXPLAINED event in a reflash gap after heavy thrashing, cause
+unproven. Do not build on the reboot theory.
+
+PROCESS LESSON: heavy OTA reflashing during experimentation is worth minimizing — not
+because reboots are proven bond-killers (they are not), but because each reflash is an
+uncaptured gap, and today a loss happened in one such gap. Batch changes; flash rarely;
+when a bond is precious and a session has been thrashing, prefer to stabilize before
+reflashing.
+
 ---
 
 **Chunk 1 — DONE.** Verify base doesn't auto-initiate encryption. ✓ (see §4)
