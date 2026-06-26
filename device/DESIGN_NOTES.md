@@ -132,6 +132,125 @@ pairing happens, not WHO initiates.
 Ordered so the riskiest unknowns resolve before anything depends on them, and so
 the single highest-leverage change (the readiness gate) lands early.
 
+### Chunk 2.5 — Configurable encryption settle delay (hardens the gate)
+
+CONTEXT — the gate wins by margin, not true readiness detection: timing analysis of
+the 3 Stage-3 passes showed the pump has a ~4.5s NOT-READY window after it becomes
+connectable (visible as a failed FIRST connection-open that burns ~4.5s, then a
+SECOND open succeeds). The pump advertises / accepts GATT (discovery, CCCD writes)
+BEFORE it finishes loading its bond keys from its own NVM. An auto-connect device
+(our ESP32) pounces in that window; a phone (human taps app seconds later) never
+sees it. So `HCI_ERR_KEY_MISSING` on encryption is the PUMP reporting its keys
+aren't loaded yet. The readiness gate (discovery-before-encryption) helps because
+discovery takes ~1-2s, usually outlasting the window — but that's incidental timing,
+not a true ready signal. We are still in a race; we just usually win it.
+
+RESEARCH FINDING (base auto-starts discovery — kills the "connect_settle_delay"
+idea): ESPHome 2026.6.2 `esp32_ble_client/ble_client_base.cpp:354` calls
+`esp_ble_gattc_search_service()` directly in its `ESP_GATTC_OPEN_EVT` handler. So
+DISCOVERY IS BASE-DRIVEN AND FIRES IMMEDIATELY ON OPEN — the component cannot
+postpone it. The old hardcoded `POST_CONNECT_DELAY_MS` (500ms) in
+`handle_connection_opened` only delayed a LOG LINE, not discovery (discovery had
+already started). It was effectively DEAD code — never provided the stabilization
+the author intended, which may be why bond loss happened anyway. A
+`connect_settle_delay` that "waits before discovery" CANNOT WORK and must not be
+shipped (it would be a knob that does nothing).
+
+THE FIX — one effective, configurable delay: `encryption_settle_delay`, a
+non-blocking scheduled wait inserted AFTER discovery completes and BEFORE the
+`esp_ble_set_encryption` request (the bond-critical step the component DOES control).
+Total open→encryption margin = base discovery (~1-2s) + encryption_settle_delay, so
+a generous encryption_settle_delay puts the encryption attempt comfortably past the
+~4.5s not-ready window. Configurable (not hardcoded) because the window is device-
+and boot-dependent across the alpha_hwr device family — and because of the ceiling
+below. Default modest (e.g. 1s) for upstream; John overrides generously (e.g. 3s) in
+his own YAML since he doesn't need fast reconnect. `0` = disabled (immediate, old
+behavior).
+
+DELAYS ARE NON-BLOCKING: implemented via the existing `scheduler_callback_` →
+`set_timeout`, NOT a busy-wait `delay()`. During the wait, BLE / Ethernet / API /
+other telemetry all continue normally; the watchdog stays happy; only THIS
+connection's next step is postponed. The existing `scheduler_sequence_`/`seq`
+stale-callback guard means if the pump disconnects mid-delay, the pending encryption
+request is silently abandoned (safe). A blocking delay of seconds would instead stall
+BLE/Ethernet and could trip the ~5s task watchdog → reboot; we do NOT do that.
+
+FLOOR/CEILING TUNING (why configurable is correct, not just nice):
+- FLOOR: the delay must clear the pump's not-ready window. Observed ~4.5s from open,
+  i.e. ~2.5-3.5s from discovery-complete. Below the floor → 0x61 → bond loss.
+- CEILING: the pump MAY have an application-level "connected but idle, goodbye" timer.
+  If encryption is delayed past it, the pump disconnects MID-DELAY. We have NOT
+  confirmed such a timer exists or its value; existing reconnects tolerate multi-second
+  pre-encryption connection lifetimes (the failed-first-connection sat ~4.5s), which
+  suggests the pump is patient and the ceiling is comfortably above current timings —
+  but it is UNVERIFIED for long delays. Link-level supervision timeout (conn_params
+  timeout=400 = 4s) is NOT a concern: BLE LL keep-alives maintain the link
+  automatically during application silence; supervision timeout governs unintended RF
+  silence, not intentional application delay.
+- Future family devices may have a tighter ceiling → a fixed delay couldn't
+  accommodate them; the knob can. This is the core justification for configurability.
+
+VALIDATION METHOD: start at a moderate value (2-3s), watch a reconnect. SUCCESS =
+"Discovery ok. Waiting Xms before encryption" → (delay) → encryption requested →
+0x09. FAILURE SIGNATURE for hitting the ceiling = a DISCONNECT that occurs BETWEEN
+the "Waiting..." log and the encryption request (pump dropped us mid-delay = app
+timeout). Bump incrementally and watch for that signature. Logging is deliberately
+tight around the delay so a mid-delay disconnect is unambiguous.
+
+### Chunk 2.5 RESULT — settle delay BACKFIRED, exposing a SECOND race (operation
+### ordering). The above "ceiling" theory was WRONG. Corrected diagnosis below.
+
+TESTED encryption_settle_delay at 3s AND 500ms — BOTH FAIL identically. Every cycle:
+discovery → "Waiting Xms" → subscribe/CCCD writes → **Disconnected reason 0x13**
+(remote/pump terminated) BEFORE encryption is requested → stale-guard skips → loop.
+The disconnect comes ~435ms in even with a 500ms delay, RIGHT AFTER the CCCD writes,
+NOT on an idle timeout. So the failure is NOT a delay-too-long ceiling. The DELAY
+DURATION BARELY MATTERS.
+
+REAL ROOT CAUSE — a second race, exposed: In Option A (Chunk 2 as shipped), the
+subscribe/CCCD chain fires off discovery-complete CONCURRENTLY with the encryption
+request — they RACE. With 0 delay, encryption usually WON (got requested before the
+pump objected to unencrypted subscription), which is why 3/3 Stage 3 passed. Inserting
+ANY delay defers encryption, so the SUBSCRIBE chain wins → the pump receives
+unencrypted CCCD writes → the pump REJECTS that ordering and disconnects (0x13). The
+pump requires encryption to be established BEFORE subscribing to its notifications
+(correct BLE practice for encryption-required characteristics). We were never enforcing
+"encrypt before subscribe" — we were WINNING A RACE by firing both at once.
+
+So there are TWO races in a reconnect:
+  (1) KEY-READINESS race (Chunk 2's target): is the pump's encryption ready when asked?
+      Handled by the gate (discovery-before-encryption) + natural reconnect churn.
+  (2) OPERATION-ORDERING race (newly exposed): does the encryption REQUEST beat the
+      unencrypted subscribe/CCCD chain? Currently unhandled — won only by luck/timing.
+
+CORRECTION to earlier note: the prior claim "subscription succeeding unencrypted ...
+proven safe by tonight's logs" was WRONG — it only succeeded because encryption won the
+race. The pump does NOT actually accept unencrypted subscription; it disconnects (0x13)
+when subscription precedes encryption.
+
+FIX = Option B serialization (was deferred in Chunk 2 as unnecessary; now necessary):
+discovery → request encryption → WAIT for encryption complete (0x09) → THEN subscribe.
+This makes ordering deterministic by construction (like the single-call-site gate did
+for race #1), matches correct BLE practice (encrypt before subscribe), fixes the 0x13
+disconnects, AND re-enables a settle delay as SOUND (subscription gated behind
+encryption can't jump ahead). See §5.x Option B design below.
+
+CURRENT STATE: encryption_settle_delay set to **0ms/0s = disabled** → restores the
+working immediate-encryption ordering → reconnected cleanly, BOND SURVIVED all of this
+(every line BONDED throughout — this was a connection-ordering failure, NOT bond loss).
+Validator quirk: `cv.positive_time_period_milliseconds` REQUIRES a unit even for zero —
+must write `0s`/`0ms`, NOT bare `0` (fails validation). Document `0s` as the disable value.
+
+OPEN QUESTION (resolve before shipping the parameter): is encryption_settle_delay
+defensible to contribute at all? It is UNNECESARY for this pump (0 works, 3/3) and
+UNSOUND without Option B (reorders ops the pump rejects). Decision pending Option B:
+if Option B serializes subscribe-after-encryption, a settle delay becomes safe and the
+knob could ship (default 0s) as defense for future family devices with a real readiness
+need. If Option B is not built, the delay should NOT ship (footgun). Either way default
+must be 0s.
+
+---
+
 **Chunk 1 — DONE.** Verify base doesn't auto-initiate encryption. ✓ (see §4)
 
 **Chunk 2 — Readiness gate (PRIMARY bond-preservation fix). IMPLEMENTED; Stage 1
@@ -241,16 +360,50 @@ network (ESP32 stays up). ESP32-reboot scenarios are only capturable over USB se
 the default routes full logging to UART0, not the USB-CDC port, so USB shows only a
 sparse partial stream until that's set.
 
-**Chunk 3 — Investigate IDF "don't auto-clear bond on failure" knob (research).**
-Before building the complex backstop, check whether ESP-IDF can be told not to
-destroy the bond on a transient encryption failure. If such a knob exists it may
-make Chunk 4 unnecessary — structurally simpler than snapshot/restore.
+**Chunk 3 — "don't auto-clear bond on failure" knob — RESEARCHED, RESULT: NO KNOB
+EXISTS. Also corrected our understanding of the actual mechanism.**
 
-**Chunk 4 — Bond key snapshot/restore (SURVIVAL backstop). Only if Chunk 3 finds
-nothing.** Snapshot bond keys to our own NVS at pairing-success; re-inject if the
-bond is ever unexpectedly gone, so the ESP32 self-heals without a re-pair.
-Higher-risk / IDF-version-sensitive — justified ONLY by the 30-min re-pair cost,
-and only if prevention can't be made airtight.
+KEY CORRECTION: `btm_sec_clr_temp_auth_service()` — the log line we cited all along
+as the "bond-destroying smoking gun" — is a RED HERRING. It clears only a temporary
+GATT service-authorization flag (`last_author_service_id`), NOT the bond/key. The
+ACTUAL bond-key clear is `btm_sec.c:4133-4137` (ESP-IDF v5.3 Bluedroid):
+```
+    if (status == HCI_ERR_KEY_MISSING || status == HCI_ERR_AUTH_FAILURE ||
+            status == HCI_ERR_ENCRY_MODE_NOT_ACCEPTABLE) {
+        p_dev_rec->sec_flags &= ~ (BTM_SEC_LE_LINK_KEY_KNOWN);
+        p_dev_rec->ble.key_type = BTM_LE_KEY_NONE;
+    }
+```
+On LE encryption completing with KEY_MISSING / AUTH_FAILURE / ENCRY_MODE_NOT_ACCEPTABLE,
+Bluedroid clears the runtime key flags. KEY_MISSING is the likely one here: the PUMP
+itself reports "I have no key" when we attempt encryption before it is ready. THIS IS
+WHY THE READINESS GATE WORKS — it avoids the window where the pump reports key-missing,
+so this clause never fires. The gate addresses the real root mechanism, not coincidentally.
+
+FINDINGS (all negative for a "clean prevention" alternative to the gate):
+- NO config/sdkconfig knob disables this clear-on-failure clause — it is unconditional
+  for BLE (only gated by BLE_INCLUDED && SMP_INCLUDED). Can't configure it away.
+- Disabling it would require FORKING ESP-IDF / patching Bluedroid — heavy, fragile
+  across IDF updates, NOT advisable for a system we want to stop fiddling with.
+
+**Chunk 4 — Bond key snapshot/restore backstop — RESEARCHED, RESULT: NOT FEASIBLE
+via public API.** ESP-IDF exposes `esp_ble_get_bond_device_num/_list` to READ bonds
+but NO `esp_ble_set_bond` / key-injection API to write one back. `set_security_param`
+only sets pairing CONFIG (auth mode, IO cap, key sizes), not keys. So snapshot-and-
+restore has no clean implementation path. (Would need private/internal APIs or
+ESP-IDF patching — same heavy/fragile path as Chunk 3. Not advisable.)
+
+**=> PREVENTION CONCLUSION:** Both "true prevention" avenues (a config knob; a restore
+backstop) are CLOSED without patching the framework. The READINESS GATE (Chunk 2) is
+therefore not just the best option, it is essentially the ONLY practical one — and the
+research STRENGTHENS confidence in it, because we now understand it attacks the real
+mechanism (avoid the pump-reports-KEY_MISSING window during encryption). Residual risk
+= any OTHER path to KEY_MISSING/AUTH_FAILURE/ENCRY_MODE_NOT_ACCEPTABLE the gate doesn't
+cover (e.g. an encryption failure AFTER discovery already succeeded — pump GATT-ready
+but handshake still fails, RF etc.). Narrower than before, but nonzero, and NO backstop
+can catch it (restore not possible). CONSEQUENCE: since rare residual losses can't be
+prevented OR auto-recovered, making RE-PAIRING painless (Chunk 5) is MORE valuable than
+first weighted — it's the only recovery available when a rare loss slips the gate.
 
 **Chunk 5 — Patient re-pairing mode (fixes the re-pair race).**
 
