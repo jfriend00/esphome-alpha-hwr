@@ -87,6 +87,11 @@ class BLEConnectionManager {
   // Service discovery retry mechanism
   uint8_t discovery_retry_count_{0};
   uint32_t scheduler_sequence_{0};  // Sequence counter to invalidate stale lambdas
+  // Chunk 2 (readiness gate): defer the encryption request until service
+  // discovery has succeeded, which proves the pump's BLE stack is ready.
+  // This prevents the premature esp_ble_set_encryption() that fails with 0x61
+  // into a not-yet-ready pump and destroys the bond. See DESIGN_NOTES.md §5.
+  bool encryption_requested_{false};  // have we issued set_encryption this connection?
   static const uint8_t MAX_DISCOVERY_RETRIES = 3;
   static const uint32_t DISCOVERY_RETRY_DELAY_MS = 1000;
   static const uint32_t POST_CONNECT_DELAY_MS = 500;

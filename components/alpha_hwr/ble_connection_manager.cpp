@@ -184,41 +184,36 @@ void BLEConnectionManager::subscribe_to_notifications() {
 
 void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param_t *param) {
   ESP_LOGI(TAG, "BLE connection opened. Pairing enabled: %s", pairing_enabled_ ? "YES" : "NO");
-  
+
   // Notify component of connection
   if (connection_callback_) {
     connection_callback_();
   }
-  
-  // Reset discovery retry counter
-  discovery_retry_count_ = 0;
 
-  // Pass 1 diagnostic: record bond state at the moment we open, so we can see
-  // whether subsequent attempts still have the bond.
+  // Reset per-connection state
+  discovery_retry_count_ = 0;
+  encryption_requested_ = false;  // Chunk 2: fresh connection, no encryption asked yet
+
+  // Diagnostic: record bond state at the moment we open (Pass 1 instrumentation).
   ESP_LOGI(TAG, "Bond state at connection open: %s",
            peer_bond_exists() ? "BONDED (expect encryption)" : "NO BOND (expect pairing)");
-  
-  // Only request encryption/pairing if explicitly enabled
-  if (pairing_enabled_) {
-    ESP_LOGI(TAG, "Requesting encryption/pairing...");
-    esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
-    if (ret != ESP_OK) {
-      ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
-    }
-  } else {
-    ESP_LOGI(TAG, "Skipping encryption request - pairing disabled");
-  }
-  
+
+  // Readiness gate: encryption is requested in handle_service_discovery_complete,
+  // NOT here. Requesting it on open can fire into a not-yet-ready pump (e.g. just
+  // back from power loss), failing with 0x61, which makes Bluedroid clear the bond
+  // from flash -> permanent re-pair. A successful unencrypted service discovery
+  // proves the pump is ready, so we gate encryption on that. See DESIGN_NOTES.md.
+
   // Update connection parameters for better stability
   esp_ble_conn_update_params_t conn_params;
   memcpy(conn_params.bda, client_->get_remote_bda(), 6);
   conn_params.min_int = 24;      // 30ms
-  conn_params.max_int = 40;      // 50ms 
+  conn_params.max_int = 40;      // 50ms
   conn_params.latency = 0;
   conn_params.timeout = 400;     // 4s
   esp_ble_gap_update_conn_params(&conn_params);
-  
-  // Wait for encryption/pairing to stabilize before discovery
+
+  // Wait for the link to stabilize, then begin service discovery.
   if (scheduler_callback_) {
     scheduler_sequence_++;
     uint32_t seq = scheduler_sequence_;
@@ -238,41 +233,52 @@ void BLEConnectionManager::handle_service_discovered(const esp_ble_gattc_cb_para
 }
 
 void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc_if) {
-  ESP_LOGI(TAG, "Service discovery complete (attempt %d/%d). Checking for service...", 
+  ESP_LOGI(TAG, "Service discovery complete (attempt %d/%d). Checking for service...",
            discovery_retry_count_ + 1, MAX_DISCOVERY_RETRIES);
-  
+
   // Dump all services for debugging
   dump_services();
-  
+
   // Check for our expected service
   if (client_) {
     auto *service = client_->get_service(service_uuid_);
-    
+
     if (service) {
       ESP_LOGI(TAG, "✓ Service found, enabling notifications...");
-      
+
+      // Readiness gate: discovery succeeded -> pump is ready -> safe to encrypt now.
+      // Request once per connection (this handler can re-enter via the retry path).
+      if (pairing_enabled_ && !encryption_requested_) {
+        encryption_requested_ = true;
+        ESP_LOGI(TAG, "Pump ready (discovery ok). Requesting encryption/pairing...");
+        esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
+        if (ret != ESP_OK) {
+          ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
+        }
+      }
+
       // Notify component that service was found
       if (service_found_callback_) {
         service_found_callback_();
       }
-      
+
       // Check for characteristic
       auto *chr = client_->get_characteristic(service->uuid, characteristic_uuid_);
       if (chr) {
         subscribe_to_notifications();
       } else {
         char uuid_buf[esphome::esp32_ble::UUID_STR_LEN];
-        ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_str(uuid_buf));  
+        ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_str(uuid_buf));
       }
     } else {
       // Service NOT found - implement retry logic
       ESP_LOGW(TAG, "✗ Service NOT found!");
-      
+
       if (discovery_retry_count_ < MAX_DISCOVERY_RETRIES) {
         discovery_retry_count_++;
-        ESP_LOGW(TAG, "Retrying service discovery in %dms (attempt %d/%d)...", 
+        ESP_LOGW(TAG, "Retrying service discovery in %dms (attempt %d/%d)...",
                  DISCOVERY_RETRY_DELAY_MS, discovery_retry_count_ + 1, MAX_DISCOVERY_RETRIES);
-        
+
         // Schedule a retry
         if (scheduler_callback_) {
           scheduler_sequence_++;
