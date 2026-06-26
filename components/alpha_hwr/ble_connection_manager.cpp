@@ -1,11 +1,33 @@
 #include "ble_connection_manager.h"
 #include "esphome/core/log.h"
+#include <cstring>
 
 namespace esphome {
 namespace alpha_hwr {
 namespace core {
 
 static const char *TAG = "alpha_hwr.ble";
+
+// Query ESP-IDF's bond store for whether we hold a bond with the connected
+// peer. Diagnostic only (Pass 1): logging this at connection-open and again
+// after an auth failure tells us whether the local bond is being destroyed by
+// a failed encryption attempt — the open question behind the post-power-cycle
+// reconnect failure. This node bonds with very few devices, so a small fixed
+// list is safe and avoids heap.
+bool BLEConnectionManager::peer_bond_exists() {
+  if (!client_) return false;
+  int num = esp_ble_get_bond_device_num();
+  if (num <= 0) return false;
+  if (num > 16) num = 16;
+  esp_ble_bond_dev_t list[16];
+  int count = num;
+  if (esp_ble_get_bond_device_list(&count, list) != ESP_OK) return false;
+  const uint8_t *peer = client_->get_remote_bda();
+  for (int i = 0; i < count; i++) {
+    if (memcmp(list[i].bd_addr, peer, sizeof(esp_bd_addr_t)) == 0) return true;
+  }
+  return false;
+}
 
 // Static method to validate if a BLE device is an ALPHA HWR pump
 // Primary method: Check company ID in manufacturer data
@@ -170,6 +192,11 @@ void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param
   
   // Reset discovery retry counter
   discovery_retry_count_ = 0;
+
+  // Pass 1 diagnostic: record bond state at the moment we open, so we can see
+  // whether subsequent attempts still have the bond.
+  ESP_LOGI(TAG, "Bond state at connection open: %s",
+           peer_bond_exists() ? "BONDED (expect encryption)" : "NO BOND (expect pairing)");
   
   // Only request encryption/pairing if explicitly enabled
   if (pairing_enabled_) {
@@ -324,6 +351,11 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
     ESP_LOGW(TAG, "  Device: %s", addr_str);
     ESP_LOGW(TAG, "  Failure reason: %s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
     ESP_LOGW(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
+    // Pass 1 diagnostic: did the local bond survive this failure? If it's
+    // BONDED before but NO BOND after a 0x61, Bluedroid is destroying the bond
+    // on encryption failure — which would explain why retries never recover.
+    ESP_LOGW(TAG, "  Bond present after failure: %s",
+             peer_bond_exists() ? "YES" : "NO");
     if (pairing_status_sensor_ != nullptr) {
       pairing_status_sensor_->publish_state(false);
     }
