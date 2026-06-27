@@ -131,6 +131,14 @@ button:
           } else {
             ESP_LOGE("custom", "esp_ble_remove_bond_device failed: %d", (int) err);
           }
+  - platform: template
+    name: "Force BLE Disconnect"
+    icon: "mdi:bluetooth-off"
+    id: force_ble_disconnect
+    on_press:
+      - lambda: |-
+          ESP_LOGW("custom", "Force BLE Disconnect pressed - dropping link to trigger reconnect");
+          id(hwr_pump_client).disconnect();
 
 number:
   - platform: template
