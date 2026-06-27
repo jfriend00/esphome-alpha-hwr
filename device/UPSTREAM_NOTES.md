@@ -43,7 +43,7 @@ exactly one place, so the ordering is guaranteed by construction rather than by 
 
 ### Result / testing
 
-Across repeated cold pump power-cycles, the bond is preserved and the device reconnects
+Across multiple cold pump power-cycles, the bond is preserved and the device reconnects
 and re-encrypts cleanly; the bond-clearing failure signature (0x61) no longer appears.
 
 ### Why this approach, and not the alternatives
@@ -93,11 +93,15 @@ Once service discovery completes, branch on whether a bond already exists:
 
 - **Bond present** (normal reconnect): request encryption and subscribe, as before.
   Encryption against an existing bond is central-initiated and works normally.
-- **No bond** (initial pairing / re-pair): stay quiet. Issue no central request, and
-  defer the notification subscription as well — an unencrypted CCCD write before the
-  link is encrypted is rejected with a 0x13 disconnect. Accept the pump's SEC_REQ
-  whenever it arrives (already handled), and once pairing completes, run the deferred
-  subscribe over the now-encrypted link.
+- **No bond** (initial pairing / re-pair): stay quiet. Issue no central request,
+  and defer the notification subscription as well — an unencrypted CCCD write
+  before the link is encrypted is rejected with a 0x13 disconnect. Accept the
+  pump's SEC_REQ whenever it arrives (already handled), and once pairing
+  completes, run the deferred subscribe over the now-encrypted link.  The device
+  does not hold a single connection open waiting indefinitely; the pump tears
+  down an idle unencrypted connection on its own, so the quiet-listen path
+  naturally cycles through reconnects until the pump's SEC_REQ arrives. No
+  central-side wait timeout is needed, as the pump drives the retry cadence.
 
 A single flag coordinates the deferred subscribe. The bonded-reconnect and
 passive-telemetry paths are unchanged.
@@ -142,16 +146,106 @@ conservatively. A simple explicit choice is safer than an adaptive hybrid.
 
 ---
 
-## 3. Known limitation: subscribe/encryption ordering on bonded reconnect
+## 3. Self-healing reconnect: cancel in-flight handshake work on disconnect
+
+### Problem
+
+After an unexpected disconnect — a pump power-cycle, or any drop mid-handshake — the
+device could fail to recover and instead cycle through reconnect attempts without
+reaching a working state. Disconnect did not tear down the work that was in flight, so
+tasks from the previous connection executed against the next one.
+
+The disconnect handler only transitioned the session back to IDLE and reset the
+transport. It did not cancel the authentication handshake, did not stop the telemetry
+service (leaving its running flag set), and did not cancel the pending post-subscribe
+"stabilize, then authenticate" timer. Three pieces of stale state therefore survived
+into the next connection:
+
+- **The staged authentication handshake kept running.** Its scheduled stage callbacks —
+  and its completion — fired against the new, not-yet-ready connection: auth packets were
+  sent before service discovery had resolved the characteristic handles (so the writes
+  failed), and authentication "completed" while the new session was still in service
+  discovery.
+- **The ~2-second stabilize/authenticate timer was an anonymous one-shot** with no
+  handle, so it could not be cancelled. A disconnect during that window left it to fire
+  in the next cycle and kick off a second, mistimed authentication.
+- **The telemetry service's running flag was never cleared,** so the next connection saw
+  the service as already running and proceeded from inconsistent state.
+
+The visible signature was a run of out-of-order transitions — authentication completing
+"from unexpected state: SERVICE_DISCOVERY," service discovery arriving "from unexpected
+state: AUTHENTICATING," and characteristic writes failing before the handles were
+resolved — after which the pump terminated the malformed connection (0x13) and the cycle
+repeated. Because each reconnect inherited the corrupted state, the device could not
+reliably self-heal.
+
+### Solution (how)
+
+Make disconnect a clean teardown so every connection begins from a known state. In the
+disconnect path, in addition to the existing session-to-IDLE transition and transport
+reset:
+
+- Cancel the in-flight authentication handshake.
+- Stop the telemetry service, clearing its running flag.
+- Cancel the pending stabilize/authenticate timer.
+
+Two of these already existed in the component — the authentication object's cancel
+routine and the telemetry service's stop routine — and were simply never invoked from the
+disconnect callback; the fix wires them in rather than adding new machinery. The stabilize
+timer was made cancellable by giving it a name (it was previously anonymous). The staged
+authentication callbacks are already guarded by an internal sequence counter, and
+cancelling authentication advances that counter, so any still-pending stage callbacks
+no-op on their own — the stabilize timer was the only scheduled item that needed an
+explicit cancel. All three teardown calls are no-ops when nothing is in flight, so they
+are safe to run on every disconnect.
+
+### Result / testing
+
+The failure was captured directly. In a reconnect cycle — notably with pairing
+*disabled* (passive telemetry mode), which takes SMP entirely out of the picture and
+rules out the bond/pairing machinery as the cause — the stale-work signature appeared
+exactly as described: authentication "completed" while the session was still in
+SERVICE_DISCOVERY ("on_authenticated() called from unexpected state: SERVICE_DISCOVERY")
+and the telemetry service reported "Service already running"; then the leftover stabilize
+timer fired and started authentication *before* service discovery completed and before
+notifications were subscribed, so the auth stage tried to write before the GENI
+characteristic handle existed — five consecutive "Failed to send chunk" errors — and the
+connection collapsed back into the loop. That this reproduced with pairing off is the key
+point: it is a teardown/reentrancy defect, independent of the BLE security work in
+entries 1–2.
+
+After the fix (in the current build), subsequent reconnect captures — including a pump
+power-cycle — complete in the intended order (discover → subscribe → wait → authenticate)
+and reach a working state, with none of the stale-task lines above. A dedicated
+side-by-side capture of a mid-handshake disconnect was not preserved, so this rests on
+the captured failure plus the absence of the signature in later runs rather than a single
+before/after pair.
+
+### Why this approach, and not the alternatives
+
+- Cancelling the in-flight work at the point of disconnect is the direct fix: the defect
+  is precisely that tasks outlived the connection they belonged to. Reusing the
+  component's existing cancel and stop routines keeps the change small and low-risk.
+- Guarding the authentication entry point to bail out when the link is no longer connected
+  would mask the symptom but leave the stale timer scheduled and the telemetry flag set;
+  cancelling at the source also avoids the wasted reconnect churn.
+- Naming the stabilize timer is the minimal change that makes it cancellable, and it
+  mirrors the sequence-counter guard the authentication callbacks already use.
+
+---
+
+## 4. Known limitation: subscribe/encryption ordering on bonded reconnect
 
 ### What it is
 
-On the bonded-reconnect path, the encryption request and the notification subscription
-(the CCCD write) are issued concurrently once service discovery completes; the code does
-not enforce "encrypt before subscribe." Usually encryption wins and the sequence
-completes normally, but occasionally the CCCD write reaches the pump first, the pump
-rejects the unencrypted write, and the link drops (0x13). The device then reconnects and
-almost always succeeds on the next attempt.
+On the bonded-reconnect path, the encryption request and the notification
+subscription (the CCCD write) are issued concurrently once service discovery
+completes; the code does not enforce "encrypt before subscribe." This is how it
+works in the baseline code and not something that occurs because of these changes.
+Usually encryption wins and the sequence completes normally, but occasionally
+the CCCD write reaches the pump first, the pump rejects the unencrypted write,
+and the link drops (0x13). The device then reconnects and almost always succeeds
+on the next attempt.
 
 ### Impact
 
@@ -162,18 +256,20 @@ ordering is won by timing rather than guaranteed.
 
 ### Why it isn't fixed here
 
-The clean fix is to serialize the subscribe behind encryption-complete (issue the CCCD
-write only after the authentication-complete event). That was prototyped and reverted
-after it caused problems under test, so it needs a fresh, careful implementation rather
-than a quick re-apply. Recorded here so a reviewer is aware of the concurrent ordering
-and the intended direction.
+The clean fix is to serialize the subscribe behind encryption-complete (issue
+the CCCD write only after the authentication-complete event). That was
+prototyped and reverted after it caused problems under test and since it didn't
+cause a last problem, we moved onto more pressing matters, so it needs a fresh,
+careful implementation rather than a quick re-apply. Recorded here so a reviewer
+is aware of the pre-existing concurrent ordering and the intended direction.
 
 ---
 
-## 4. Diagnostic logging included
+## 5. Diagnostic logging included
 
-These changes add a small amount of INFO-level diagnostic logging that ships with the
-component: a `peer_bond_exists()` helper (which queries the ESP-IDF bond store) plus log
-lines reporting the bond state at connection-open and after an authentication failure.
-They were invaluable during diagnosis and are cheap, but a maintainer may prefer to drop
-them to DEBUG level.
+These changes add a small amount of INFO-level diagnostic logging that ships
+with the component: a `peer_bond_exists()` helper (which queries the ESP-IDF
+bond store) plus log lines reporting the bond state at connection-open and after
+an authentication failure. They were invaluable during pairing issue diagnosis
+to see exactly when a bond gets lost and what happens afterwards and are cheap,
+but a maintainer may prefer to drop them to DEBUG level.
