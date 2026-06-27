@@ -526,6 +526,117 @@ Open implementation question: also suppress/slow the connect-fail-reconnect chur
 during re-pair so the ESP32 isn't repeatedly dropping the connection the pump is
 trying to offer on (hold one connection open rather than churning).
 
+### Chunk 5 — IMPLEMENTED (2026-06-26). Bonded path validated (Test A); re-pair
+### path (Tests B/C) still PENDING.
+
+WHAT WAS BUILT (in `ble_connection_manager`):
+- `handle_service_discovery_complete` now branches on bond state:
+  `bool want_pairing = !peer_bond_exists();`
+  - Bond present -> Chunk 2 Option A unchanged: request encryption + subscribe
+    concurrently (the validated bonded reconnect path).
+  - No bond -> set `awaiting_pump_pairing_`, log "Quiet listen for pump-initiated
+    pairing", and fire NO Central encryption request and NO subscribe. Rationale:
+    a new bond on this pump is PUMP-INITIATED; a Central request only earns 0x52
+    and can disrupt the pump's offer (§3), and unencrypted CCCD writes are
+    0x13-rejected before a bond exists.
+- `handle_auth_complete` success: if `awaiting_pump_pairing_`, the encrypted link +
+  bond now exist, so resume the deferred chain — `service_found_callback_()` then
+  `subscribe_to_notifications()` over the encrypted link. The flag (reset on each
+  connection-open) is the only thing read here; the pump's offer itself is accepted
+  unconditionally by the existing `SEC_REQ_EVT` handler.
+- Passive-telemetry path preserved: subscribe is gated on `!awaiting_pump_pairing_`,
+  which is only ever set in the no-bond pairing branch.
+- Forward-compat for Chunk 6: `want_pairing` is written so the condition can widen
+  to `!peer_bond_exists() || repair_requested_` with one line.
+
+LOAD-BEARING NOTE: `peer_bond_exists()` (an address-match against the bond list) is
+now decisional, not just diagnostic. This is SOUND because the component connects
+by a FIXED MAC (YAML substitution), so no RPA rotation is reachable, and the
+address-match correctly handles PUMP REPLACEMENT (a stale bond for the OLD MAC
+won't match the NEW MAC -> NO BOND -> re-pair). A bond-count check would get
+replacement wrong. (See device/TODO.md.)
+
+TEST A PASS — bonded reconnect, mechanism CAPTURED (`chunk5-2.log`, 2026-06-26
+19:31, a real pump power-cycle):
+- Bond SURVIVED: every connection-open logged `BONDED` across a bumpy multi-attempt
+  reconnect. Chunk 5 took the correct bonded branch each time ("bond present.
+  Requesting encryption..."). NO `0x61`, NO `0x52`, NO `Quiet listen`, NO bond loss.
+  Ended `AUTHENTICATING -> READY`. (Also an earlier behavioral-only pass: built,
+  installed, reconnected fine without re-pair, but the post-reflash reconnect
+  preamble was uncaptured as usual.)
+- Bumpy but bond-safe, two documented phenomena (neither a Chunk 5 regression):
+  (1) `0x08` 4s supervision timeout on the first not-ready open (the pump's
+  post-power-up not-ready window, §Chunk 2.5); (2) `0x13` ~90ms after `Auth mode:
+  0x09` = race #2 (operation-ordering: CCCD subscribe issued before encryption
+  completed), self-recovered next attempt. Race #2 is pre-existing Option A, logged
+  in device/TODO.md as correctness debt (Option B is the candidate fix, but a prior
+  Option B attempt was rolled back — any revisit needs fresh analysis).
+
+TEST B PASS — no-bond quiet-listen + liveness, mechanism CAPTURED (`chunk5-3.log`,
+2026-06-26 20:07). Pressed Clear Pump BLE Bond, which itself dropped the link
+(reason `0x16` = local-host-terminate — so `esp_ble_remove_bond_device` on a LIVE
+connection disconnects; the Force BLE Disconnect button wasn't even needed, and the
+earlier worry that Clear Bond wouldn't trigger a reconnect is moot). Then 5
+consecutive clean cycles, each: connection open `NO BOND` -> service discovery
+(~1.56s) -> "Quiet listen for pump-initiated pairing (no Central request)" with NO
+`Requesting encryption`, NO `0x52`, NO `0x61` -> pump drops `0x13`. The no-bond path
+works exactly as designed.
+- KEY FINDING — the ~430ms post-discovery deadline APPLIES TO THE NO-BOND CASE TOO.
+  Discovery-complete -> `0x13` drop measured at 455 / 405 / 454 / 405 / 458 ms across
+  the 5 cycles (~430ms ± 25). So the pump reliably drops an idle, discovered,
+  unencrypted no-bond connection at ~430ms (a deliberate `0x13`, not an RF `0x08`);
+  full clean cycle ~2.2s. (We had been unsure whether the 430ms applied here — the
+  data settles it: it does, bonded or not.)
+- WATCHDOG DECISION — NOT NEEDED for this pump. The feared "pump holds the link open
+  forever, only a reboot escapes" does NOT occur: the pump never holds it open, it
+  drops like clockwork, giving a fresh clean ~430ms listening window every ~2.2s with
+  zero `0x52` noise. That natural cycling IS the patient-listen mechanism, and it's a
+  big improvement over the old self-inflicted `0x52` churn. The watchdog survives only
+  as hypothetical insurance for a future NEVER-BONDED replacement pump (this test had
+  the pump still bonded on ITS side = the real post-loss state, not a virgin pump).
+
+TEST C PASS — pump-initiated re-pair completes end-to-end, mechanism CAPTURED
+(`chunk5-4.log`, 2026-06-26 20:18). After ~2.5 min of DEAD-SILENT quiet-listen
+cycling (ZERO `0x52` the entire time) while the pump button was worked, the pump
+finally offered and pairing completed on a SINGLE connection (no intermediate
+disconnect):
+  07.845 `SEC_REQ ... - accepting` (pump offered right at connection establishment)
+  -> 07.864 connection open, NO BOND
+  -> 08.341 `BT_SMP: FOR LE SC LTK IS USED` (LE Secure Connections pairing)
+  -> 08.876 `Auth mode: 0x09` (bonded, ~1s after the offer)
+  -> 09.939 service discovery completes -> sees bond present -> bonded path
+     (`Requesting encryption`) -> CCCD writes -> 13.224 READY. Full telemetry
+     restored (Control Mode notifications flowing). NO `0x52`, NO `0x61`.
+
+ANSWERS THE OPEN QUESTION: the pump's pairing-mode `SEC_REQ` PRE-EMPTS the ~430ms
+idle drop. The pairing connection lived ~5.4s (open 07.864 -> READY 13.224), far past
+430ms — once the pump is actively pairing it keeps the link up. So the offer does NOT
+need to land inside a 430ms window; the ESP32 only needs to be CONNECTED when the pump
+offers, which the ~2.2s clean cycle guarantees.
+
+IMPORTANT — the resume hook was NOT the path that worked. Pairing completed (08.876)
+BEFORE service discovery completed (09.939), so `awaiting_pump_pairing_` was still false
+at auth-complete (discovery hadn't set it) and the resume hook did NOT fire. By the time
+discovery completed the bond existed, so the NORMAL bonded branch (`bond present ->
+Requesting encryption -> subscribe`) carried it to READY. The load-bearing Chunk 5
+change was therefore the QUIET-LISTEN / no-`0x52` behavior, not the resume hook. For
+this pump, pairing-before-discovery dominates (it offers `SEC_REQ` at connection
+establishment, ~1s, beating the ~2s discovery), so the resume hook is rarely/never
+taken — it remains as correct INSURANCE for a pump that offers AFTER discovery (which
+would need the offer inside the ~430ms post-discovery window). UNVALIDATED by capture;
+see device/TODO.md.
+
+REMAINING FRICTION IS PUMP-SIDE: the ESP32 was cleanly receptive on every ~2.2s cycle;
+the ~2.5 min wait was getting the PUMP into pairing mode (its own button UX), not the
+ESP32 missing the window. Chunk 5's goal — make the ESP32 deterministically receptive,
+no `0x52` talking-over the pump — is MET.
+
+Benign noise observed: 6x `Ignoring unexpected GAP event type: 9` (= ESP_GAP_BLE_KEY_EVT,
+SC key distribution) from the esphome esp32_ble GAP router during the handshake; does
+not affect pairing.
+
+**Chunk 5 — VALIDATED end-to-end (Tests A / B / C all pass, 2026-06-26).**
+
 **Chunk 6 — Operator surface (HA-facing).** Mechanical once §5 mechanism works:
 - `repair_requested` flag: persisted (NVS), reversible, auto-clears on pairing
   success. Authorizes pairing only when a bond already exists.
