@@ -9,10 +9,15 @@ Controlling a Grundfos ALPHA HWR recirc pump via BLE on a Seeed XIAO ESP32-S3
   and the remaining plan (Chunks 5-6). Read it before touching BLE code.
 
 ## Current state
-- On the validated Chunk 2 baseline (readiness gate). Bond-loss-on-pump-power-cycle
-  is FIXED (Stage 3, 3/3). Tag: `before-adding-encryption-settle-delay` is the
-  known-good rollback point.
-- Settle delay + Option B were tried and REVERTED (see DESIGN_NOTES — dead ends).
+- Chunk 5 (patient re-pairing) IMPLEMENTED and VALIDATED end-to-end — Tests A/B/C all
+  pass (2026-06-26). Built on the Chunk 2 readiness gate (bond-loss-on-pump-power-cycle
+  FIXED, Stage 3 3/3). No-bond connections now quiet-listen (no `0x52`) and catch the
+  pump's pump-initiated `SEC_REQ`; bonded reconnects unchanged. See DESIGN_NOTES Chunk 5.
+- Race #2 (operation-ordering `0x13` on bonded reconnect) is KNOWN, mitigated (no bond
+  loss), NOT fixed. The Chunk 5 resume hook is correct-but-unexercised insurance. See
+  `device/TODO.md`.
+- Settle delay + an earlier Option B were tried and REVERTED (see DESIGN_NOTES — dead ends).
+- Tag: `before-adding-encryption-settle-delay` is the known-good rollback point.
 
 ## Build / test
 - Build/flash from `device/`: `esphome run recirc-controller.yaml`
