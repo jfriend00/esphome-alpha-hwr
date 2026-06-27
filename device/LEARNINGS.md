@@ -68,6 +68,16 @@ order — a known limitation (see `UPSTREAM_NOTES.md` §3 / `DESIGN_NOTES.md` ra
 
 Source: `DESIGN_NOTES.md` §5 (Chunk 2.5, race #2).
 
+### This pump's minimum speed is ~1660 RPM (lower commands clamp to it)
+
+Commanding a constant-speed setpoint below ~1660 RPM has no effect — the pump still runs
+at 1660, so that's the slowest it will actually go. This is why 1660 is the chosen "slow"
+value (and `FALLBACK_SPEED_RPM = 1660`): it's the floor, not an arbitrary number. Likely
+pump/model-specific — a fact about *this* unit, not the component; other ALPHA HWR units
+may have a different floor.
+
+Source: observed on the device.
+
 ---
 
 ## ESP-IDF / Bluedroid
@@ -183,19 +193,56 @@ NO BOND → re-pairs. A bond-*count* check would get replacement wrong.
 Source: `peer_bond_exists()` in `ble_connection_manager.cpp`; `DESIGN_NOTES.md` §5
 (Chunk 5).
 
-### Upstream turn-on sends a hard-coded default speed; the setpoint isn't factored in
+### Pump control: on/off, mode, and setpoint all funnel through one Class 10 object
 
-In the upstream design the pump start command carries the speed/flow for the mode, but the
-intended speed isn't wired into it — turn-on sends a **hard-coded default**, so the
-configured setpoint is ignored. That part is simply broken/partial.
+Start / stop / set-mode are a single Class 10 write — OpSpec `0x90` (SET), Sub `0x5600`,
+Obj `0x0601` — with a 12-byte payload:
 
-The deeper split is a **usage-model choice, not a flaw in upstream's intent**: pump-as-master
-(store the speed in the pump) is *required* if you use the pump's built-in scheduler — the
-pump turns on autonomously and must know its speed — which is the phone-app / autonomous-
-operation use case upstream targets. HA-as-master fits HA-driven control instead, and survives
-pump resets/replacements. This fork diverges to HA-as-master via a `local:` patch (keep
-desired speed in HA, inject on every turn-on) and stays personal until/unless the component
-supports both models. See `GIT_WORKFLOW.md` §1, §8 and `device/ARCHITECTURE_NOTES.md`.
+    2F 01 00 00 07 00 [Flag] [ModeByte] [Suffix(4)]
+      Flag:   0x00 = start/run, 0x01 = stop
+      Suffix: float32-BE setpoint if supplied, else the mode's default suffix
+
+What follows from this:
+- **No standalone on/off in this implementation.** Every start/stop also carries the mode
+  byte and a mandatory 4-byte suffix. (Stop doesn't need a *real* setpoint — it sends the
+  mode's default suffix — but the field is always present and you must know the current
+  mode.) Whether the pump firmware offers a simpler on/off via another GENIbus class is an
+  open question — see `device/ARCHITECTURE_NOTES.md`.
+- **A separate setpoint-only write exists**: OpSpec `0x84`, Obj 86, Sub 13 (speed) /
+  15 (pressure) / 39 (flow), float32-BE, carrying **no run-state**.
+- **Setting speed turns the pump on** because the set-speed routine leads with the
+  control-object write (Flag=Start) and *then* writes the dedicated setpoint. That coupling
+  is an implementation choice — the setpoint-only write above could in principle change
+  speed without starting (untested while stopped).
+- **No setpoint passed → the mode's default suffix is sent**, so stock turn-on ignores the
+  configured setpoint and runs at that default. (In this fork the constant-speed default
+  suffix is `44 CF 80 00` = 1660 RPM — *John's edit*; upstream's was `45 65 70 00`
+  ≈ 3670 RPM.) The `local:` patch fixes this by injecting the HA value on start.
+
+Other control ops: read mode/op/setpoint = OpSpec `0x03`, Obj 86 Sub 6 (→ notification
+Obj `0x2F01` Sub 1); enable / disable remote = Class 3 `03 C1 07` / `03 C1 06` (remote-vs-
+auto, **not** pump on/off); temp-range / cycle-time configs = Class 10 Obj 91 Sub 430.
+
+Source: `control_service.cpp` (`send_control_request`, `set_class10_setpoint`, `start`).
+(The `.h` doc-comments mention a Class 3 register method for setpoints; the `.cpp` actually
+uses Class 10 OpSpec `0x84` — trust the `.cpp`.)
+
+### Non-speed setpoints are unit-broken; constant-speed/RPM is the reliable path
+
+The flow and pressure setpoints come back garbage / with unit-conversion errors (part of
+the broader telemetry-scaling problems — see `DESIGN_NOTES.md` §9). Constant-speed (RPM)
+was chosen for control here precisely because RPM is effectively **unitless** — no Pa↔m or
+scaling factor to get wrong — so it's the one mode that works cleanly today.
+
+### Speed control is an HA-as-master divergence (usage-model choice)
+
+The control object makes the pump the master of the intended speed (you set it; it's
+stored and re-sent on start). That's *required* if you use the pump's built-in scheduler
+(it turns on autonomously and must know its speed) — the phone-app / autonomous-operation
+use case upstream targets. This setup is HA-driven instead, so a `local:` patch makes **HA**
+the master (keep desired speed in HA, inject on every turn-on), which also survives pump
+resets/replacements. Stays personal until/unless the component supports both models. See
+`GIT_WORKFLOW.md` §1, §8 and `device/ARCHITECTURE_NOTES.md`.
 
 Source: `control_service.cpp` `start()` / `send_control_request()`.
 
@@ -236,6 +283,13 @@ facts.
 - **The post-pairing resume hook is unexercised.** `handle_auth_complete` → subscribe
   hasn't been hit in capture because pairing completes before discovery on this pump;
   correct as insurance but unvalidated. (See `device/TODO.md`.)
-- **Whether adjusting the intended speed inherently starts the pump.** Setting the speed
-  turns the pump on; unverified whether that's a pump-API artifact (the GENI control write
-  asserts run-state) or just how upstream wired the control. (See `GIT_WORKFLOW.md` §1.)
+- **Whether the setpoint can be changed without starting the pump.** We now know *why*
+  setting speed starts it — the set-speed routine leads with the start-asserting control
+  write — and that a setpoint-only write exists (Class 10 OpSpec `0x84`, Sub 13, no
+  run-state). Unverified: whether a standalone setpoint-only write *while stopped* sets the
+  active value. (See the control-commands entry above and `device/ARCHITECTURE_NOTES.md`.)
+- **Whether the pump supports a simpler GENIbus Class 3 on/off command.** On/off is a
+  standard GENIbus command; the code already uses Class 3 for remote enable/disable
+  (`03 C1 07` / `06`), so the pump accepts Class 3 command IDs. Whether a bare
+  `03 C1 <id>` start/stop works needs an experiment on the device. (See
+  `device/ARCHITECTURE_NOTES.md`.)
