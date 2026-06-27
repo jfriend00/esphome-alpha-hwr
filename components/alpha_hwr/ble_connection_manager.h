@@ -87,11 +87,20 @@ class BLEConnectionManager {
   // Service discovery retry mechanism
   uint8_t discovery_retry_count_{0};
   uint32_t scheduler_sequence_{0};  // Sequence counter to invalidate stale lambdas
-  // Chunk 2 (readiness gate): defer the encryption request until service
-  // discovery has succeeded, which proves the pump's BLE stack is ready.
-  // This prevents the premature esp_ble_set_encryption() that fails with 0x61
-  // into a not-yet-ready pump and destroys the bond. See DESIGN_NOTES.md §5.
+  // Readiness gate: the encryption request is deferred until service discovery
+  // has succeeded, which proves the pump's BLE stack is ready. Requesting
+  // encryption too early (into a not-yet-ready pump, e.g. just after power-up)
+  // can make the stack clear the stored bond when that attempt fails
+  // (encryption-start failure, 0x61), forcing a manual re-pair. This flag guards
+  // against issuing more than one request per connection.
   bool encryption_requested_{false};  // have we issued set_encryption this connection?
+  // When no bond exists, a new bond with this pump must be pump-initiated: it
+  // pairs only when it sends the security request (SEC_REQ). A central-initiated
+  // pairing request is rejected (0x52) and can disrupt the pump's own offer, and
+  // subscribing before the link is encrypted is also rejected (0x13). This flag marks
+  // that we are connected and quietly waiting for the pump's SEC_REQ; once
+  // pairing succeeds, handle_auth_complete() resumes the deferred subscribe chain.
+  bool awaiting_pump_pairing_{false};
   static const uint8_t MAX_DISCOVERY_RETRIES = 3;
   static const uint32_t DISCOVERY_RETRY_DELAY_MS = 1000;
   static const uint32_t POST_CONNECT_DELAY_MS = 500;

@@ -8,12 +8,11 @@ namespace core {
 
 static const char *TAG = "alpha_hwr.ble";
 
-// Query ESP-IDF's bond store for whether we hold a bond with the connected
-// peer. Diagnostic only (Pass 1): logging this at connection-open and again
-// after an auth failure tells us whether the local bond is being destroyed by
-// a failed encryption attempt — the open question behind the post-power-cycle
-// reconnect failure. This node bonds with very few devices, so a small fixed
-// list is safe and avoids heap.
+// Returns whether ESP-IDF's bond store holds a bond for the currently-connected
+// peer. Used both to decide whether to request encryption (bond present) or to
+// wait for the pump to initiate pairing (no bond), and for diagnostic logging.
+// This node bonds with very few devices, so a small fixed-size list is safe and
+// avoids a heap allocation.
 bool BLEConnectionManager::peer_bond_exists() {
   if (!client_) return false;
   int num = esp_ble_get_bond_device_num();
@@ -192,17 +191,19 @@ void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param
 
   // Reset per-connection state
   discovery_retry_count_ = 0;
-  encryption_requested_ = false;  // Chunk 2: fresh connection, no encryption asked yet
+  encryption_requested_ = false;  // fresh connection, no encryption requested yet
+  awaiting_pump_pairing_ = false;  // not yet waiting on a pump-initiated pairing
 
-  // Diagnostic: record bond state at the moment we open (Pass 1 instrumentation).
+  // Log the bond state at connection open (diagnostic).
   ESP_LOGI(TAG, "Bond state at connection open: %s",
            peer_bond_exists() ? "BONDED (expect encryption)" : "NO BOND (expect pairing)");
 
-  // Readiness gate: encryption is requested in handle_service_discovery_complete,
-  // NOT here. Requesting it on open can fire into a not-yet-ready pump (e.g. just
-  // back from power loss), failing with 0x61, which makes Bluedroid clear the bond
-  // from flash -> permanent re-pair. A successful unencrypted service discovery
-  // proves the pump is ready, so we gate encryption on that. See DESIGN_NOTES.md.
+  // Readiness gate: encryption is requested in
+  // handle_service_discovery_complete, NOT here. Requesting it on open can fire
+  // into a not-yet-ready pump (e.g. just back from power loss); the failed
+  // attempt (encryption-start failure, 0x61) can make the stack clear the
+  // stored bond, forcing a manual re-pair. A successful unencrypted service
+  // discovery proves the pump is ready, so encryption is gated on that.
 
   // Update connection parameters for better stability
   esp_ble_conn_update_params_t conn_params;
@@ -244,31 +245,55 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
     auto *service = client_->get_service(service_uuid_);
 
     if (service) {
-      ESP_LOGI(TAG, "✓ Service found, enabling notifications...");
+      ESP_LOGI(TAG, "✓ Service found");
 
-      // Readiness gate: discovery succeeded -> pump is ready -> safe to encrypt now.
-      // Request once per connection (this handler can re-enter via the retry path).
+      // Discovery has succeeded, so the pump is ready. Decide this connection's
+      // path once (this handler can re-enter via the retry path).
       if (pairing_enabled_ && !encryption_requested_) {
         encryption_requested_ = true;
-        ESP_LOGI(TAG, "Pump ready (discovery ok). Requesting encryption/pairing...");
-        esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
-        if (ret != ESP_OK) {
-          ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
+
+        // Branch on whether a bond already exists:
+        //   - Bond present: a central-initiated encryption request is correct,
+        //     so request it now and subscribe concurrently.
+        //   - No bond: stay quiet. A new bond with this pump must be
+        //     pump-initiated (the pump sends the security request); a
+        //     central-initiated request is rejected (0x52) and can disrupt the
+        //     pump's offer, and subscribing before the link is encrypted is
+        //     also rejected (0x13). Defer both and resume in
+        //     handle_auth_complete() once the pump initiates pairing and it
+        //     succeeds.
+        bool want_pairing = !peer_bond_exists();
+
+        if (want_pairing) {
+          awaiting_pump_pairing_ = true;
+          ESP_LOGI(TAG, "Pump ready (discovery ok), NO bond. Quiet listen for "
+                        "pump-initiated pairing (no Central request)...");
+        } else {
+          ESP_LOGI(TAG, "Pump ready (discovery ok), bond present. Requesting encryption...");
+          esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
+          if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
+          }
         }
       }
 
-      // Notify component that service was found
-      if (service_found_callback_) {
-        service_found_callback_();
-      }
+      // Subscribe now for the bonded-reconnect path and the passive-telemetry
+      // path (pairing disabled). In the no-bond re-pair path we defer until the
+      // bond exists; handle_auth_complete() runs this chain after pairing.
+      if (!awaiting_pump_pairing_) {
+        // Notify component that service was found
+        if (service_found_callback_) {
+          service_found_callback_();
+        }
 
-      // Check for characteristic
-      auto *chr = client_->get_characteristic(service->uuid, characteristic_uuid_);
-      if (chr) {
-        subscribe_to_notifications();
-      } else {
-        char uuid_buf[esphome::esp32_ble::UUID_STR_LEN];
-        ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_str(uuid_buf));
+        // Check for characteristic
+        auto *chr = client_->get_characteristic(service->uuid, characteristic_uuid_);
+        if (chr) {
+          subscribe_to_notifications();
+        } else {
+          char uuid_buf[esphome::esp32_ble::UUID_STR_LEN];
+          ESP_LOGW(TAG, "Characteristic NOT found: %s", characteristic_uuid_.to_str(uuid_buf));
+        }
       }
     } else {
       // Service NOT found - implement retry logic
@@ -322,6 +347,19 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
     if (pairing_status_sensor_ != nullptr) {
       pairing_status_sensor_->publish_state(true);
     }
+
+    // If we were quietly waiting for the pump to initiate pairing (the no-bond
+    // path), the encrypted link and bond now exist. Resume the post-discovery
+    // chain that was deferred: mark service-found, then subscribe over the
+    // encrypted link (-> subscribed_callback -> authenticate).
+    if (awaiting_pump_pairing_) {
+      awaiting_pump_pairing_ = false;
+      ESP_LOGI(TAG, "Pairing complete - resuming subscription over encrypted link...");
+      if (service_found_callback_) {
+        service_found_callback_();
+      }
+      subscribe_to_notifications();
+    }
   } else {
     // Decode failure reason for better debugging
     const char *fail_reason = "Unknown";
@@ -357,9 +395,9 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
     ESP_LOGW(TAG, "  Device: %s", addr_str);
     ESP_LOGW(TAG, "  Failure reason: %s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
     ESP_LOGW(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
-    // Pass 1 diagnostic: did the local bond survive this failure? If it's
-    // BONDED before but NO BOND after a 0x61, Bluedroid is destroying the bond
-    // on encryption failure — which would explain why retries never recover.
+    // Log whether the local bond survived this failure. A bond present before but
+    // absent afterward indicates the stack cleared it on the encryption failure
+    // (0x61), which means retries cannot recover without a re-pair.
     ESP_LOGW(TAG, "  Bond present after failure: %s",
              peer_bond_exists() ? "YES" : "NO");
     if (pairing_status_sensor_ != nullptr) {
