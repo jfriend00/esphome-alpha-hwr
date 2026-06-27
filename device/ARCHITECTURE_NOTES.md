@@ -1,0 +1,8 @@
+# Architecture Notes
+Notes about things I might discuss with the upstream maintainer
+
+## Pump Speed
+The current upstream architecture relies on storing the intended pump speed in the pump (probably modelled after the phone app).  I prefer to have Home Assistant be the master for the intended pump speed and then use that speed when starting the pump.  The same would be true if using other control modes (constant flow, constant pressure), etc...  A pump can be replaced or reset.  In addition, setting the intended speed in the upstream code now also turns on the pump which is not something I want in my HA UI.  I don't know if that's an artifact of the BLE API or just something the upstream implementation chooses to do.  It makes sense to store a pump speed in the pump if you're going to only use built-in pump scheduling since if the pump is going to turn itself on/off, it has to know what speed to run at.
+
+## On/Off control
+The upstream code sends the pump speed with every on/off command (when in constant speed mode, but works similarly in other modes).  This seems inconsistent with storing the pump speed in the pump as it requires you to have properly synced into the ESP32 what the desired pump speed (from the pump) is just so you can send it back to the pump.  Again, I don't know if this is a limitation of the BLE API.  It would be very oddly strange to have BLE control when all settings are stored in the pump that can't just command the pump to turn on or off as that's one of the most basic controls you would want.  Said differently, the current implementation for on/off is inconsistent with storing the intended pump speed (or the setting for whatever control mode you'ure using) in the pump.
