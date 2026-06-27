@@ -149,11 +149,17 @@ Yes → `contrib:`. No → `local:`. When unsure, default to `local:` — cheap 
 whereas a personal detail in a PR is noise the maintainer has to catch.
 
 ### Finding them later
+
+The prefix match is **case-insensitive** (the `-i` flag), so capitalizing the first letter
+by habit — `Local:` / `Contrib:` — is fine and still gets found. (For `contrib:`, just
+lowercase it at the extraction-reword step, since the upstream message is conventionally
+lowercase.)
+
 ```bash
 # contribution commits since upstream, oldest-first (cherry-pick order):
-git log --grep '^contrib:' upstream/main..bt_issues --reverse --oneline
+git log --grep '^contrib:' -i upstream/main..bt_issues --reverse --oneline
 # personal commits:
-git log --grep '^local:' upstream/main..bt_issues --reverse --oneline
+git log --grep '^local:' -i upstream/main..bt_issues --reverse --oneline
 ```
 
 ---
@@ -235,7 +241,7 @@ git fetch upstream
 git switch -c contrib/<topic> upstream/main      # clean branch off latest upstream
 
 # list the contrib commits to take, oldest-first:
-git log --grep '^contrib:' --reverse --format='%H  %s' <base>..bt_issues
+git log --grep '^contrib:' -i --reverse --format='%H  %s' <base>..bt_issues
 #   <base> = upstream/main for the first contribution, or the last-extracted point
 
 # cherry-pick them in that order:
@@ -340,8 +346,8 @@ the already-contributed parts now coming *from* upstream instead of duplicated.
 git add -p <file>     # pick hunks -> commit with the matching tag, repeat
 
 # See each track's commits since upstream:
-git log --grep '^contrib:' upstream/main..bt_issues --reverse --oneline
-git log --grep '^local:'   upstream/main..bt_issues --reverse --oneline
+git log --grep '^contrib:' -i upstream/main..bt_issues --reverse --oneline
+git log --grep '^local:'   -i upstream/main..bt_issues --reverse --oneline
 
 # Extract a contribution:
 git fetch upstream
