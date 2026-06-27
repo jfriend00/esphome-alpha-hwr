@@ -183,6 +183,22 @@ NO BOND → re-pairs. A bond-*count* check would get replacement wrong.
 Source: `peer_bond_exists()` in `ble_connection_manager.cpp`; `DESIGN_NOTES.md` §5
 (Chunk 5).
 
+### Upstream turn-on sends a hard-coded default speed; the setpoint isn't factored in
+
+In the upstream design the pump start command carries the speed/flow for the mode, but the
+intended speed isn't wired into it — turn-on sends a **hard-coded default**, so the
+configured setpoint is ignored. That part is simply broken/partial.
+
+The deeper split is a **usage-model choice, not a flaw in upstream's intent**: pump-as-master
+(store the speed in the pump) is *required* if you use the pump's built-in scheduler — the
+pump turns on autonomously and must know its speed — which is the phone-app / autonomous-
+operation use case upstream targets. HA-as-master fits HA-driven control instead, and survives
+pump resets/replacements. This fork diverges to HA-as-master via a `local:` patch (keep
+desired speed in HA, inject on every turn-on) and stays personal until/unless the component
+supports both models. See `GIT_WORKFLOW.md` §1, §8 and `device/ARCHITECTURE_NOTES.md`.
+
+Source: `control_service.cpp` `start()` / `send_control_request()`.
+
 ---
 
 ## BLE code cheat-sheet
@@ -220,3 +236,6 @@ facts.
 - **The post-pairing resume hook is unexercised.** `handle_auth_complete` → subscribe
   hasn't been hit in capture because pairing completes before discovery on this pump;
   correct as insurance but unvalidated. (See `device/TODO.md`.)
+- **Whether adjusting the intended speed inherently starts the pump.** Setting the speed
+  turns the pump on; unverified whether that's a pump-API artifact (the GENI control write
+  asserts run-state) or just how upstream wired the control. (See `GIT_WORKFLOW.md` §1.)
