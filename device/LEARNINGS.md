@@ -246,6 +246,17 @@ resets/replacements. Stays personal until/unless the component supports both mod
 
 Source: `control_service.cpp` `start()` / `send_control_request()`.
 
+### Setting `entity_category` on an entity is hard to undo (HA caches it)
+
+Home Assistant stores an entity's `entity_category` in its registry and does **not**
+re-derive it when the ESPHome config later changes. Removing or changing a category
+therefore requires a *fresh registration* — rename the entity (new unique_id) or delete &
+re-add the device in the ESPHome integration. So **don't set `entity_category` on a new
+sensor unless it's an intended choice**: trivial to add later, painful to remove. (Cost real
+time on the `Pump Link Fault` sensor — an accidental `diagnostic` default in
+`components/alpha_hwr/__init__.py` kept it in HA's Diagnostic section despite later YAML
+changes, until a rename forced a fresh registration.)
+
 ---
 
 ## BLE code cheat-sheet

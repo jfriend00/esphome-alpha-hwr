@@ -660,6 +660,110 @@ not affect pairing.
 - pyscript watchdog notification keyed off `Pump Link Status` transitions (reuse
   `send_notification_once` cooldown).
 
+### Chunk 6 design — `Pump Link Status` sensor (refined 2026-06-27)
+
+A coarse, action-mapped link-health text sensor for HA monitoring + troubleshooting, plus
+a latched companion. Supersedes the near-useless `Pairing Status` (which stays untouched
+for compatibility). Contribution candidate: the sensors + state logic are general
+(`contrib:`); the monitoring/alerting automation lives in the operator's YAML (`local:`).
+
+STATES (six; evaluated top-down, first match wins):
+1. `initializing` — booted, BLE not yet attempting/established. Exists to suppress a false
+   `unreachable` during the first-attempt window (functional, not cosmetic).
+2. `connected` — `session == READY` (discovered + subscribed + GENI-authenticated). The
+   state to monitor/alert on. Defined on READY, NOT on live telemetry: telemetry pauses
+   when the pump is stopped, so a data-flow check would false-negative a legitimately
+   stopped pump. A truly dead link leaves READY via the disconnect path anyway. (Soft-stall
+   detection, if ever wanted, is a separate "data age" signal tuned in YAML.)
+3. `connecting` — connection open and in bring-up (discovery/subscribe/auth), or a fresh
+   attempt within the threshold window. Absorbs the brief (~1s) pump-initiated pairing
+   handshake — too short to be its own state.
+4. `reconnecting` — bonded, but repeatedly opening without reaching READY (stuck loop).
+   Read `Pump Last Link Failure` for why.
+5. `unreachable` — no connection-open at all for > threshold while trying → pump offline /
+   no power / out of range.
+6. `unpaired` — no bond; the Chunk 5 quiet-listen cycle, waiting for the pump to be put in
+   pairing mode. Means *the ESP32 has no bond and is waiting* — NOT that the pump is in
+   pairing mode. Doubles as the bond-absence indicator (so no separate bond sensor needed).
+
+Decision order: READY→`connected`; else booted-but-no-attempt-yet→`initializing`; else
+no-bond quiet-listen→`unpaired`; else open+progressing→`connecting`; else
+opens-but-failing→`reconnecting`; else not-opening→`unreachable`.
+
+COMPANION: `Pump Last Link Failure` — a second text sensor holding the latched
+human-readable reason of the most recent failed attempt (e.g. "remote terminated (0x13)",
+"connection timeout (0x08)", "pairing not supported (0x52)", "encryption failed (0x61)").
+Two separate sensors, not an attribute: ESPHome has no runtime custom-attribute mechanism
+for a component's entities, and two entities are each directly displayable anyway.
+
+DATA SOURCES (all already present in the code):
+- session FSM (READY / bring-up states / IDLE / ERROR)
+- `peer_bond_exists()` + Chunk 5 `awaiting_pump_pairing_` (bond / quiet-listen)
+- base client `parent_->state()` (CONNECTING / CONNECTED / ESTABLISHED / IDLE)
+- disconnect reason (`ESP_GATTC_DISCONNECT_EVT`) and the auth-fail reason switch in
+  `handle_auth_complete` (the human-readable decode already exists there)
+- `set_timeout` / `loop()` for the timing thresholds
+
+IMPLEMENTATION APPROACH: one **centralized evaluator** (a small new unit owned by the main
+component) is the SOLE publisher of both sensors. It is poked "re-evaluate" from the
+callbacks `alpha_hwr.cpp` already wires (connection / disconnection / auth) plus a periodic
+tick, and it reads `session_`, `peer_bond_exists()`, and `parent_->state()`. Keep it OUT of
+`ble_connection_manager` (that stays BLE-focused). Centralizing avoids scattering
+`publish_state` calls across layers (the main mess risk). Minor plumbing: surface the
+disconnect/auth reason codes to the evaluator (extend the disconnection callback to carry
+the reason, or stash "last reason" in `ble_connection_manager` for it to read).
+
+COMPLEXITY: moderate, additive, no architecture change. ~80% mechanical — the two sensors
+mirror the existing `Pairing Status` wiring, the failure-reason decode is reused, and
+`connected`/`connecting`/`unpaired`/`initializing` map almost directly to existing signals.
+~20% is the only real new logic: the timers/counters that split `connecting` vs
+`reconnecting` vs `unreachable` (a last-open timestamp, a failed-attempts-since-READY
+counter, periodic re-eval), whose thresholds are heuristic and need empirical tuning.
+
+SPLITTING `connecting` / `reconnecting` / `unreachable` — the criteria.
+
+State to track (members on the evaluator/component, via `millis()`):
+- `last_open_ms_` — set on every connection-open.
+- `consecutive_failures_` — `++` on each disconnect *before* READY; reset to 0 on READY.
+- `ever_opened_`, `boot_ms_` — for the startup case.
+
+Evaluation (priority order, first match wins; `now = millis()`):
+1. `connected`    — session READY.
+2. `unpaired`     — pairing enabled and **no bond**. Base this on bond-absence
+   (`peer_bond_exists()` false, captured at/after the last connection-open and cached) —
+   it's stable across the whole no-bond cycle, unlike the per-cycle `awaiting_pump_pairing_`
+   flag which is only set between discovery and the ~430ms drop.
+3. `initializing` — `!ever_opened_ && now - boot_ms_ < INIT_GRACE` (~15s).
+4. `unreachable`  — no recent open: `now - last_open_ms_ > UNREACHABLE_WINDOW` (~20s).
+5. `reconnecting` — recent opens happening but `consecutive_failures_ >= FAIL_K` (~2–3).
+6. `connecting`  — fall-through: attempt in progress / recent open, not enough failures yet.
+
+Crisp discriminator between (4) and (5/6): "has a connection-open happened recently?" —
+opens recent ⇒ reachable (connecting/reconnecting); none for a while ⇒ unreachable. Between
+(5) and (6) it's just the failure count.
+
+EVENT-DRIVEN vs. PERIODIC (important): the connect/pair process naturally loops (~2.2s),
+firing an open + a disconnect per cycle. Those events update `last_open_ms_` and bump
+`consecutive_failures_`, so the loop itself measures "how long / how many tries" for the
+`connecting`↔`reconnecting` split — no extra timer needed there. BUT `unreachable` is the
+exception: when the pump is truly offline the loop produces NO events (no open ever fires),
+and you can't detect an absence from callbacks. So `unreachable` must be caught by a
+continuous check of `now - last_open_ms_`. The component's `loop()` is that heartbeat
+already — run the priority eval there each iteration and publish only on change (compare to
+a `last_published_` to avoid spamming HA). Net: events drive the "something's happening"
+states; `loop()` + the timestamp delta catches the "nothing's happening" state.
+
+Sensible paths this produces:
+- Pump powered off: `connected` → (one `0x08`) → `connecting` briefly → `unreachable` after
+  ~20s of no opens (correctly skips `reconnecting` — a dead pump doesn't keep opening).
+- Bond/protocol churn, pump present: `connecting` → `reconnecting` as failures pile up
+  (Last Link Failure shows `0x13` etc.).
+- No bond: `unpaired` throughout, regardless of count.
+
+TUNING: keep `FAIL_K` / windows generous enough that a *normal* bumpy reconnect (Test A took
+2–3 opens over a few seconds before READY) rides through as `connecting` and doesn't flicker
+to `reconnecting` on the way to success. Thresholds are the empirical part — start loose.
+
 ---
 
 ## 6. Diagnostic scaffolding currently in the build (Pass 1)
