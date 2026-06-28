@@ -637,6 +637,44 @@ not affect pairing.
 
 **Chunk 5 — VALIDATED end-to-end (Tests A / B / C all pass, 2026-06-26).**
 
+**REFERENCE CAPTURE — canonical healthy pump-initiated pairing (2026-06-27, post-Chunk-6).**
+The clean baseline to diff against if pairing ever misbehaves again. Same shape as Test C,
+but captured after the `Pump Link Status` sensor was added, so it also shows the sensor
+landing on `Connected`. Only ~2 quiet-listen cycles before the pump offered; ~5.4s from
+SEC_REQ to Connected.
+
+```
+-- Quiet-listen cycling, ZERO 0x52 (two cycles; pump idle-drops at 0x13) --
+08:32.18  Starting service discovery (NO bond)
+08:33.30  Service discovery complete -> Service found
+08:33.31  "Quiet listen for pump-initiated pairing (no Central request)"
+08:33.69  Disconnected (reason: 0x13)     <- pump drops idle unencrypted no-bond link (~430ms)
+08:34.09  (transient 0x3e "failed to establish" on a reconnect - normal, recovers)
+08:34.29  Connection open, NO bond -> discover -> Quiet listen (cycle 2)
+08:36.29  Disconnected (reason: 0x13)
+-- Pump offers; pairing completes ON THE SAME CONNECTION (no reconnect) --
+08:36.516 "BLE security request from device ... - accepting"  <- PUMP-INITIATED SEC_REQ
+08:36.523 Connection open, NO bond -> Starting service discovery
+08:36.991 BT_SMP: FOR LE SC LTK IS USED                       <- LE Secure Connections pairing
+08:37.39-48  6x "Ignoring unexpected GAP event type: 9"       <- SC key distribution, benign
+08:37.517 auth complete -> Auth mode: 0x09                    <- bonded (SC + bonding); bond CREATED
+-- Same connection continues; bond now exists -> normal bonded bring-up --
+08:38.589 Service discovery complete -> bond present -> "Requesting encryption..."
+08:38.6   CCCD writes successful -> notifications enabled (subscribe AFTER bond exists)
+08:40.63  Pump stabilized -> 3-stage GENI auth handshake
+08:40.99+ Control mode notifications flowing (Constant Speed, 1660)
+08:41.837 GENI auth complete -> Session AUTHENTICATING -> READY
+08:41.858 "Pump link status: Connected"                       <- Chunk 6 sensor lands Connected
+```
+
+Confirms (as Test C): **pairing-before-discovery dominates** — the pump offers SEC_REQ at
+connection establishment (~1s), so the bond already exists by the time discovery completes
+and the NORMAL bonded branch (`bond present -> Requesting encryption -> subscribe`) carries
+it to READY; the Chunk 5 resume hook is again NOT taken (it remains insurance for an
+offer-*after*-discovery pump). The load-bearing behavior is the quiet-listen / zero-`0x52`
+receptiveness. New here: the `Pump Link Status` sensor tracks the whole sequence and reports
+`Connected` the instant the session reaches READY.
+
 **Chunk 6 — Operator surface (HA-facing).** Mechanical once §5 mechanism works:
 - `repair_requested` flag: persisted (NVS), reversible, auto-clears on pairing
   success. Authorizes pairing only when a bond already exists.
