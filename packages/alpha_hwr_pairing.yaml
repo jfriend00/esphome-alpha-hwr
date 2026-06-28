@@ -58,6 +58,12 @@ alpha_hwr:
    # Pairing Status
    pairing_status:
      name: "Pairing Status"
+
+   # Pump Link Status (coarse connection health) + latched last-failure detail
+   pump_link_status:
+     name: "Pump Link Status"
+   pump_last_link_failure:
+     name: "Pump Link Fault"
    
    # Enhanced Electrical (requires pairing)
    voltage:

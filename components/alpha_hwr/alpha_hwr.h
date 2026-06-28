@@ -178,6 +178,12 @@ public:
   void set_last_clock_sync_sensor(text_sensor::TextSensor *sensor) {
     last_clock_sync_sensor_ = sensor;
   }
+  void set_pump_link_status_text_sensor(text_sensor::TextSensor *sensor) {
+    pump_link_status_sensor_ = sensor;
+  }
+  void set_pump_last_link_failure_text_sensor(text_sensor::TextSensor *sensor) {
+    pump_last_link_failure_sensor_ = sensor;
+  }
 #endif
   // Numeric sensor setters for operating statistics
   void set_start_count_sensor(sensor::Sensor *sensor) {
@@ -211,6 +217,20 @@ private:
 
   void authenticate();
   void trigger_initial_data_reads();
+
+  // Pump Link Status evaluator (Chunk 6): computes a coarse link-health enum from the
+  // session state, bond state, and connection-attempt timing, and publishes it (plus the
+  // latched last-failure string) on change. Driven by the connection / disconnection /
+  // auth callbacks and a periodic check in loop().
+  void evaluate_link_status_();
+  uint32_t link_boot_ms_{0};       // millis() at setup()
+  uint32_t link_last_open_ms_{0};  // millis() of the most recent connection-open
+  uint32_t link_last_eval_ms_{0};  // throttle for the periodic loop() evaluation
+  uint16_t link_consecutive_failures_{0};  // disconnects before READY since last READY
+  bool link_ever_opened_{false};
+  bool link_reached_ready_{false};          // did the current/last connection reach READY?
+  std::string link_last_status_;            // last published status (publish-on-change)
+  std::string link_last_failure_published_; // last published failure string
 
   // BLE connection manager (handles all BLE operations)
   core::BLEConnectionManager ble_manager_;
@@ -266,6 +286,9 @@ private:
   text_sensor::TextSensor *history_text_sensor_{nullptr};
   text_sensor::TextSensor *cycle_timestamps_text_sensor_{nullptr};
   text_sensor::TextSensor *last_clock_sync_sensor_{nullptr};
+  // Pump link status (coarse connection-health enum) + latched last failure
+  text_sensor::TextSensor *pump_link_status_sensor_{nullptr};
+  text_sensor::TextSensor *pump_last_link_failure_sensor_{nullptr};
 #endif
 
   // Operating statistics sensors

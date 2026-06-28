@@ -54,6 +54,8 @@ CONF_START_COUNT = "start_count"
 CONF_OPERATING_HOURS = "operating_hours"
 CONF_CLOCK_DIFF = "clock_diff"
 CONF_LAST_CLOCK_SYNC = "last_clock_sync"
+CONF_PUMP_LINK_STATUS = "pump_link_status"
+CONF_PUMP_LAST_LINK_FAILURE = "pump_last_link_failure"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -208,6 +210,12 @@ CONFIG_SCHEMA = cv.Schema(
             icon="mdi:clock-check",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
+        cv.Optional(CONF_PUMP_LINK_STATUS): text_sensor.text_sensor_schema(
+            icon="mdi:bluetooth-connect",
+        ),
+        cv.Optional(CONF_PUMP_LAST_LINK_FAILURE): text_sensor.text_sensor_schema(
+            icon="mdi:alert-circle-outline",
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -339,3 +347,11 @@ async def to_code(config):
     if CONF_LAST_CLOCK_SYNC in config:
         sens = await text_sensor.new_text_sensor(config[CONF_LAST_CLOCK_SYNC])
         cg.add(var.set_last_clock_sync_sensor(sens))
+
+    if CONF_PUMP_LINK_STATUS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_PUMP_LINK_STATUS])
+        cg.add(var.set_pump_link_status_text_sensor(sens))
+
+    if CONF_PUMP_LAST_LINK_FAILURE in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_PUMP_LAST_LINK_FAILURE])
+        cg.add(var.set_pump_last_link_failure_text_sensor(sens))

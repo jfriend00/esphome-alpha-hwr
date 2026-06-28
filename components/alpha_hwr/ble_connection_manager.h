@@ -5,6 +5,7 @@
 #include <esp_gattc_api.h>
 #include <esp_gap_ble_api.h>
 #include <functional>
+#include <string>
 
 namespace esphome {
 namespace alpha_hwr {
@@ -63,7 +64,12 @@ class BLEConnectionManager {
   
   // Debug helpers
   void dump_services();
-  
+
+  // Pump Link Status support (Chunk 6): latched human-readable reason of the most
+  // recent failed attempt, and the bond state observed at the last connection-open.
+  const std::string &get_last_failure() const { return last_failure_; }
+  bool was_bonded_at_open() const { return bonded_at_open_; }
+
  private:
   void subscribe_to_notifications();
   void handle_connection_opened(const esp_ble_gattc_cb_param_t *param);
@@ -115,6 +121,10 @@ class BLEConnectionManager {
   
   // Pairing status sensor
   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
+
+  // Pump Link Status support (Chunk 6)
+  std::string last_failure_;     // latched last failure reason (human-readable)
+  bool bonded_at_open_{false};   // bond state captured at the last connection-open
 };
 
 }  // namespace core

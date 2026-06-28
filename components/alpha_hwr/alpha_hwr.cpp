@@ -18,6 +18,8 @@ void AlphaHwrComponent::setup() {
   ESP_LOGI(TAG, "================== Alpha HWR Component setup() called "
                 "==================");
 
+  this->link_boot_ms_ = millis();  // Pump Link Status: mark the startup window
+
   // Initialize BLE connection manager
   ble_manager_.set_ble_client(parent_);
   ble_manager_.set_pairing_enabled(pairing_enabled_);
@@ -32,8 +34,14 @@ void AlphaHwrComponent::setup() {
         this->set_timeout(delay_ms, std::move(callback));
       });
 
-  ble_manager_.set_connection_callback(
-      [this]() { this->session_.on_connected(); });
+  ble_manager_.set_connection_callback([this]() {
+    this->session_.on_connected();
+    // Pump Link Status: record this connection-open.
+    this->link_last_open_ms_ = millis();
+    this->link_ever_opened_ = true;
+    this->link_reached_ready_ = false;
+    this->evaluate_link_status_();
+  });
 
   ble_manager_.set_disconnection_callback([this]() {
     this->cancel_timeout("hwr_auth_start");  // kill the stale stabilize->auth timer
@@ -41,6 +49,16 @@ void AlphaHwrComponent::setup() {
     this->telemetry_service_.stop();         // reset running_ so the next connect is clean
     this->session_.on_disconnected();
     this->transport_.reset();
+
+    // Pump Link Status: a connection ended. If it had reached READY this is a clean
+    // drop of a good link (start fresh); otherwise it was a failed attempt.
+    if (this->link_reached_ready_) {
+      this->link_consecutive_failures_ = 0;
+    } else {
+      this->link_consecutive_failures_++;
+    }
+    this->link_reached_ready_ = false;
+    this->evaluate_link_status_();
   });
 
   ble_manager_.set_service_found_callback(
@@ -100,6 +118,11 @@ void AlphaHwrComponent::setup() {
 
     // Start telemetry service when authenticated
     this->telemetry_service_.start();
+
+    // Pump Link Status: we reached a working link.
+    this->link_reached_ready_ = true;
+    this->link_consecutive_failures_ = 0;
+    this->evaluate_link_status_();
 
     // Trigger the one-time data read chain
     this->trigger_initial_data_reads();
@@ -166,6 +189,62 @@ void AlphaHwrComponent::setup() {
 void AlphaHwrComponent::loop() {
   // Process transport command queue and state machine
   this->transport_.loop();
+
+  // Pump Link Status: periodic re-evaluation (throttled). This catches the
+  // no-events "unreachable" case — when the pump is offline the connect loop
+  // produces no callbacks, so only an elapsed-time check can detect it.
+  if (millis() - this->link_last_eval_ms_ >= 1000) {
+    this->link_last_eval_ms_ = millis();
+    this->evaluate_link_status_();
+  }
+}
+
+void AlphaHwrComponent::evaluate_link_status_() {
+#ifdef USE_TEXT_SENSOR
+  // Companion sensor: show the latched failure reason only while the link is unhealthy;
+  // read "None" once it's Connected again, so a stale reason doesn't sit next to a healthy
+  // status. "None" is also the pre-failure default.
+  if (this->pump_last_link_failure_sensor_ != nullptr) {
+    const std::string &lf = this->ble_manager_.get_last_failure();
+    const std::string shown =
+        (this->session_.is_ready() || lf.empty()) ? std::string("None") : lf;
+    if (shown != this->link_last_failure_published_) {
+      this->link_last_failure_published_ = shown;
+      this->pump_last_link_failure_sensor_->publish_state(shown);
+    }
+  }
+
+  if (this->pump_link_status_sensor_ == nullptr)
+    return;
+
+  constexpr uint32_t LINK_INIT_GRACE_MS = 15000;   // boot grace before "unreachable"
+  constexpr uint32_t LINK_UNREACHABLE_MS = 20000;  // no open this long -> unreachable
+  constexpr uint16_t LINK_FAIL_K = 3;              // failed attempts -> reconnecting
+  const uint32_t now = millis();
+
+  const char *state;
+  if (this->session_.is_ready()) {
+    state = "Connected";
+    this->link_last_open_ms_ = now;  // measure "unreachable" from the drop, not the first open
+  } else if (!this->link_ever_opened_) {
+    state = (now - this->link_boot_ms_ < LINK_INIT_GRACE_MS) ? "Initializing"
+                                                             : "Unreachable";
+  } else if (this->pairing_enabled_ && !this->ble_manager_.was_bonded_at_open()) {
+    state = "Unpaired";
+  } else if (now - this->link_last_open_ms_ > LINK_UNREACHABLE_MS) {
+    state = "Unreachable";
+  } else if (this->link_consecutive_failures_ >= LINK_FAIL_K) {
+    state = "Reconnecting";
+  } else {
+    state = "Connecting";
+  }
+
+  if (this->link_last_status_ != state) {
+    this->link_last_status_ = state;
+    this->pump_link_status_sensor_->publish_state(state);
+    ESP_LOGI(TAG, "Pump link status: %s", state);
+  }
+#endif
 }
 
 void AlphaHwrComponent::trigger_initial_data_reads() {
