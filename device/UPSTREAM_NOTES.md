@@ -274,6 +274,72 @@ an authentication failure. They were invaluable during pairing issue diagnosis
 to see exactly when a bond gets lost and what happens afterwards and are cheap,
 but a maintainer may prefer to drop them to DEBUG level.
 
+---
+
+## 6. Guard the GATTC open handler on connection status
+
+### Problem
+
+The component's GATTC event handler treats `ESP_GATTC_OPEN_EVT` as "connected"
+unconditionally:
+
+```
+case ESP_GATTC_OPEN_EVT:
+    handle_connection_opened(param);   // runs for failed opens too
+    break;
+```
+
+`ESP_GATTC_OPEN_EVT` fires for **both** outcomes; `param->open.status` is `ESP_GATT_OK`
+only on a real connection. Because the status is never checked, a *failed* open is
+processed as if a link came up.
+
+This sits in the connection FSM, not just in diagnostics: `handle_connection_opened`
+drives the session forward — it transitions the session `IDLE -> SERVICE_DISCOVERY` and
+resets the per-connection handshake flags. When the peer is unreachable (pump powered
+down or out of range), the base's auto-reconnect loop emits a stream of *failed* opens,
+and each one shoves the session into the service-discovery bring-up state for a
+connection that does not exist, to be unwound by the following close. It is phantom
+state churn on the same reentrancy surface as entry 3 — the FSM tracking fiction instead
+of reality, latent most of the time but exactly what bites during a bumpy reconnect.
+
+### Solution (how)
+
+Honor the status the event already carries — a failed open is not a connection:
+
+```
+case ESP_GATTC_OPEN_EVT:
+    if (param->open.status == ESP_GATT_OK) {
+        handle_connection_opened(param);
+    } else {
+        ESP_LOGD(TAG, "Ignoring failed BLE open (status 0x%02x)", param->open.status);
+    }
+    break;
+```
+
+The component declines to advance the FSM (or reset per-connection state) on a non-OK
+open and lets the base's existing failure/retry path do its job. This aligns the
+component's own GATTC handler with the open-status contract the base client already
+observes.
+
+### Result / testing
+
+Surfaced as a connection-health misreport: an unreachable-but-still-bonded pump was
+classified wrong, because the failed opens were refreshing the "last open" timestamp and
+recomputing bond state off an invalid BDA. That is the visible symptom; the cause is the
+unguarded open handler. Validation: a cold pump power-cycle confirming (a) the bond
+survives and the reconnect completes cleanly (the existing safety test), and (b) the
+phantom `IDLE -> SERVICE_DISCOVERY` lines that appear *while the pump is off* today are
+gone afterward. [Pending the next power-cycle capture.]
+
+### Blast radius
+
+Deliberately tiny. The successful-open path is byte-for-byte unchanged: every real
+connection runs the same `on_connected()` transition, the same readiness gate
+(encryption-after-discovery), and the same pairing branch. The only behavioral delta is
+that *failed* opens stop driving phantom transitions and per-connection resets — it
+shrinks the reentrancy surface rather than expanding it, and nothing on the
+bond-preservation path moves.
+
 
 ---
 
