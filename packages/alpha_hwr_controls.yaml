@@ -158,7 +158,7 @@ select:
     id: pump_mode_select
     icon: "mdi:tune"
     optimistic: false  # Read actual state from pump state tracking
-    update_interval: 1s
+    update_interval: 30s
     options:
       - "Cycle Time Control"
       - "Constant Speed"
@@ -234,7 +234,7 @@ number:
     step: 0.1
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_PRESSURE)
@@ -263,7 +263,7 @@ number:
     step: 100
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_SPEED)
@@ -293,7 +293,7 @@ number:
     step: 0.1
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::CONSTANT_FLOW)
@@ -323,7 +323,7 @@ number:
     step: 1
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE)
@@ -358,7 +358,7 @@ number:
     step: 1
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::TEMPERATURE_RANGE)
@@ -392,7 +392,7 @@ number:
     step: 0.1
     mode: slider
     optimistic: false
-    update_interval: 5s
+    update_interval: 60s
     disabled_by_default: false
     lambda: |-
       if (id(pump).get_control_mode() != esphome::alpha_hwr::services::ControlMode::PROPORTIONAL_PRESSURE)
