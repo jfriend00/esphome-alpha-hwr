@@ -32,11 +32,10 @@
 # Bonding keys are stored in NVS flash for automatic reconnection.
 # ==============================================================================
 
-external_components:
-  - source:
-      type: local
-      path: ../components
-    components: [alpha_hwr, dhw_demand]
+# commented out so these can live in the device YAML for local builds
+#external_components:
+#  - source: github://eman/esphome-alpha-hwr@v0.4.0
+#    components: [alpha_hwr, dhw_demand]
 
 esp32_ble_tracker:
   scan_parameters:
