@@ -420,7 +420,17 @@ void BLEConnectionManager::handle_gattc_event(esp_gattc_cb_event_t event, esp_ga
                                                esp_ble_gattc_cb_param_t *param) {
   switch (event) {
     case ESP_GATTC_OPEN_EVT:
-      handle_connection_opened(param);
+      // ESP_GATTC_OPEN_EVT fires for BOTH successful and FAILED opens; param->open.status
+      // is ESP_GATT_OK only on a real connection. A failed open is not a connection, so do
+      // not advance the session FSM or reset per-connection state on one. With an
+      // unreachable peer (pump powered down / out of range) the auto-reconnect loop emits a
+      // stream of failed opens; processing them drove phantom IDLE->SERVICE_DISCOVERY
+      // transitions. The base owns failure/retry handling.
+      if (param->open.status == ESP_GATT_OK) {
+        handle_connection_opened(param);
+      } else {
+        ESP_LOGD(TAG, "Ignoring failed BLE open (status 0x%02x)", param->open.status);
+      }
       break;
       
     case ESP_GATTC_SEARCH_RES_EVT:
