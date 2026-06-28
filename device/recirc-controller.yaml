@@ -154,6 +154,30 @@ number:
     restore_value: true       # <-- the key line: survives reboot via NVS
     mode: slider
 
+  # --- Local update_interval overrides -----------------------------------------
+  # Kept here (via !extend) so the shared alpha_hwr_controls.yaml package stays at
+  # upstream defaults. These control entities republish on every interval; the pump
+  # mode + setpoints change rarely, so slow polling cuts log/recorder/network churn.
+  # (optimistic:false means a setpoint reflects an EXTERNAL change only after the next
+  # poll -- fine for these.)
+  - id: !extend constant_pressure_setpoint
+    update_interval: 60s
+  - id: !extend constant_speed_setpoint
+    update_interval: 60s
+  - id: !extend constant_flow_setpoint
+    update_interval: 60s
+  - id: !extend temp_range_min
+    update_interval: 60s
+  - id: !extend temp_range_max
+    update_interval: 60s
+  - id: !extend proportional_pressure_setpoint
+    update_interval: 60s
+
+# Local override: slow the Pump Control Mode poll (1s in the package).
+select:
+  - id: !extend pump_mode_select
+    update_interval: 30s
+
 # --- Grundfos ALPHA HWR component stack --------------------------------------
 packages:
   alpha_hwr: !include ../packages/alpha_hwr_pairing.yaml
