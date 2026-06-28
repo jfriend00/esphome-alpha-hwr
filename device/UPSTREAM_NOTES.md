@@ -273,3 +273,116 @@ bond store) plus log lines reporting the bond state at connection-open and after
 an authentication failure. They were invaluable during pairing issue diagnosis
 to see exactly when a bond gets lost and what happens afterwards and are cheap,
 but a maintainer may prefer to drop them to DEBUG level.
+
+
+---
+
+# ════════════════════  SEPARATE PR  ════════════════════
+
+> Entries 1–5 above are one body of work — BLE bond / pairing / teardown **reliability**.
+> What follows is a **distinct, self-contained contribution** (observability only). It can
+> be reviewed and merged on its own: it touches none of the connection logic above and does
+> not require those changes to build or run. It only becomes *fully meaningful* once
+> reconnect/pairing behave correctly, since that is what it reports on.
+
+---
+
+## Observability: a "Pump Link Status" connection-health sensor
+
+### Purpose / what it adds
+
+Today the only signal a user gets about BLE connection health is indirect — telemetry
+going stale, or reading the device log. This adds a first-class Home Assistant entity that
+summarizes the link state in one human-readable value, so a user can display it, automate
+on it (e.g. notify when the pump goes unreachable), and chart it without parsing logs.
+
+Two optional text sensors:
+
+- **Pump Link Status** — a single coarse connection-health state (the values below).
+- **Pump Link Fault** *(companion, optional)* — the most recent disconnect / auth-failure
+  reason, for when the user wants the *why* behind a non-Connected state.
+
+Both are **opt-in** (declared only if the user configures them), **read-only**, and add
+**no BLE traffic** and **no change to connection behavior**. The state is computed on the
+device from connection-lifecycle events plus a 1 s elapsed-time check, and published only
+on change (no redundant updates or log spam).
+
+### The states (what each value indicates)
+
+| State | Meaning | Typical cause |
+|---|---|---|
+| **Connected** | Link up, encrypted, session ready and telemetry flowing. | Normal operation. |
+| **Initializing** | Booting — no connection established yet, within the first 15 s after start. | Normal at power-on. |
+| **Connecting** | A connect attempt is in progress, or the link recently dropped and is retrying (fewer than 3 consecutive failures). | Normal transient reconnect. |
+| **Reconnecting** | Repeatedly failing to reach a working state — ≥ 3 consecutive failed attempts. | Flapping link, marginal RF, or a handshake that keeps failing. |
+| **Unreachable** | No successful connection for > 20 s (or > 15 s from boot with no connection ever established). | Pump powered off, out of range, or not advertising. |
+| **Unpaired** | The device connects but has no usable bond, and pairing is enabled — it is quiet-listening for pump-initiated pairing. | First-time pairing, a cleared bond, or a replaced pump. |
+
+**Precedence** (the evaluator checks in this order): `Connected` → boot grace
+(`Initializing` / `Unreachable`) → `Unpaired` → `Unreachable` → `Reconnecting` →
+`Connecting`. The three thresholds — 15 s boot grace, 20 s unreachable window, 3-failure
+reconnect trip — are named constants in one place and easy to tune.
+
+### Companion sensor: "Pump Link Fault"
+
+- Reads **`None`** whenever the link is healthy (`Connected`) or no failure has occurred
+  yet — so a stale reason never sits next to a healthy status, and the entity never shows
+  the raw "unknown" default.
+- Otherwise shows the most recent disconnect / auth-failure reason as plain text with the
+  raw ESP-IDF/Bluedroid code in parentheses, e.g. `Connection Timeout (0x08)`,
+  `Remote Terminated (0x13)`, `Local Host Terminated (0x16)`.
+- It pairs with Status: **Status says what *now*, Fault says *why* the link last dropped.**
+  Because it is an entity, its transitions are retained in Home Assistant history — a
+  timestamped forensic trail of past blips, without having to watch the log live.
+
+### How it's implemented (for the reviewer)
+
+- A single method, `evaluate_link_status_()`, derives the state from signals that already
+  exist — `session_.is_ready()`, a "bond existed at connection-open" flag, a "connection
+  ever opened" flag, a consecutive-failure counter, and a few timestamps — and publishes on
+  change only.
+- It is driven two ways: from the existing connection / disconnection / auth callbacks
+  (event-driven transitions) and from a **1 s throttled check in `loop()`**. The timed check
+  is necessary because the `Unreachable` case produces *no* callbacks — when the pump is
+  offline the connect loop is silent, so only an elapsed-time test can detect "nothing has
+  happened for 20 s." The unreachable window is measured from the last moment the link was
+  up (the timestamp is refreshed while `Connected`), so a brief blip rides through as
+  `Connecting` rather than false-alarming as `Unreachable`.
+- The Fault reason is captured in the BLE connection manager: the disconnect handler maps
+  the disconnect reason (and auth-failure code) already delivered to existing callbacks into
+  a short label + raw code, exposed via a getter. **No new BLE operations are introduced.**
+- Both sensors are gated behind `USE_TEXT_SENSOR` and are null unless configured, so they
+  cost nothing when unused. The capability lives in the component; the example wiring
+  (entity names) is declared in the example package alongside the other sensors.
+- The change is **additive and isolated** — it modifies none of the connection, pairing, or
+  teardown logic. The state names and thresholds are the only policy choices.
+
+### Testing (single tested unit)
+
+States exercised on hardware, with Status and Fault observed moving together:
+
+- **Connected / Connecting / Initializing** — steady operation, and at boot/during recovery.
+- **Unreachable** — pump powered off via a smart plug → `Connecting` (~6 s after the
+  supervision-timeout drop; Fault `Connection Timeout (0x08)`) → `Unreachable` (~20 s later)
+  → on power restore, `Connecting` → `Connected`, Fault → `None`.
+- **Unpaired** — bond cleared → `Unpaired` throughout the quiet-listen cycling → on
+  pump-initiated pairing, `Connected`, Fault → `None`.
+- **Reconnecting** — validated by reasoning only; it requires ≥ 3 consecutive failed
+  bring-ups, which is hard to force deliberately. It will report when a real reconnect
+  repeatedly fails.
+
+Home Assistant correctly recorded an `Unpaired → Connected` transition that occurred while
+unattended, confirming the entity's value as an after-the-fact diagnostic.
+
+### Maintainer considerations / open questions
+
+- **The state set and thresholds are a first proposal.** Six states and the 15 s / 20 s /
+  3-failure thresholds are opinions; a maintainer may prefer different names (to match other
+  ESPHome conventions) or expose tunables. They are centralized in one function.
+- **`Unpaired` depends on the pump-initiated pairing model** (entry 2). It reports "no
+  usable bond, quiet-listening." If that assumption is revisited, the `Unpaired` semantics
+  should follow.
+- **Fault during `Unpaired`** currently shows the last disconnect reason (e.g.
+  `Remote Terminated (0x13)` from the normal quiet-listen idle drop) rather than `None`.
+  This was a deliberate choice — it is the last real link event — but a maintainer might
+  prefer to suppress it as "expected, not a fault." It is a one-line change.
