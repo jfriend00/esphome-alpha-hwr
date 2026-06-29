@@ -1,4 +1,46 @@
+# Notes About This Fork
+
+This is a fork from https://github.com/eman/esphome-alpha-hwr (the upstream repository).  That upstream repository appears to be a work in progress tagged as v0.4.0 and the code has many things broken in it.  This fork fixes enough of the issues for me to use it to control my Grundfos Alpha HWR 15-29 SU/T pump in one operating mode (pump speed). I'm using the pump for home hot water recirc and controlling the pump via an ESP32 bluetooth connected to the pump and to Home Assistant.  I'm using a Home Assistant driven schedule and only using the pump's capabilities to control the pump speed and on/off, none of the other built-in features of the pump (like it's own scheduling or it's auto modes).  The biggest things that this fixes are bluetooth pairing and connection issues (the upstream repository would routinely drop the bluetooth pairing bond, requiring a trip outside to the pump to put it back in pairing mode).  On top of that, getting the ESP32 paired with the pump could sometimes take as long as 30 minutes.  Those issues have been fixed in this fork and a PR back to the upstream repository has been proposed in a comment, but has not received a response.  So, for now, I will just continue to improve this repository fixing things as needed for my use - not attempting general fixes to all the things that are broken.
+
+Many features are broken in this code, many others have not been used or tested in my implementation.  But, pump speed, pump on/off and most telemetry works.  I've added several new sensors that give you the precise state of the Bluetooth connection (though the connection is now stable for me through ESP32 power cycles and reboots, through Home Assistant restarts and through pump power cycles).  It used to drop the Bluetooth pairing on every pump power cycle, it does not do that any more.
+
+For a note about the fixes in this fork, see [docs/UPSTREAM_NOTES.md](docs/UPSTREAM_NOTES.md).
+
+I am only using the apha_hwr_pairing and alpha_hwr_controls packages.
+
+To use this like I am, you would add these two blocks to your device YAML.  The first is to replace the links in the upstream package so they point to this repository.  The second is a new sensor for controlling the recric speed (the existing one is broken and works in a fundamentally different way that didn't seem worth fixing for my use).  
+
+```
+external_components:
+  - source: github://jfriend00/esphome-alpha-hwr@bt_issues
+    components: [alpha_hwr, dhw_demand]
+packages:
+  alpha_hwr:          github://jfriend00/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@bt_issues
+  alpha_hwr_controls: github://jfriend00/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@bt_issues
+```
+and
+```
+number:
+  - platform: template
+    name: "Recirc Speed"
+    id: desired_speed_rpm
+    icon: "mdi:speedometer"
+    unit_of_measurement: "RPM"
+    optimistic: true          # this entity IS the source of truth; no pump readback
+    min_value: 1650           # floor-aware
+    max_value: 4500
+    step: 50
+    initial_value: 1650
+    restore_value: true       # <-- the key line: survives reboot via NVS
+    mode: slider
+```
+
+These have to be combined with all the other YAML to bring your device up and running and you need to put the pump into constant speed mode and then it will set the speed that you configure in this above Recirc Speed control.  Do not rely on the upstream speed control as it is not wired up properly.
+
+If there's interest I can write more doc with my sample ESP32 YAML that works.  Just file an issue if you need more info.
+
 # ESPHome ALPHA HWR + DHW Demand
+
 
 ESPHome repository for two custom components:
 
