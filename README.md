@@ -37,7 +37,7 @@ number:
 
 These have to be combined with all the other YAML to bring your device up and running and you need to put the pump into constant speed mode and then it will set the speed that you configure in this above Recirc Speed control.  Do not rely on the upstream speed control as it is not wired up properly.
 
-If there's interest I can write more doc with my sample ESP32 YAML that works.  Just file an issue if you need more info.
+If there's interest I can write more doc with my sample ESP32 YAML that works.  Just file an issue if you need more info.  All development has been done on the bt_issues branch which is reflected in the above YAML links.
 
 # ESPHome ALPHA HWR + DHW Demand
 
