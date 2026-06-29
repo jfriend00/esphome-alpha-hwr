@@ -8,9 +8,9 @@ I'm using a Home Assistant driven schedule and only using the pump's capabilitie
 
 Many features are broken in this code, many others have not been used or tested in my implementation.  But, pump speed, pump on/off and important telemetry works.  I've added several new sensors that give you the precise state of the Bluetooth connection (though the connection is now stable for me through ESP32 power cycles and reboots, through Home Assistant restarts and through pump power cycles).  It used to drop the Bluetooth pairing on every pump power cycle, it does not do that any more and appears to run unattended, recovering automatically from whatever issues I've thrown at it.
 
-For a note about the fixes in this fork, see [docs/UPSTREAM_NOTES.md](docs/UPSTREAM_NOTES.md).
+For a note about the fixes in this fork proposed for an upstream pull request, see [docs/UPSTREAM_NOTES.md](docs/UPSTREAM_NOTES.md).
 
-I am only using the apha_hwr_pairing and alpha_hwr_controls packages.
+I am only using the core alpha_hwr component and then alpha_hwr_pairing and alpha_hwr_controls packages.
 
 To use this like I am, you would add these two blocks to your device YAML.  The first is to replace the links in the upstream package so they point to this repository.  The second is a new sensor for controlling the recric speed (the existing one is broken and works in a fundamentally different way that didn't seem worth fixing for my use).  
 
