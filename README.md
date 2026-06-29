@@ -1,8 +1,12 @@
 # Notes About This Fork
 
-This is a fork from https://github.com/eman/esphome-alpha-hwr (the upstream repository).  That upstream repository appears to be a work in progress tagged as v0.4.0 and the code has many things broken in it.  This fork fixes enough of the issues for me to use it to control my Grundfos Alpha HWR 15-29 SU/T pump in one operating mode (pump speed). I'm using the pump for home hot water recirc and controlling the pump via an ESP32 bluetooth connected to the pump and to Home Assistant.  I'm using a Home Assistant driven schedule and only using the pump's capabilities to control the pump speed and on/off, none of the other built-in features of the pump (like it's own scheduling or it's auto modes).  The biggest things that this fixes are bluetooth pairing and connection issues (the upstream repository would routinely drop the bluetooth pairing bond, requiring a trip outside to the pump to put it back in pairing mode).  On top of that, getting the ESP32 paired with the pump could sometimes take as long as 30 minutes.  Those issues have been fixed in this fork and a PR back to the upstream repository has been proposed in a comment, but has not received a response.  So, for now, I will just continue to improve this repository fixing things as needed for my use - not attempting general fixes to all the things that are broken.
+This is a fork from https://github.com/eman/esphome-alpha-hwr (the upstream repository).  That repository appears to be a work in progress tagged as v0.4.0 (as of Juune 2026) and the code has many things broken in it.  This fork fixes enough of the issues for me to use it to control my Grundfos Alpha HWR 15-29 SU/T pump in one operating mode (constant speed). I'm using the pump for home hot water recirc and control is configured as:
 
-Many features are broken in this code, many others have not been used or tested in my implementation.  But, pump speed, pump on/off and most telemetry works.  I've added several new sensors that give you the precise state of the Bluetooth connection (though the connection is now stable for me through ESP32 power cycles and reboots, through Home Assistant restarts and through pump power cycles).  It used to drop the Bluetooth pairing on every pump power cycle, it does not do that any more.
+```Home Assistant > Ethernet > ESP32-S3 > Bluetooth > Pump```
+
+I'm using a Home Assistant driven schedule and only using the pump's capabilities to control the pump speed and on/off, none of the other built-in features of the pump (like its own scheduling or auto modes).  The biggest things that this fixes are bluetooth pairing and connection issues (the upstream repository would routinely drop the bluetooth pairing bond, requiring a trip outside to the pump to put it back in pairing mode).  On top of that, getting the ESP32 paired with the pump could sometimes take as long as 30 minutes.  Those issues have been fixed in this fork and a PR back to the upstream repository has been proposed in a comment, but has not received a response.  So, for now, I will just continue to improve this repository fixing things as needed for my use - not attempting general fixes to all the things that are broken.
+
+Many features are broken in this code, many others have not been used or tested in my implementation.  But, pump speed, pump on/off and important telemetry works.  I've added several new sensors that give you the precise state of the Bluetooth connection (though the connection is now stable for me through ESP32 power cycles and reboots, through Home Assistant restarts and through pump power cycles).  It used to drop the Bluetooth pairing on every pump power cycle, it does not do that any more and appears to run unattended, recovering automatically from whatever issues I've thrown at it.
 
 For a note about the fixes in this fork, see [docs/UPSTREAM_NOTES.md](docs/UPSTREAM_NOTES.md).
 
@@ -13,7 +17,7 @@ To use this like I am, you would add these two blocks to your device YAML.  The 
 ```
 external_components:
   - source: github://jfriend00/esphome-alpha-hwr@bt_issues
-    components: [alpha_hwr, dhw_demand]
+    components: [alpha_hwr]
 packages:
   alpha_hwr:          github://jfriend00/esphome-alpha-hwr/packages/alpha_hwr_pairing.yaml@bt_issues
   alpha_hwr_controls: github://jfriend00/esphome-alpha-hwr/packages/alpha_hwr_controls.yaml@bt_issues
