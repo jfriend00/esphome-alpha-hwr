@@ -173,26 +173,13 @@ void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param
   // Reset discovery retry counter
   discovery_retry_count_ = 0;
   
-  // Request encryption only when we already have a stored bond.
-  // - Bonded:   request encryption immediately so the pump can resume the
-  //             encrypted session before GATT discovery proceeds.
-  // - Unbonded: stay silent — this pump initiates bonding itself via
-  //             ESP_GAP_BLE_SEC_REQ_EVT.  A central-initiated pairing
-  //             request on an unbonded pump returns 0x52 ("Pairing Not
-  //             Supported"), causing the pump's own SEC_REQ to be missed.
-  if (pairing_enabled_) {
-    if (check_is_bonded(client_->get_remote_bda())) {
-      ESP_LOGI(TAG, "Device is bonded - requesting encryption to resume secure session");
-      esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
-      if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
-      }
-    } else {
-      ESP_LOGI(TAG, "Device is not bonded - waiting for pump to initiate pairing");
-    }
-  } else {
-    ESP_LOGI(TAG, "Skipping encryption request - pairing disabled");
-  }
+  // Encryption is requested in handle_service_discovery_complete (after a
+  // successful, unencrypted service discovery), NOT on connection-open.
+  // Requesting it on open can hit the pump before its security stack is ready
+  // — e.g. a bonded reconnect right after the pump power-cycles — and the
+  // failed attempt (0x61, Encryption Start Failed) makes ESP-IDF erase the
+  // stored bond, forcing a manual re-pair. A completed discovery proves the
+  // pump is ready, so the request is gated on that.
 
   // Update connection parameters for better stability
   esp_ble_conn_update_params_t conn_params;
@@ -240,7 +227,26 @@ void BLEConnectionManager::handle_service_discovery_complete(esp_gatt_if_t gattc
       if (service_found_callback_) {
         service_found_callback_();
       }
-      
+
+      // Readiness gate: discovery succeeded, so the pump is confirmed ready —
+      // request encryption here, not on connection-open.
+      // - Bonded:   resume the encrypted session.
+      // - Unbonded: stay silent; this pump initiates bonding itself via
+      //             ESP_GAP_BLE_SEC_REQ_EVT (a central-initiated request on an
+      //             unbonded pump returns 0x52 "Pairing Not Supported" and
+      //             causes the pump's own SEC_REQ to be missed).
+      if (pairing_enabled_) {
+        if (check_is_bonded(client_->get_remote_bda())) {
+          ESP_LOGI(TAG, "Device is bonded - requesting encryption to resume secure session");
+          esp_err_t ret = esp_ble_set_encryption(client_->get_remote_bda(), ESP_BLE_SEC_ENCRYPT);
+          if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "✗ Failed to request encryption: 0x%x", ret);
+          }
+        } else {
+          ESP_LOGI(TAG, "Device is not bonded - waiting for pump to initiate pairing");
+        }
+      }
+
       // Check for characteristic
       auto *chr = client_->get_characteristic(service->uuid, characteristic_uuid_);
       if (chr) {
