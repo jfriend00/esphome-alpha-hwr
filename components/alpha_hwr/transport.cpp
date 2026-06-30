@@ -100,8 +100,19 @@ void Transport::loop() {
 
     case State::AWAITING_RESPONSE:
       if (now - cmd.timestamp_ms > cmd.timeout_ms) {
-        ESP_LOGW(TAG, "Command timeout waiting for Obj %d Sub %d", 
-                 cmd.expect_obj_id, cmd.expect_sub_id);
+        // Wildcard commands (obj=0, sub=0) are used when the response cannot
+        // be matched by Object/Sub-ID — this covers both optional feature reads
+        // (trend data, device info) and protocol operations where the pump's
+        // response uses an OpSpec that doesn't carry standard Obj/Sub fields
+        // (e.g., control-mode writes that reply with OpSpec 0x15). A timeout
+        // here means either the feature is absent or the window closed; either
+        // way it is expected behaviour — log at DEBUG to avoid noise.
+        if (cmd.expect_obj_id == 0 && cmd.expect_sub_id == 0) {
+          ESP_LOGD(TAG, "Command timeout (wildcard match) — pump did not respond");
+        } else {
+          ESP_LOGW(TAG, "Command timeout waiting for Obj %d Sub %d",
+                   cmd.expect_obj_id, cmd.expect_sub_id);
+        }
         if (cmd.callback) {
           cmd.callback(false, nullptr, 0);
         }
@@ -220,6 +231,11 @@ void Transport::reset() {
   reassembling_ = false;
   reassembly_buffer_.clear();
   expected_packet_length_ = 0;
+  // Discard any queued commands and pending response handlers so stale BLE
+  // writes from the previous connection do not execute on the next connect.
+  command_queue_.clear();
+  pending_handlers_.clear();
+  state_ = State::IDLE;
 }
 
 void Transport::register_response_handler(uint16_t object_id, uint16_t sub_id, ResponseCallback callback) {
