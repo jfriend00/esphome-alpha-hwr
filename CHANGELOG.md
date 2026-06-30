@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.5.0] - 2026-06-30
+
 ### Fixed
 
 - **BLE reconnect stability after pump power-cycle** — three bugs combined to
@@ -186,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`hwr-pump-example.yaml`** and **`hwr-pairing-example.yaml`** reference
   configurations.
 
-[Unreleased]: https://github.com/eman/esphome-alpha-hwr/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/eman/esphome-alpha-hwr/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/eman/esphome-alpha-hwr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/eman/esphome-alpha-hwr/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/eman/esphome-alpha-hwr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/eman/esphome-alpha-hwr/compare/v0.1.0...v0.2.0
