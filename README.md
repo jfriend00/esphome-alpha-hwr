@@ -1,6 +1,6 @@
 # Notes About This Fork
 
-This is a fork (changes on the bt_issues branch) from https://github.com/eman/esphome-alpha-hwr (the upstream repository).  That repository appears to be a work in progress tagged as v0.4.0 (as of June 2026) and the code has many things broken in it.  This fork fixes enough of the issues for me to use it to control my Grundfos Alpha HWR 15-29 SU/T pump in one operating mode (constant speed). I'm using the pump for home hot water recirc and control is configured as:
+This is a fork (all changes are on the bt_issues branch) from https://github.com/eman/esphome-alpha-hwr (the upstream repository).  That repository appears to be a work in progress tagged as v0.4.0 (as of June 2026) and the code has many things broken in it.  This fork fixes enough of the issues for me to use it to control my Grundfos Alpha HWR 15-29 SU/T pump in one operating mode (constant speed). I'm using the pump for home hot water recirc and control is configured as:
 
 ```Home Assistant > Ethernet > ESP32-S3 > Bluetooth > Pump```
 
