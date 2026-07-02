@@ -1,6 +1,7 @@
 #include "ble_connection_manager.h"
 #include "esphome/core/log.h"
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace esphome {
@@ -9,44 +10,101 @@ namespace core {
 
 static const char *TAG = "alpha_hwr.ble";
 
-// Static method to validate if a BLE device is an ALPHA HWR pump
-// Primary method: Check company ID in manufacturer data
-// Secondary fallback: Check for service UUID
+// Expected product identification bytes in the FE5D service data.
+// Reference: Python client._scan_advertisement_data() service_data[3]/[4].
+static const uint8_t EXPECTED_PRODUCT_FAMILY = 0x34;  // ALPHA family
+static const uint8_t EXPECTED_PRODUCT_TYPE = 0x07;    // HWR type
+
+// ─── Advertisement-info caching (from scan-time service data) ────────────────
+//
+// The pump advertises via Service Data (AD type 0x16) with UUID 0xFE5D.
+// ESPHome strips the 2-byte UUID before invoking the
+// on_ble_service_data_advertise trigger, so the payload layout is:
+//   service_data[0..2]: 3-byte frame header  (Python service_data[0..2])
+//   service_data[3]:    product_family       (Python service_data[3])  0x34 = ALPHA
+//   service_data[4]:    product_type         (Python service_data[4])  0x07 = HWR
+//   service_data[5]:    product_version      (Python service_data[5])  firmware discriminator
+
+void BLEConnectionManager::cache_adv_info_from_service_data(const std::vector<uint8_t> &service_data) {
+  if (adv_info_.valid) return;  // Only capture once per session
+
+  if (service_data.size() < 6) {
+    ESP_LOGD(TAG, "Service data too short (%zu bytes), skipping adv cache", service_data.size());
+    return;
+  }
+
+  // Validate the product bytes before committing to the one-shot cache, so a
+  // malformed payload or a different Grundfos product cannot poison it.
+  if (service_data[3] != EXPECTED_PRODUCT_FAMILY || service_data[4] != EXPECTED_PRODUCT_TYPE) {
+    ESP_LOGD(TAG, "FE5D service data is not an ALPHA HWR advertisement "
+                  "(family=0x%02X type=0x%02X), skipping adv cache",
+             service_data[3], service_data[4]);
+    return;
+  }
+
+  adv_info_.product_family  = service_data[3];
+  adv_info_.product_type    = service_data[4];
+  adv_info_.product_version = service_data[5];
+  adv_info_.valid = true;
+
+  char hex_char[3];
+  for (auto b : service_data) {
+    snprintf(hex_char, sizeof(hex_char), "%02X", b);
+    adv_info_.adv_hex += hex_char;
+  }
+
+  ESP_LOGI(TAG, "Pump advertisement: family=0x%02X type=0x%02X version=0x%02X",
+           adv_info_.product_family, adv_info_.product_type, adv_info_.product_version);
+  ESP_LOGD(TAG, "  Service data: %s", adv_info_.adv_hex.c_str());
+
+  if (advertisement_callback_) advertisement_callback_(adv_info_);
+}
+
+// ─── Device validation (discovery / on_ble_advertise mode) ──────────────────
+
+// The pump advertises using Service Data (AD type 0x16) with UUID 0xFE5D,
+// accessible in ESPHome via get_service_datas().  The layout (after UUID):
+//   bytes 0-2: 3-byte frame header
+//   byte  3:   product_family  (0x34 = ALPHA) → matches Python service_data[3]
+//   byte  4:   product_type    (0x07 = HWR)   → matches Python service_data[4]
+//   byte  5:   product_version                → matches Python service_data[5]
+//
+// The Python reference implementation matches on service data only; a
+// service-UUID match is kept as a secondary catch-all for firmware variants
+// that omit the product bytes.
 bool BLEConnectionManager::is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDevice &device,
                                                 uint16_t company_id,
                                                 uint8_t product_family,
                                                 uint8_t product_type,
                                                 const esp32_ble_tracker::ESPBTUUID &service_uuid) {
-  // Primary Discovery Method: Match by Company ID in manufacturer data
-  const auto &mfg_datas = device.get_manufacturer_datas();
-  
-  for (const auto &mfg_data : mfg_datas) {
-    esp_bt_uuid_t uuid = mfg_data.uuid.get_uuid();
+  // Primary: Service Data (0x16) — this is what the pump actually sends.
+  for (const auto &svc_data : device.get_service_datas()) {
+    esp_bt_uuid_t uuid = svc_data.uuid.get_uuid();
     if (uuid.len == ESP_UUID_LEN_16 && uuid.uuid.uuid16 == company_id) {
-      const auto &service_data = mfg_data.data;
-      
-      // Validate service data structure:
-      // Byte 0-1: Frame header
-      // Byte 2: Product Family (0x34 = ALPHA)
-      // Byte 3: Product Type (0x07 = HWR)
-      // Byte 4+: Additional data
-      if (service_data.size() >= 5 &&
-          service_data[2] == product_family && 
-          service_data[3] == product_type) {
-        ESP_LOGI(TAG, "Found ALPHA HWR pump via Company ID (primary method)");
+      const auto &d = svc_data.data;
+      // Need at least 6 bytes (3 header + family + type + version)
+      if (d.size() >= 6 && d[3] == product_family && d[4] == product_type) {
+        ESP_LOGI(TAG, "Found ALPHA HWR via service data (0x16), version=0x%02X", d[5]);
         return true;
+      }
+      // Log if UUID matched but product bytes don't — helps diagnose variants.
+      if (d.size() >= 5) {
+        ESP_LOGD(TAG, "Grundfos service data matched UUID but wrong product: "
+                      "family=0x%02X type=0x%02X (expected 0x%02X/0x%02X)",
+                 d.size() > 3 ? d[3] : 0, d.size() > 4 ? d[4] : 0,
+                 product_family, product_type);
       }
     }
   }
-  
-  // Secondary Discovery Method: Check for service UUID
+
+  // Secondary: Service UUID match — catches devices that don't include product bytes.
   for (const auto &svc_uuid : device.get_service_uuids()) {
     if (svc_uuid == service_uuid) {
-      ESP_LOGI(TAG, "Found ALPHA HWR pump via service UUID");
+      ESP_LOGI(TAG, "Found ALPHA HWR via service UUID (secondary match)");
       return true;
     }
   }
-  
+
   return false;
 }
 
@@ -400,7 +458,7 @@ void BLEConnectionManager::handle_gap_event(esp_gap_ble_cb_event_t event, esp_bl
     case ESP_GAP_BLE_AUTH_CMPL_EVT:
       handle_auth_complete(param);
       break;
-      
+
     case ESP_GAP_BLE_SEC_REQ_EVT: {
       char addr_str[18];
       sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X",

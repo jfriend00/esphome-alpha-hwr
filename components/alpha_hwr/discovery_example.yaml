@@ -35,45 +35,42 @@ esp32_ble_tracker:
     interval: 1.1s
     window: 1.1s
     active: true
-  
-  # METHOD 1: Discover by Grundfos Company ID (Primary - Most Reliable)
+
+  # Discover by Grundfos Service Data UUID (matches the actual pump
+  # advertisement; the Python reference implementation uses the same method).
+  # The pump uses AD type 0x16 (Service Data, 16-bit UUID) with UUID 0xFE5D.
+  # In on_ble_advertise the lambda receives `x` as the full ESPBTDevice, so we
+  # can report the MAC address alongside the product bytes.  Service data
+  # layout (ESPHome strips the 2-byte UUID):
+  #   data[0..2]: 3-byte frame header
+  #   data[3]:    product_family  (0x34 = ALPHA)
+  #   data[4]:    product_type    (0x07 = HWR)
+  #   data[5]:    product_version (BLE firmware version discriminator)
   on_ble_advertise:
-    - manufacturer_id: FE5D  # Grundfos Company ID
-      then:
+    - then:
         - lambda: |-
-            // Check if this is an ALPHA HWR pump
-            // Byte 2: Product Family (0x34 = ALPHA)
-            // Byte 3: Product Type (0x07 = HWR)
-            if (x.size() >= 5 && x[2] == 0x34 && x[3] == 0x07) {
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "═══════════════════════════════════════════════");
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "Found ALPHA HWR Pump!");
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "  MAC Address: %s", device.address_str().c_str());
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "  RSSI: %d dBm", device.get_rssi());
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "  Name: %s", device.get_name().c_str());
-              ESP_LOGI("alpha_hwr_discovery", 
-                       "═══════════════════════════════════════════════");
-              
-              // You can also extract additional info from manufacturer data:
-              // Bytes 0-1: Frame header
-              // Bytes 2-3: Product ID (ALPHA HWR = 0x34 0x07)
-              // Byte 4+: Device-specific data
+            for (const auto &svc_data : x.get_service_datas()) {
+              esp_bt_uuid_t uuid = svc_data.uuid.get_uuid();
+              if (uuid.len != ESP_UUID_LEN_16 || uuid.uuid.uuid16 != 0xFE5D)
+                continue;
+              const auto &d = svc_data.data;
+              if (d.size() >= 6 && d[3] == 0x34 && d[4] == 0x07) {
+                ESP_LOGI("alpha_hwr_discovery",
+                         "═══════════════════════════════════════════════");
+                ESP_LOGI("alpha_hwr_discovery",
+                         "Found ALPHA HWR Pump!");
+                ESP_LOGI("alpha_hwr_discovery",
+                         "  MAC Address: %s", x.address_str().c_str());
+                ESP_LOGI("alpha_hwr_discovery",
+                         "  RSSI: %d dBm", x.get_rssi());
+                ESP_LOGI("alpha_hwr_discovery",
+                         "  Name: %s", x.get_name().c_str());
+                ESP_LOGI("alpha_hwr_discovery",
+                         "  Product version: 0x%02X", d[5]);
+                ESP_LOGI("alpha_hwr_discovery",
+                         "═══════════════════════════════════════════════");
+              }
             }
-  
-  # METHOD 2: Discover by GENI Service UUID (Secondary - Fallback)
-  # Uncomment this section if you want to also discover by service UUID
-  # on_ble_service_data_advertise:
-  #   - service_uuid: "0000fdd0-0000-1000-8000-00805f9b34fb"  # GENI Service
-  #     then:
-  #       - lambda: |-
-  #           ESP_LOGI("alpha_hwr_discovery", 
-  #                    "Found device with GENI service (possible ALPHA HWR):");
-  #           ESP_LOGI("alpha_hwr_discovery", 
-  #                    "  MAC Address: %s", device.address_str().c_str());
 
 # ============================================================================
 # Usage Instructions:
@@ -86,7 +83,8 @@ esp32_ble_tracker:
 # 5. Update your main configuration (hwr-pump.yaml) with the discovered MAC
 # 6. Flash your main configuration to connect and read sensor data
 #
-# The primary discovery method (Grundfos Company ID FE5D) is the most
-# reliable and will work with all ALPHA HWR pumps regardless of firmware.
+# The discovery method (Grundfos service data UUID FE5D + product bytes) is
+# the most reliable and will work with all ALPHA HWR pumps regardless of
+# firmware.
 #
 # ============================================================================

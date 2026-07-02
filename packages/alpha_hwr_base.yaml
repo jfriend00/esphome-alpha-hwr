@@ -35,6 +35,16 @@ esp32_ble_tracker:
   scan_parameters:
     interval: 1.1s
     window: 1.1s
+  # Populate advertisement identifiers (product_version etc.) before the
+  # GATT connection opens.  ESPHome's BLEClientNode does not receive scan
+  # result events directly, so we hook them here via the tracker trigger.
+  # Filtered by MAC so a second Grundfos device on the same network cannot
+  # populate the one-shot advertisement cache with the wrong identifiers.
+  on_ble_service_data_advertise:
+    - mac_address: ${mac_address}
+      service_uuid: FE5D
+      then:
+        - lambda: "pump->on_ble_service_data_seen(x);"
 
 ble_client:
   - mac_address: ${mac_address}

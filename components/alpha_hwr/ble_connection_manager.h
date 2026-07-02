@@ -5,10 +5,34 @@
 #include <esp_gattc_api.h>
 #include <esp_gap_ble_api.h>
 #include <functional>
+#include <string>
 
 namespace esphome {
 namespace alpha_hwr {
 namespace core {
+
+/**
+ * Pump identification data decoded from the BLE advertisement before any
+ * connection is established.
+ *
+ * Populated by cache_adv_info_from_service_data(), which is wired to the
+ * esp32_ble_tracker on_ble_service_data_advertise trigger in YAML (see
+ * packages/alpha_hwr_base.yaml).  Available on the first scan hit, so it
+ * can drive conditional logic (e.g. encryption timing) before the GATT
+ * connection opens.
+ *
+ * Reference: Python client._scan_advertisement_data()
+ *   service_data["0000fe5d-..."][3] = product_family  (0x34 = ALPHA)
+ *   service_data["0000fe5d-..."][4] = product_type    (0x07 = HWR)
+ *   service_data["0000fe5d-..."][5] = product_version
+ */
+struct PumpAdvertisementInfo {
+  uint8_t product_family{0};   // 0x34 = ALPHA family
+  uint8_t product_type{0};     // 0x07 = HWR type
+  uint8_t product_version{0};  // BLE firmware version discriminator
+  std::string adv_hex;         // FE5D service-data payload (hex, UUID stripped), for debugging
+  bool valid{false};           // True once successfully parsed
+};
 
 /**
  * BLE Connection Manager
@@ -53,14 +77,23 @@ class BLEConnectionManager {
   void init_security();
   void handle_gattc_event(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
   void handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
-  
-  // Device validation
+
+  // Advertisement info — populated at scan time via cache_adv_info_from_service_data(),
+  // before the connection opens.  Call this from an on_ble_service_data_advertise
+  // trigger in YAML (see packages/alpha_hwr_base.yaml for the wiring).
+  const PumpAdvertisementInfo &get_advertisement_info() const { return adv_info_; }
+  void set_advertisement_callback(std::function<void(const PumpAdvertisementInfo &)> cb) {
+    advertisement_callback_ = std::move(cb);
+  }
+  void cache_adv_info_from_service_data(const std::vector<uint8_t> &service_data);
+
+  // Device validation (used in discovery mode / YAML on_ble_advertise filters)
   static bool is_alpha_hwr_device(const esp32_ble_tracker::ESPBTDevice &device,
                                    uint16_t company_id,
                                    uint8_t product_family,
                                    uint8_t product_type,
                                    const esp32_ble_tracker::ESPBTUUID &service_uuid);
-  
+
   // Debug helpers
   void dump_services();
   
@@ -73,7 +106,7 @@ class BLEConnectionManager {
   void handle_auth_complete(const esp_ble_gap_cb_param_t *param);
   /// Returns true if the device at @p bda already has a stored bond.
   static bool check_is_bonded(const esp_bd_addr_t bda);
-  
+
   // BLE client reference
   ble_client::BLEClient *client_{nullptr};
   
@@ -98,7 +131,11 @@ class BLEConnectionManager {
   std::function<void()> service_found_callback_;
   std::function<void()> subscribed_callback_;
   std::function<void(const uint8_t*, size_t)> notification_callback_;
-  
+  std::function<void(const PumpAdvertisementInfo &)> advertisement_callback_;
+
+  // Advertisement identifiers decoded at scan time (pre-connection)
+  PumpAdvertisementInfo adv_info_;
+
   // Pairing status sensor
   binary_sensor::BinarySensor *pairing_status_sensor_{nullptr};
 };
