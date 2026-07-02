@@ -80,7 +80,8 @@ static const esp32_ble_tracker::ESPBTUUID GENI_CHAR_UUID =
         "859cffd1-036e-432a-aa28-1a0085b87ba9");
 
 class AlphaHwrComponent : public PollingComponent,
-                          public ble_client::BLEClientNode {
+                          public ble_client::BLEClientNode,
+                          public esp32_ble_tracker::ESPBTDeviceListener {
 public:
   explicit AlphaHwrComponent(ble_client::BLEClient *parent)
       : PollingComponent(10000), auth_(transport_),
@@ -193,6 +194,10 @@ public:
     clock_diff_sensor_ = sensor;
   }
   void set_pairing_enabled(bool enabled) { pairing_enabled_ = enabled; }
+  // Delay (ms) after a disconnect before allowing reconnection, so a
+  // just-powered-up pump has time to be ready before encryption is requested.
+  // 0 = disabled (immediate reconnect; the default/legacy behavior).
+  void set_reconnect_settle_time(uint32_t ms) { this->reconnect_settle_ms_ = ms; }
 
   void setup() override;
   void loop() override;
@@ -201,6 +206,11 @@ public:
                            esp_ble_gattc_cb_param_t *param) override;
   void gap_event_handler(esp_gap_ble_cb_event_t event,
                          esp_ble_gap_cb_param_t *param) override;
+
+  // ESPBTDeviceListener: observes scan results so the reconnect settle window
+  // is timed from when the pump REAPPEARS (making it independent of how long
+  // the pump was powered off). See reconnect_settle_time.
+  bool parse_device(const esp32_ble_tracker::ESPBTDevice &device) override;
 
   // Static helper: validate if a device is an ALPHA HWR pump (discovery mode).
   // Returns true if the device matches the Grundfos ALPHA HWR product signature.
@@ -223,6 +233,10 @@ private:
 
   bool pairing_enabled_ =
       false; // Controls whether to attempt BLE pairing/bonding
+
+  uint32_t reconnect_settle_ms_{0};   // Post-disconnect reconnect hold-off (ms)
+  bool reconnect_settling_{false};    // True while holding off reconnect after a disconnect
+  bool reconnect_timer_armed_{false}; // True once the settle timer has started this episode
 
   void authenticate();
   void trigger_initial_data_reads();
