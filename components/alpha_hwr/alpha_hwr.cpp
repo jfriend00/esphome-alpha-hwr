@@ -62,7 +62,15 @@ void AlphaHwrComponent::setup() {
     // pump's reappearance (not from this disconnect) makes it independent of how
     // long the pump was powered off. Device-agnostic alternative to conditioning
     // encryption timing on the pump's firmware variant.
-    if (this->reconnect_settle_ms_ > 0 && this->parent_ != nullptr) {
+    //
+    // Gate on being BONDED: the bond-loss risk exists only when reconnecting to a
+    // bonded pump (that path requests encryption-on-open). An unbonded reconnect
+    // is initial pairing — pump-initiated, with no bond to lose — so holding it
+    // off would only slow pairing. esp_ble_get_bond_device_num() > 0 is the same
+    // bond test BLEConnectionManager::check_is_bonded() starts with; for this
+    // single-pump node it means "the pump is bonded."
+    if (this->reconnect_settle_ms_ > 0 && this->parent_ != nullptr &&
+        esp_ble_get_bond_device_num() > 0) {
       ESP_LOGI(TAG, "Disconnected; holding reconnect until pump reappears + %u ms",
                this->reconnect_settle_ms_);
       this->parent_->set_auto_connect(false);
