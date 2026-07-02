@@ -1,6 +1,12 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import ble_client, sensor, binary_sensor, text_sensor
+from esphome.components import (
+    ble_client,
+    sensor,
+    binary_sensor,
+    text_sensor,
+    esp32_ble_tracker,
+)
 from esphome.const import (
     CONF_ID,
     DEVICE_CLASS_CONNECTIVITY,
@@ -37,6 +43,7 @@ CONF_INLET_PRESSURE = "inlet_pressure"
 CONF_HEAD_RATE = "head_rate"
 CONF_PAIRING_STATUS = "pairing_status"
 CONF_ENABLE_PAIRING = "enable_pairing"
+CONF_RECONNECT_SETTLE_TIME = "reconnect_settle_time"
 CONF_ALARMS = "alarms"
 CONF_WARNINGS = "warnings"
 CONF_SCHEDULE = "schedule"
@@ -61,6 +68,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(): cv.declare_id(AlphaHwrComponent),
         cv.Required("ble_client_id"): cv.use_id(ble_client.BLEClient),
         cv.Optional(CONF_ENABLE_PAIRING, default=False): cv.boolean,
+        cv.Optional(
+            CONF_RECONNECT_SETTLE_TIME, default="0s"
+        ): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_FLOW): sensor.sensor_schema(
             unit_of_measurement="m³/h",
             accuracy_decimals=3,
@@ -214,7 +224,7 @@ CONFIG_SCHEMA = cv.Schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
-).extend(cv.COMPONENT_SCHEMA)
+).extend(cv.COMPONENT_SCHEMA).extend(esp32_ble_tracker.ESP_BLE_DEVICE_SCHEMA)
 
 
 async def to_code(config):
@@ -224,6 +234,13 @@ async def to_code(config):
 
     # Set pairing enabled flag
     cg.add(var.set_pairing_enabled(config[CONF_ENABLE_PAIRING]))
+    cg.add(var.set_reconnect_settle_time(config[CONF_RECONNECT_SETTLE_TIME]))
+    if config[CONF_RECONNECT_SETTLE_TIME].total_milliseconds > 0:
+        # Register as an esp32_ble_tracker listener (at codegen, so the count
+        # macro that enables the listener path is defined) — this is what makes
+        # parse_device() receive scan results, used to time the reconnect settle
+        # window from the pump's reappearance. Only when the feature is enabled.
+        await esp32_ble_tracker.register_ble_device(var, config)
 
     if CONF_FLOW in config:
         sens = await sensor.new_sensor(config[CONF_FLOW])
