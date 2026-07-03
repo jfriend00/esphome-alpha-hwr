@@ -63,7 +63,6 @@ alpha_hwr:
    id: pump
    ble_client_id: hwr_pump_client
    enable_pairing: true  # Enable BLE pairing for enhanced telemetry
-   reconnect_settle_time: 2s  # bond-loss protection after a pump power-cycle
    
    # Pairing Status
    pairing_status:
