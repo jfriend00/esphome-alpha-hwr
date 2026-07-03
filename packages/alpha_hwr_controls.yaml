@@ -39,7 +39,7 @@ switch:
       - lambda: |-
           ESP_LOGI("switch", "Enabling pump (enabling remote mode first)...");
           id(pump).enable_remote();
-          id(pump).pump_start();
+          id(pump).pump_start(id(desired_speed_rpm).state);   // HA value; NaN until synced
           // Immediate UI feedback
           id(pump_enabled_switch).publish_state(true);
     turn_off_action:
