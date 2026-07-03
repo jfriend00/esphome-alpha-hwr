@@ -380,6 +380,9 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
       pairing_status_sensor_->publish_state(true);
     }
     encryption_pending_ = false;
+    // Recovery: a successful (re-)auth clears any held significant-failure reason,
+    // so the fault sensor stops showing the old cause once the link is healthy.
+    significant_failure_held_ = false;
     if (subscription_deferred_) {
       // Service discovery finished while SMP was negotiating; the link is now
       // encrypted, so the held-back CCCD write is safe to send (issue #12).
@@ -423,10 +426,13 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
     ESP_LOGW(TAG, "  Failure reason: %s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
     ESP_LOGW(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
     {
-      // Latch the failure reason for the Pump Link Status companion.
+      // Latch the failure reason for the Pump Link Status companion, and mark it
+      // significant so the routine disconnects of the ensuing (possibly unbonded)
+      // reconnect loop don't overwrite the real cause before recovery.
       char afbuf[64];
       snprintf(afbuf, sizeof(afbuf), "%s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
       last_failure_ = afbuf;
+      significant_failure_held_ = true;
     }
     // Bonded reconnect whose encryption failed: the link may stay up in an
     // unauthenticated state, and a later discovery-complete would then send
@@ -504,18 +510,23 @@ void BLEConnectionManager::handle_gattc_event(esp_gattc_cb_event_t event, esp_ga
       ESP_LOGW(TAG, "Disconnected (reason: 0x%02x)", param->disconnect.reason);
       // Latch a human-readable failure reason for the Pump Link Status companion
       // (set before the callback so the component can read it on the same event).
-      const char *rname;
-      switch (param->disconnect.reason) {
-        case 0x08: rname = "Connection Timeout"; break;
-        case 0x13: rname = "Remote Terminated"; break;
-        case 0x16: rname = "Local Host Terminated"; break;
-        case 0x3e: rname = "Failed To Establish"; break;
-        case 0x22: rname = "LL Response Timeout"; break;
-        default:   rname = "Disconnected"; break;
+      // Skip while a significant auth/encryption failure is being held, so the
+      // routine disconnects of the ensuing reconnect loop don't overwrite the
+      // real cause before recovery.
+      if (!significant_failure_held_) {
+        const char *rname;
+        switch (param->disconnect.reason) {
+          case 0x08: rname = "Connection Timeout"; break;
+          case 0x13: rname = "Remote Terminated"; break;
+          case 0x16: rname = "Local Host Terminated"; break;
+          case 0x3e: rname = "Failed To Establish"; break;
+          case 0x22: rname = "LL Response Timeout"; break;
+          default:   rname = "Disconnected"; break;
+        }
+        char fbuf[48];
+        snprintf(fbuf, sizeof(fbuf), "%s (0x%02x)", rname, param->disconnect.reason);
+        last_failure_ = fbuf;
       }
-      char fbuf[48];
-      snprintf(fbuf, sizeof(fbuf), "%s (0x%02x)", rname, param->disconnect.reason);
-      last_failure_ = fbuf;
       scheduler_sequence_++;  // Invalidate any pending scheduler callbacks
       if (disconnection_callback_) {
         disconnection_callback_();

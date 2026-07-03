@@ -152,6 +152,7 @@ class BLEConnectionManager {
   // Pump Link Status support
   std::string last_failure_;     // latched last failure reason (human-readable)
   bool bonded_at_open_{false};   // bond state captured at the last connection-open
+  bool significant_failure_held_{false};  // hold an auth/encryption failure reason over routine disconnects until recovery
 
   // Advertisement identifiers decoded at scan time (pre-connection)
   PumpAdvertisementInfo adv_info_;
