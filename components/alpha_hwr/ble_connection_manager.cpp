@@ -223,6 +223,10 @@ void BLEConnectionManager::subscribe_to_notifications() {
 void BLEConnectionManager::handle_connection_opened(const esp_ble_gattc_cb_param_t *param) {
   ESP_LOGI(TAG, "BLE connection opened. Pairing enabled: %s", pairing_enabled_ ? "YES" : "NO");
   
+  // Pump Link Status: capture the bond state for this connection once, before the
+  // component callback (which reads it via was_bonded_at_open()).
+  bonded_at_open_ = check_is_bonded(client_->get_remote_bda());
+
   // Notify component of connection
   if (connection_callback_) {
     connection_callback_();
@@ -418,6 +422,12 @@ void BLEConnectionManager::handle_auth_complete(const esp_ble_gap_cb_param_t *pa
     ESP_LOGW(TAG, "  Device: %s", addr_str);
     ESP_LOGW(TAG, "  Failure reason: %s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
     ESP_LOGW(TAG, "  Auth mode: 0x%02x", auth_cmpl.auth_mode);
+    {
+      // Latch the failure reason for the Pump Link Status companion.
+      char afbuf[64];
+      snprintf(afbuf, sizeof(afbuf), "%s (0x%02x)", fail_reason, auth_cmpl.fail_reason);
+      last_failure_ = afbuf;
+    }
     // Bonded reconnect whose encryption failed: the link may stay up in an
     // unauthenticated state, and a later discovery-complete would then send
     // the CCCD write unencrypted — the exact race this deferral exists to
@@ -490,8 +500,22 @@ void BLEConnectionManager::handle_gattc_event(esp_gattc_cb_event_t event, esp_ga
       handle_notification(param);
       break;
     
-    case ESP_GATTC_DISCONNECT_EVT:
+    case ESP_GATTC_DISCONNECT_EVT: {
       ESP_LOGW(TAG, "Disconnected (reason: 0x%02x)", param->disconnect.reason);
+      // Latch a human-readable failure reason for the Pump Link Status companion
+      // (set before the callback so the component can read it on the same event).
+      const char *rname;
+      switch (param->disconnect.reason) {
+        case 0x08: rname = "Connection Timeout"; break;
+        case 0x13: rname = "Remote Terminated"; break;
+        case 0x16: rname = "Local Host Terminated"; break;
+        case 0x3e: rname = "Failed To Establish"; break;
+        case 0x22: rname = "LL Response Timeout"; break;
+        default:   rname = "Disconnected"; break;
+      }
+      char fbuf[48];
+      snprintf(fbuf, sizeof(fbuf), "%s (0x%02x)", rname, param->disconnect.reason);
+      last_failure_ = fbuf;
       scheduler_sequence_++;  // Invalidate any pending scheduler callbacks
       if (disconnection_callback_) {
         disconnection_callback_();
@@ -500,6 +524,7 @@ void BLEConnectionManager::handle_gattc_event(esp_gattc_cb_event_t event, esp_ga
       encryption_pending_ = false;
       subscription_deferred_ = false;
       break;
+    }
     
     default:
       break;

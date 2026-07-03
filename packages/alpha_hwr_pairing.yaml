@@ -32,9 +32,10 @@
 # Bonding keys are stored in NVS flash for automatic reconnection.
 # ==============================================================================
 
-external_components:
-  - source: github://eman/esphome-alpha-hwr@v0.6.0
-    components: [alpha_hwr, dhw_demand]
+# commented out so these live in the device YAML wrapper for local builds
+#external_components:
+#  - source: github://eman/esphome-alpha-hwr@v0.6.0
+#    components: [alpha_hwr, dhw_demand]
 
 esp32_ble_tracker:
   scan_parameters:
@@ -62,10 +63,17 @@ alpha_hwr:
    id: pump
    ble_client_id: hwr_pump_client
    enable_pairing: true  # Enable BLE pairing for enhanced telemetry
+   reconnect_settle_time: 2s  # bond-loss protection after a pump power-cycle
    
    # Pairing Status
    pairing_status:
      name: "Pairing Status"
+
+   # Pump Link Status (coarse connection health) + latched last-failure detail
+   pump_link_status:
+     name: "Pump Link Status"
+   pump_last_link_failure:
+     name: "Pump Link Fault"
    
    # Enhanced Electrical (requires pairing)
    voltage:
