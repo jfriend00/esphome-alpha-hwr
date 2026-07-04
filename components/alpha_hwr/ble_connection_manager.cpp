@@ -516,12 +516,16 @@ void BLEConnectionManager::handle_gattc_event(esp_gattc_cb_event_t event, esp_ga
       if (!significant_failure_held_) {
         const char *rname;
         switch (param->disconnect.reason) {
-          case 0x08: rname = "Connection Timeout"; break;
-          case 0x13: rname = "Remote Terminated"; break;
-          case 0x16: rname = "Local Host Terminated"; break;
-          case 0x3e: rname = "Failed To Establish"; break;
-          case 0x22: rname = "LL Response Timeout"; break;
-          default:   rname = "Disconnected"; break;
+          case ESP_GATT_CONN_L2C_FAILURE:          rname = "L2CAP Failure"; break;
+          case ESP_GATT_CONN_TIMEOUT:              rname = "Connection Timeout"; break;
+          case ESP_GATT_CONN_TERMINATE_PEER_USER:  rname = "Remote Terminated"; break;
+          case ESP_GATT_CONN_TERMINATE_LOCAL_HOST: rname = "Local Host Terminated"; break;
+          case ESP_GATT_CONN_LMP_TIMEOUT:          rname = "LL Response Timeout"; break;
+          case ESP_GATT_CONN_FAIL_ESTABLISH:       rname = "Failed To Establish"; break;
+          case ESP_GATT_CONN_CONN_CANCEL:          rname = "Connection Cancelled"; break;
+          // ESP_GATT_CONN_UNKNOWN (0) and ESP_GATT_CONN_NONE (0x0101) are
+          // "no known reason" sentinels; let them fall to the default below.
+          default:                                 rname = "Disconnected"; break;
         }
         char fbuf[48];
         snprintf(fbuf, sizeof(fbuf), "%s (0x%02x)", rname, param->disconnect.reason);
