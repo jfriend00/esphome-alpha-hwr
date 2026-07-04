@@ -49,10 +49,8 @@ void AlphaHwrComponent::setup() {
   });
 
   ble_manager_.set_disconnection_callback([this]() {
-    // Kill the stale stabilize->auth timer so it can't fire against the next
-    // connection, and cancel in-flight auth so its pending scheduler lambdas are
-    // invalidated and do not fire against the next BLE connection.
-    this->cancel_timeout("hwr_auth_start");
+    // Cancel in-flight auth so its pending scheduler lambdas are invalidated
+    // and do not fire against the next BLE connection.
     this->auth_.cancel();
     // Also cancel the pending stabilize-to-auth timer, so a disconnect inside
     // the stabilize window can't leave it to start auth against the next connection.
