@@ -339,7 +339,7 @@ private:
   // Pump Link Status evaluator: coarse link-health enum from session/bond/timing,
   // published (plus the latched last-failure string) on change. Driven by the
   // connection/disconnection/auth callbacks and a periodic check in loop().
-  void evaluate_link_status_();
+  void evaluate_link_status();
   uint32_t link_boot_ms_{0};
   uint32_t link_last_open_ms_{0};
   uint32_t link_last_eval_ms_{0};

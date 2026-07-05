@@ -45,7 +45,7 @@ void AlphaHwrComponent::setup() {
     this->link_last_open_ms_ = millis();
     this->link_ever_opened_ = true;
     this->link_reached_ready_ = false;
-    this->evaluate_link_status_();
+    this->evaluate_link_status();
   });
 
   ble_manager_.set_disconnection_callback([this]() {
@@ -76,7 +76,7 @@ void AlphaHwrComponent::setup() {
       this->link_consecutive_failures_++;
     }
     this->link_reached_ready_ = false;
-    this->evaluate_link_status_();
+    this->evaluate_link_status();
 
     // Optional reconnect settle window: after a disconnect, hold off reconnection
     // and start the settle timer only once the pump REAPPEARS (see parse_device),
@@ -182,7 +182,7 @@ void AlphaHwrComponent::setup() {
     // Pump Link Status: we reached a working link.
     this->link_reached_ready_ = true;
     this->link_consecutive_failures_ = 0;
-    this->evaluate_link_status_();
+    this->evaluate_link_status();
 
     // Trigger the one-time data read chain
     this->trigger_initial_data_reads();
@@ -282,11 +282,31 @@ void AlphaHwrComponent::loop() {
   // produces no callbacks, so only an elapsed-time check can detect it.
   if (millis() - this->link_last_eval_ms_ >= 1000) {
     this->link_last_eval_ms_ = millis();
-    this->evaluate_link_status_();
+    this->evaluate_link_status();
   }
 }
 
-void AlphaHwrComponent::evaluate_link_status_() {
+// Pump Link Status state machine. The status is the FIRST matching condition
+// below (a priority ladder), re-evaluated on the connection/disconnection/auth
+// callbacks and on the ~1s loop() tick above:
+//
+//   Connected     the GENI session has reached READY (session_.is_ready()): the
+//                 pump is fully usable, not merely BLE-linked.
+//   Initializing  no connection has opened since boot, still within the 15s boot
+//                 grace (LINK_INIT_GRACE_MS).
+//   Unpaired      a connection has opened, but pairing is enabled and there was no
+//                 bond at the last open. The pump has no stored bond (e.g. erased
+//                 by an encryption failure like 0x61); persists until re-paired.
+//   Unreachable   no successful open for over 20s (LINK_UNREACHABLE_MS), measured
+//                 from the last open / last Connected; or never opened since boot
+//                 and past the 15s grace. Covers both an absent pump and a present
+//                 pump we cannot connect to (the two are not distinguished).
+//   Reconnecting  not ready, opened within 20s, but >= 3 consecutive failed
+//                 attempts (LINK_FAIL_K): links keep opening yet the session keeps
+//                 failing before READY.
+//   Connecting    not ready, opened within 20s, fewer than 3 failures: a normal
+//                 in-progress attempt (including the first after a clean drop).
+void AlphaHwrComponent::evaluate_link_status() {
 #ifdef USE_TEXT_SENSOR
   // Companion sensor: show the latched failure reason only while the link is unhealthy;
   // read "None" once it's Connected again, so a stale reason doesn't sit next to a healthy
