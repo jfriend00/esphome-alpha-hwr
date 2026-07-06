@@ -2,13 +2,13 @@ The remaining divergence between my fork and upstream main is pump speed and flo
 
 ## Control problems
 
-Clear defects, independent of any design decision:
+Speed control settings not working properly:
 
-- **Enabling the pump uses a hard-coded default instead of the setpoint.** In constant-speed mode, turning Pump Enabled on runs a fixed ~3674 RPM regardless of the speed setpoint. That value is the default suffix `{0x45, 0x65, 0x70, 0x00}` from the mode's row in `CLASS10_CONTROL_MAP`. Each mode has its own row, but the pressure, speed, and flow rows all hold that same default suffix (the constant-flow row is even commented "suffix same as pressure"), so none of them send the actual setpoint on enable. (Only the DHW_ON_OFF row carries a different, captured value.)
-- **Constant flow rate is unusable.** When I tried constant flow rate mode, I could not make sense of the values in any unit I selected in HA. I wanted gallons per minute, since that is the unit I know my target in, but even manually converting to other units did not make the numbers work out. I gave up and switched to constant speed, on the theory that its units might be hard-wired to RPM.
+- **Enabling the pump uses a hard-coded default instead of the setpoint.** In constant-speed mode, turning Pump Enabled on runs a fixed ~3674 RPM regardless of the constant speed setpoint. That value is the default suffix `{0x45, 0x65, 0x70, 0x00}` from the mode's row in `CLASS10_CONTROL_MAP`. Each mode has its own row, but the pressure, speed, and flow rows all hold that same default suffix (the constant-flow row is even commented "suffix same as pressure"), so none of them send the actual setpoint on enable.
+- **Constant flow rate is unusable.** When I tried constant flow rate mode, it just kept running at 3674 RPM no matter what I set the desired flow rate to.
 - **Enable and the on/off entities desync.** Changing the setpoint turns the pump on (see below). Pump Motor Active reads on, but Remote Mode and Pump Enabled can both read off. The component's on/off state gets out of sync with the pump, and I have to toggle Pump Enabled on and then off to resync it.
 
-The design-tension behavior, which is really the crux, not a bug:
+Undesirable side-effect:
 
 - **Setting a setpoint always turns the pump on.** The Class 10 command that writes a setpoint also enables the pump, and the setpoint methods pass enable=true, so you cannot change a setpoint while the pump is off without it turning on. This holds for constant speed and constant flow, and by code path presumably the pressure and proportional modes I have not tested.
 
@@ -35,9 +35,9 @@ I do not have a proposal for the cleanest way to support both models. I am mainl
 
 ## How I work around speed control issues now ##
 
-Pump speed was one of the first things I hit trying to use this component. Not knowing the code, I first just edited the hard-coded value in the `CLASS10_CONTROL_MAP` constant-speed row and ran with that. When I wanted to actually vary the speed, I added my own HA-hosted Target Recirc Speed entity and, instead of pulling the speed from the table, I read it from that entity and send it with the Class 10 turn-on command. That has been working for me, so I am effectively bypassing the pump setpoint entirely. Since the Class 10 turn-on command carries a speed anyway, I just send whatever my control wants each time I turn the pump on. This is just how I have coped, not a proposed fix.
+Pump speed was one of the first things I hit trying to use this component. Not knowing the code, I first just edited the hard-coded value in the `CLASS10_CONTROL_MAP` constant-speed row and ran with that (and that worked). When I wanted to actually vary the speed, I added my own HA-hosted Target Recirc Speed entity and, instead of pulling the speed from the table, I read it from that entity and send it with the Class 10 turn-on command. That has been working for me, so I am effectively bypassing the pump setpoint entirely. Since the Class 10 turn-on command carries a speed anyway, I just send whatever my control wants each time I turn the pump on. This is just how I have coped, not a proposed fix.
 
 ## Notes
 
-There appears to be a Class 3 command to turn the pump on and off without setting a speed (so it would rely on the setpoint the pump already holds), which would decouple the enable control from setpoint for the pump-driven model. I do not know whether all ALPHA HWR pumps support it; that could be checked with some test code on the pumps we have.
+There appears to be a Class 3 command to turn the pump on and off without setting a speed (so it would rely on the setpoint the pump already holds), which would decouple the enable control from setpoint for the pump-driven model. I do not know what ALPHA HWR pumps support it; that could be checked with some test code on the pumps we have.
 
