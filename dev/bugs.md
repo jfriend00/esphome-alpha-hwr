@@ -1,28 +1,44 @@
-The remaining divergence between my fork and upstream main is pump speed and flow control. Some of the building blocks to do this correctly are available in the code, but as it is currently wired the controls do not behave correctly.  There is a lot written here, because as I started diving into the control problems I found and was looking for possible solutions, I uncovered a lots to share.  Some of the options are more than just fixing bugs (design decisions to be made) so I thought I'd just dump what I know and we can discuss from there when you have time to digest everything.
+The remaining divergence between my fork and upstream main is pump speed and flow control. Some of the building blocks to do this correctly are available in the code, but as it is currently wired some of the controls do not behave correctly.  There is a lot written here, because as I started diving into control problems and started looking for possible solutions, I uncovered a lot to share.  Some of the options are more than just fixing bugs (design decisions to be made) so I thought I'd just dump what I know and we can discuss from there when you have time to digest everything.  
+
+The organization here is these main sections:
+- Control Problems
+- Possible Action List
+- Learnings and Discussion
+- My current workaround for pump speed control
+- References
 
 # Control Problems
 
 First, I'll document the problems I found.  Then, in a separate section that follows, I offer commentary on each issue and what I've learned about them that will hopefully aid in fixing the control issues.
 
-### Enabling the pump changes the pump speed to a hard-coded speed (~3671 RPM) instead of allowing the pump to use the setpoint
+### #1 Enabling the pump changes the pump speed to a hard-coded speed (~3671 RPM) instead of allowing the pump to use the setpoint
 
 In constant-speed mode, turning Pump Enabled "on" runs a fixed ~3671 RPM regardless of the constant speed setpoint. That value sent with the command to turn the pump on is the default suffix `{0x45, 0x65, 0x70, 0x00}` from the mode's row in `CLASS10_CONTROL_MAP`. Each mode has its own row, but the pressure, speed, and flow rows all hold that same default suffix (the constant-flow row is even commented "suffix same as pressure"), so none of them send the actual setpoint on enable.  Interestingly, setting the constant-speed setpoint after the pump is already running does change the speed of the pump to that setpoint, but that won't hold the next time you turn Pump Enabled "on".
 
-### Constant flow rate also just runs the pump at the same 3671 RPM
+### #2 Constant flow rate also just runs the pump at the same 3671 RPM
 
 When I tried constant flow rate mode, it just kept running at 3671 RPM no matter what I set the desired flow rate to and also goes to that same number when I enable the pump.  Unlike constant speed mode, when in constant flow rate mode, changing the constant flow setpoint does not seem to change the speed of the pump in my tests so it appears the constant flow setpoint has issues also.  FYI, these sliders for speed and flow rate are difficult to use because of the non-optimistic settings.  I understand the purpose of being non-optimistic, but they echo back of the actual set state seems pretty slow for these settings and leads to some confusion in the UI.  I'm not sure what the best solution is for that.  There also appears to be some sort of units or scaling problem with constant flow.  If I switch the pump mode to Constant Flow, I will see Constant Flow Setpoint = 0.003056 gal/min and Flow Rate = 3.940 gal/min and Motor Speed = 3670 RPM.  So, it appears the constant flow setpoint is not displaying correctly.
 
-### Enable and the on/off entities desync
+### #3 Enable and the on/off entities desync
 
 Changing the setpoint for either constant speed or constant flow rate when the pump is off, turns the pump on. Pump Motor Active reads on, but Remote Mode and Pump Enabled both read off. The component's on/off state gets out of sync with the pump, and I have to toggle Pump Enabled on and then off to turn the pump off.  If an automation or a user is looking at the Pump Enabled setting to judge current state (which mine does, this will lead to confusion).  FWIW, the motor speed readout and Pump Motor Active control are both accurately indicating  whether the pump is or isn't running (so I may change my automation to look at them to judge pump state though it has significant lag because it comes from telemetry).
 
-### Changing the Pump Mode turns the pump on
+### #4 Changing the Pump Mode turns the pump on
 
 If the pump was off and you are just trying to configure the pump, but not turn it on, this will surprise you as changing the pump mode turns the pump on (not a serious problem because this is typically a one-time configuration for most uses).  But, unlike with the flow rate adjustments, this keeps the Pump Enabled and Remote Mode properly synced.  So, if the pump is off and you change the Pump Mode (say from constant flow to constant speed), the pump will turn on and the Pump Enabled and Remote Mode will properly show as on.
 
-### The existing Remote Mode is broken (wrong operation code), and remote is not required to command the pump
+### #5 The existing Remote Mode is broken (wrong operation code), and remote is not required to command the pump
 
 While bench-testing on my pump I found that `enable_remote_mode()` and `disable_remote_mode()` do not actually do anything. They build the Class 3 frame with the wrong operation code.  This accidentally confirms that remote mode does not appear to be required to send commands to the pump.
+
+# Possible Action List
+
+- Switch to Class 3 commands for turning the pump on/off (part of fix for #1 and parts of #2).
+- Add a `get_mode()` read-back after relevant commands so non-optimistic controls stay in sync - remaining part of class 3 fix for #1 (those commands don't self-report), and it also improves the sluggish setpoint slider from #2.
+- Fix setpoint problems for flow rate so that what you set in the setpoint shows up in the flow rate within the range of the device (fixes other part of #2)
+- When setting any pump setpoint or pump mode, send the current pump enabled state with the command so the pump endabled state is not inadvertently changed (fixes #3 and #4)
+- Remove remote mode (fixes #5)
+- Alternate option for remote mode, find a reason to keep remote mode and fix the setting of it by changing OP mode from INFO to SET and find a way for it to properly track the remote mode state the pump is actually in
 
 # Learnings and Discussion of the Control Problems
 
@@ -90,7 +106,7 @@ The doc you can find on this topic makes it sound mandatory (which it apparently
 
 The Remote Mode switch is declared non-optimistic (`optimistic: false`), which implies it reads the pump's actual state, but its lambda returns `get_remote_enabled()`, which just returns a local cached flag (`is_remote_mode_enabled_`). That flag is set true inside `enable_remote_mode()` and cleared only inside `disable_remote_mode()`. Since enabling the pump calls `enable_remote()` before starting, the switch latches ON the first time you enable the pump and stays on until you manually toggle it off. It reflects the component's intent, not the pump.
 
-Meanwhile the pump's actual control-source byte (read in `get_mode`) is only logged and then discarded, so it never feeds the switch. And in my testing that byte reads 0 in every capture (46 readings across 7 sessions) and never responds to REMOTE or LOCAL.
+Meanwhile the pump's actual control-source byte (read in `get_mode`) is only logged and then discarded, so it never feeds the switch. And in my testing that byte reads 0 in every capture (46 readings across 7 sessions) and never responds to REMOTE or LOCAL commands.
 
 So the switch is disconnected from the pump's real remote/local state on two counts: it is driven by a latching local flag rather than a readback, and even the readback we do have does not appear to track remote/local. Combined with the operation-code bug (the enable command is INFO, so it does nothing on the pump anyway), the switch currently shows "remote enabled" for a command that had no effect.
 
@@ -107,7 +123,7 @@ If you adopt the Class 3 start/stop commands, the simplest fix is a `get_mode` r
 
 # How I work around speed control issues now ##
 
-Pump speed was one of the first things I hit trying to use this component. Not knowing the code, I first just edited the hard-coded value in the `CLASS10_CONTROL_MAP` constant-speed row and ran with that (and that worked). When I wanted to actually vary the speed, I added my own HA-hosted "Target Recirc Speed" entity and, instead of pulling the speed from the table, I read it from that entity and send it with the Class 10 turn-on command. That has been working for me, so I am effectively bypassing the pump setpoint entirely. Since the Class 10 turn-on command carries a speed anyway, I just send whatever my control is set to each time I turn the pump on. This is just how I have coped, not a proposed fix, though this has some advantages for me in that my speed setting is in HA where it survives pump replacement or pump reset.
+Pump speed was one of the first things I hit trying to use this component. Not knowing the code (and not knowing any of the other info in this document), I first just edited the hard-coded value in the `CLASS10_CONTROL_MAP` constant-speed row and ran with that (and that worked). When I wanted to actually vary the speed, I added my own HA-hosted "Target Recirc Speed" entity and, instead of pulling the speed from the table, I read it from that entity and send it with the Class 10 turn-on command. That has been working for me, so I am effectively bypassing the pump setpoint entirely. Since the Class 10 turn-on command carries a speed anyway, I just send whatever my control is set to each time I turn the pump on. This is just how I have coped, not a proposed fix, though this has some advantages for me in that my speed setting is in HA where it survives pump replacement or pump reset.
 
 
 # References
@@ -121,3 +137,4 @@ The relevant pieces:
 - https://github.com/christoph2/GENIBus/blob/master/src/genibus/devices/upe.json (the UPE circulator data dictionary, the closest family to the ALPHA) lists the Class 3 command IDs with descriptions, including STOP = 5 "Stops the pump", START = 6 "Starts the pump", REMOTE = 7, LOCAL = 8.
 
 One internal cross-check in your own code: the Class 10 control write already uses SET. In control_service.cpp the control-request APDU sets its second byte to 0x90, with the comment "OpSpec: SET with length 16". 0x90 is SET (2) in the top 2 bits with length 16. So the Class 3 commands just need that same SET operation; they are the only ones currently using INFO.
+
