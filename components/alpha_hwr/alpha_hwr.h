@@ -358,6 +358,10 @@ public:
   }
   bool enable_remote() { return control_service_.enable_remote_mode(); }
   bool disable_remote() { return control_service_.disable_remote_mode(); }
+  // Bench-test utility: send a raw GENIbus Class 3 command by ID (no side-effects).
+  bool send_class3(uint8_t command_id) { return control_service_.send_class3_command(command_id); }
+  // Bench-test utility: write CONSTANT_SPEED setpoint with start=OFF (does not turn pump on).
+  bool bench_set_speed_stopped(float rpm) { return control_service_.bench_set_speed_stopped(rpm); }
 
   // Setpoint configuration methods (for ESPHome number entities)
   void set_constant_pressure(float value_m,

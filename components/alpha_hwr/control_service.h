@@ -234,7 +234,35 @@ class ControlService {
    * Reference: control.py::disable_remote_mode() lines 335-362
    */
   bool disable_remote_mode();
-   
+
+  /**
+   * Send a raw GENIbus Class 3 command by ID (bench-test utility).
+   *
+   * Builds and sends the frame [0x03, 0x81, <command_id>] (0x81 = SET) with NO local
+   * state side-effects, so it can probe any Class 3 command without the
+   * component's remote/enabled flags getting out of step. Used to
+   * empirically determine ALPHA HWR command semantics (e.g. whether
+   * 0x06 = START vs "Auto"). See memory: genibus-class3-command-reference.
+   *
+   * @param command_id Class 3 command ID (e.g. 0x05 STOP, 0x06 START,
+   *                   0x07 REMOTE, 0x08 LOCAL). Do NOT send 0x09 RUN
+   *                   (factory use only).
+   * @return true if queued (session READY), false otherwise.
+   */
+  bool send_class3_command(uint8_t command_id);
+
+  /**
+   * Bench-test utility: write a CONSTANT_SPEED setpoint with the on/off flag set
+   * to STOP (start=false), to test whether the pump stores the setpoint without
+   * being turned on. Sends the fused Class 10 control object (mode + setpoint +
+   * stop), then reads state back so the log shows the result. Kept out of the
+   * normal control path on purpose. See memory: alpha-hwr-speed-control-design.
+   *
+   * @param rpm Speed setpoint in RPM.
+   * @return true if queued.
+   */
+  bool bench_set_speed_stopped(float rpm);
+
    /**
     * Get current control mode name as string.
     * 

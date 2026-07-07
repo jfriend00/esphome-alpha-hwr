@@ -484,6 +484,58 @@ bool ControlService::enable_remote_mode() {
    return true;
  }
 
+bool ControlService::send_class3_command(uint8_t command_id) {
+  // Verify session is authenticated
+  if (session_.get_state() != core::SessionState::READY) {
+    ESP_LOGW(TAG, "Cannot send Class 3 command 0x%02X: session not ready", command_id);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Sending raw Class 3 SET command 0x%02X (bench test)...", command_id);
+
+  // Class 3 SET: 03 81 <command_id>. Byte 0x81 = (SET=2)<<6 | len 1 -> EXECUTE.
+  // NOT 0xC1 = (INFO=3)<<6, which only queries the item and never runs it
+  // (that INFO/SET mixup is why eman's remote-mode commands never did anything).
+  // No local state side-effects on purpose.
+  const uint8_t apdu[3] = {0x03, 0x81, command_id};
+
+  uint8_t packet_raw[32];
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
+
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
+
+  ESP_LOGI(TAG, "Class 3 command 0x%02X queued", command_id);
+
+  // Bench diagnostic: ~500ms after the command, read back live control state so
+  // "Parsed control mode: ... source=X" logs the RESULT of the press -- confirms
+  // whether REMOTE/LOCAL flipped source (and START/STOP flipped op_mode).
+  if (schedule_callback_) {
+    schedule_callback_([this]() {
+      this->get_mode_async([](bool, ControlMode) {});
+    }, 500);
+  }
+
+  return true;
+}
+
+bool ControlService::bench_set_speed_stopped(float rpm) {
+  ESP_LOGI(TAG, "Bench: writing CONSTANT_SPEED setpoint %.0f RPM with start=OFF (no pump-on)...", rpm);
+  bool ok = this->send_control_request(ControlMode::CONSTANT_SPEED, false, rpm);
+
+  // Read the resulting state back ~500ms later so the log shows op_mode/source
+  // (confirming the pump stayed stopped) and the cached setpoint.
+  if (schedule_callback_) {
+    schedule_callback_([this]() {
+      this->get_mode_async([](bool, ControlMode) {});
+    }, 500);
+  }
+
+  return ok;
+}
+
 const char *ControlService::get_mode_name(ControlMode mode) {
   switch (mode) {
     case ControlMode::CONSTANT_PRESSURE:

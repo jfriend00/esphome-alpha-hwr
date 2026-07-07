@@ -8,6 +8,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include <algorithm>
+#include <cstdio>
 
 namespace esphome {
 namespace alpha_hwr {
@@ -207,6 +208,18 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
                 reassembly_buffer_[0], reassembly_buffer_[1], reassembly_buffer_[2], reassembly_buffer_[3],
                 reassembly_buffer_[4], reassembly_buffer_[5], reassembly_buffer_[6], reassembly_buffer_[7],
                 reassembly_buffer_[8], reassembly_buffer_[9], reassembly_buffer_[10], reassembly_buffer_[11]);
+     }
+
+     // Bench-test diagnostic: the pump answers Class 3 commands (and some auth
+     // steps) with short packets the response parser drops as "too short".
+     // Dump them fully at INFO so we can read the ACK/NAK bytes during testing.
+     if (reassembly_buffer_.size() < 12) {
+       char hexbuf[64] = {0};
+       size_t pos = 0;
+       for (size_t i = 0; i < reassembly_buffer_.size() && pos + 3 < sizeof(hexbuf); i++) {
+         pos += snprintf(hexbuf + pos, sizeof(hexbuf) - pos, "%02X ", reassembly_buffer_[i]);
+       }
+       ESP_LOGI(TAG, "Short packet (%d bytes): %s", reassembly_buffer_.size(), hexbuf);
      }
 
      // Try to dispatch to registered response handler first
