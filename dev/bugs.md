@@ -1,11 +1,11 @@
 The remaining divergence between my fork and upstream main is pump speed and flow control. Some of the building blocks to do this correctly are available in the code, but as it is currently wired some of the controls do not behave correctly.  There is a lot written here, because as I started diving into control problems and started looking for possible solutions, I uncovered a lot to share.  Some of the options are more than just fixing bugs (design decisions to be made) so I thought I'd just dump what I know and we can discuss from there when you have time to digest everything.  
 
 The organization here is these main sections if you want to jump ahead:
-- Control Problems
-- Possible Action List
-- Learnings and Discussion
-- My current workaround for pump speed control
-- References
+- [Control Problems](#control-problems)
+- [Possible Action List](#possible-action-list)
+- [Learnings and Discussion](#learnings-and-discussion-of-the-control-problems)
+- [My current workaround for pump speed control](#my-current-workaround-for-pump-speed-control)
+- [References](#references)
 
 # Control Problems
 
