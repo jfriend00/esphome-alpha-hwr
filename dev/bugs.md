@@ -11,33 +11,33 @@ The organization here is these main sections if you want to jump ahead:
 
 First, I'll document the problems I found.  Then, in a separate section that follows, I offer commentary on each issue and what I've learned about them that will hopefully aid in fixing the control issues.
 
-### #1 Enabling the pump changes the pump speed to a hard-coded speed (~3671 RPM) instead of allowing the pump to use the setpoint
+### `#1` Enabling the pump changes the pump speed to a hard-coded speed (~3671 RPM) instead of allowing the pump to use the setpoint
 
 In constant-speed mode, turning Pump Enabled "on" runs a fixed ~3671 RPM regardless of the constant speed setpoint. That value sent with the command to turn the pump on is the default suffix `{0x45, 0x65, 0x70, 0x00}` from the mode's row in `CLASS10_CONTROL_MAP`. Each mode has its own row, but the pressure, speed, and flow rows all hold that same default suffix (the constant-flow row is even commented "suffix same as pressure"), so none of them send the actual setpoint on enable.  Interestingly, setting the constant-speed setpoint after the pump is already running does change the speed of the pump to that setpoint, but that won't hold the next time you turn Pump Enabled "on".
 
-### #2 Constant flow rate also just runs the pump at the same 3671 RPM
+### `#2` Constant flow rate also just runs the pump at the same 3671 RPM
 
 When I tried constant flow rate mode, it just kept running at 3671 RPM no matter what I set the desired flow rate to and also goes to that same number when I enable the pump.  Unlike constant speed mode, when in constant flow rate mode, changing the constant flow setpoint does not seem to change the speed of the pump in my tests so it appears the constant flow setpoint has issues also.  FYI, these sliders for speed and flow rate are difficult to use because of the non-optimistic settings.  I understand the purpose of being non-optimistic, but the echo-back of the actual set state seems pretty slow for these settings and leads to some confusion in the UI.  I'm not sure what the best solution is for that.  There also appears to be some sort of units or scaling problem with constant flow.  If I switch the pump mode to Constant Flow, I will see Constant Flow Setpoint = 0.003056 gal/min and Flow Rate = 3.940 gal/min and Motor Speed = 3670 RPM.  So, it appears the constant flow setpoint is not displaying correctly.
 
-### #3 Enable and the on/off entities desync
+### `#3` Enable and the on/off entities desync
 
 Changing the setpoint for either constant speed or constant flow rate when the pump is off, turns the pump on. Pump Motor Active reads on, but Remote Mode and Pump Enabled both read off. The component's on/off state gets out of sync with the pump, and I have to toggle Pump Enabled on and then off to turn the pump off.  If an automation or a user is looking at the Pump Enabled setting to judge current state (which mine does), this will lead to confusion.  FWIW, the motor speed readout and Pump Motor Active control are both accurately indicating whether the pump is or isn't running (so I may change my automation to look at them to judge pump state though it has significant lag because it comes from telemetry).
 
-### #4 Changing the Pump Mode turns the pump on
+### `#4` Changing the Pump Mode turns the pump on
 
 If the pump was off and you are just trying to configure the pump, but not turn it on, this will surprise you as changing the pump mode turns the pump on (not a serious problem because this is typically a one-time configuration for most uses).  But, unlike with the flow rate adjustments, this keeps the Pump Enabled and Remote Mode properly synced.  So, if the pump is off and you change the Pump Mode (say from constant flow to constant speed), the pump will turn on and the Pump Enabled and Remote Mode will properly show as on.
 
-### #5 The existing Remote Mode is broken (wrong operation code), and remote is not required to command the pump
+### `#5` The existing Remote Mode is broken (wrong operation code), and remote is not required to command the pump
 
 While bench-testing on my pump I found that `enable_remote_mode()` and `disable_remote_mode()` do not actually do anything. They build the Class 3 frame with the wrong operation code.  This accidentally confirms that remote mode does not appear to be required to send commands to the pump.
 
 # Possible Action List
 
-- Switch to Class 3 commands for turning the pump on/off (part of fix for #1 and parts of #2).
-- Add a `get_mode()` read-back after relevant commands so non-optimistic controls stay in sync - remaining part of class 3 fix for #1 (those commands don't self-report), and it also improves the sluggish setpoint slider from #2.
-- Fix setpoint problems for flow rate so that what you set in the setpoint shows up in the flow rate within the range of the device (fixes other part of #2)
-- When setting any pump setpoint or pump mode, send the current pump enabled state with the command so the pump enabled state is not inadvertently changed (fixes #3 and #4)
-- Remove remote mode (fixes #5)
+- Switch to Class 3 commands for turning the pump on/off (part of fix for `#1` and parts of `#2`).
+- Add a `get_mode()` read-back after relevant commands so non-optimistic controls stay in sync - remaining part of class 3 fix for `#1` (those commands don't self-report), and it also improves the sluggish setpoint slider from `#2`.
+- Fix setpoint problems for flow rate so that what you set in the setpoint shows up in the flow rate within the range of the device (fixes other part of `#2`)
+- When setting any pump setpoint or pump mode, send the current pump enabled state with the command so the pump enabled state is not inadvertently changed (fixes `#3` and `#4`)
+- Remove remote mode (fixes `#5`)
 - Alternate option for remote mode, find a reason to keep remote mode and fix the setting of it by changing OP mode from INFO to SET and find a way for it to properly track the remote mode state the pump is actually in
 
 # Learnings and Discussion of the Control Problems
