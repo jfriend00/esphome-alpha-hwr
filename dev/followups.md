@@ -4,6 +4,18 @@ Personal tracker for interim / incomplete fixes and open questions to check back
 
 eman's pattern is often to first attenuate a problem's impact with a safe but not fully complete fix, then return to a more complete fix later. These notes flag where a first-pass fix left something on the table, so I can verify the complete fix eventually landed, or raise it myself if it stalled.
 
+## Still open (as of 2026-07-08)
+
+Quick-glance list; details in the sections further down and in memory.
+
+1. **Class 3 START/STOP for pump enable — WATCH ONLY.** Not switched yet; the #52 500ms readback groundwork is in, the command change isn't. When it lands it retires the last setpoint issue (the #43 startup-cache-window: enabling before the first setpoint read still sends the 3671 default). No action needed, just watch for it.
+
+2. **Remote Mode — functional behavior still unknown.** Readability is RESOLVED (the Sub 7 fix, hardware-verified: control_source reads 2 when remote active). Still open: whether *engaging* remote actually changes pump behavior, other controls, or the internal schedule. Live because remote auto-fires on every pump enable (YAML lambda in the Pump Enabled `turn_on`) and flips a real control-priority state. Tracked by: my #61 comment asking eman if he's seen it affect behavior (awaiting reply); #63, the end-to-end harness proposal, which would settle it empirically; and my fork fallback of commenting out the `enable_remote()` line on adoption. Minor loose thread: eman's Sub 7 test showed remote=2 but not local=1 or clearing on a panel override.
+
+3. **Adopting eman's work into my fork — the big pending task.** Still running the instrumented fork on the old opcode; haven't taken any of today's changes. Deliberately WAITING until the rapid-change period settles (I have a working system now; will adopt at a convenient stable point, a tagged release is the clean endpoint, could be 0.8.0 / a pending 0.8.5 / 0.9.0 / main). When adopting: pull the base..tag diff scoped to `components/alpha_hwr/` + `packages/`, organize by provenance, review with the lifecycle-risk lens (does anything touch the bond-loss/auth/reconnect code from #9/#11/#15/#17/#19/#22) and skepticism of the AI-generated churn (some was wrong and reverted). Folded in: the `enable_remote()` comment-out decision (item 2); verify the #54 disable-polling bug is fixed (`control_state_poll_interval: 0` failed validation per Copilot; want polling OFF as exclusive-control); scrutinize the #28 centralize-GENI-frame refactor (byte-identical-on-the-wire check) and #32 memory-leak fix (churn not tracked closely).
+
+**Resolved:** flow echo-vs-real-value (eman vindicated, no readable register exists), per-mode caches (#51/#57), #43/#44 coupling, transport ACK race (#50 / commit 31a57b9), #43/#44/#45/#46 proper, #61 remote-state readability (Sub 7).
+
 ---
 
 ## #44 Constant Flow Setpoint display: interim echo fix, complete fix still open
@@ -51,3 +63,31 @@ Two things to verify when #51 is picked up:
 2. **#51 is contamination-scoped only. It does not resolve the flow echo-vs-real-value concern above.** Per-mode storage gives Constant Flow its own cache slot, but that slot is still fed by the client-commanded echo (the Object 86 / Sub 6 readback is the fixed 0.000694 garbage and is suppressed). So a later "setpoint caching is clean now" status must not be read as also closing the "read the pump's actual flow setpoint" question. Keep the two distinct.
 
 Bonus of per-mode fields: each mode naturally remembers its own last setpoint across mode switches. Open implementation choice (eman's call): named per-mode fields (matches the temp precedent) versus a small mode-indexed lookup (a slightly DRYer accessor).
+
+---
+
+## Status update (2026-07-08) — after the v0.8.0 + #55–#60 batch
+
+- **Per-mode caches (#51): SHIPPED and correct — DONE.** Merged as PR #57. `start()` now reads the per-mode fields (`cached_pressure_setpoint_` / `cached_speed_setpoint_` / `cached_flow_setpoint_` / `cached_proportional_setpoint_`) and the three redundant clears were removed (the success criterion). Cross-mode contamination is now structurally impossible, not just guarded. This thread is closed.
+
+- **#43/#44 coupling: RESOLVED.** With register-suppress (#44) and per-mode caches (#51) both shipped, `cached_flow_setpoint_` holds the client-commanded flow value, not the `0.000694` garbage, so `start()` reusing it no longer commands ~zero flow. No longer a concern.
+
+- **Flow setpoint echo-vs-real-value: STILL OPEN — the sole remaining item in this file.** Nothing in today's batch touched it. Flow's per-mode cache is still fed by the client echo (Object 86/Sub 6 stays suppressed as garbage). The complete fix — read the pump's *actual* stored flow setpoint from the correct register — has never been attempted. Corpus investigation for the real register is now in progress (findings to be appended).
+
+- **Class 3 START/STOP for pump enable: NOT switched yet (as of 2026-07-08).** `start()`/`stop()` still use Class 10 `send_control_request()` with the #43 cached reuse (verified: PR #55 only *added* the 500ms `get_mode` readback, it did not change the command type; no merged PR flips enable to Class 3). eman's #52 issue + PR #55 discuss "Class 3 START/STOP" and pre-fix the UI lag those would cause — read as **prerequisite groundwork** for a future switch, held for a not-immediate release (nothing about Class 3 enable appeared before 0.8.0). WATCH FOR IT: when enable moves to Class 3 START (pump uses its own stored setpoint, no client setpoint sent), it eliminates the #43 **startup-cache-window caveat** (enable before the first setpoint read still sends the 3671 default). Until then, that caveat remains.
+
+### Flow-readback investigation RESULT (2026-07-08) — echo is CORRECT, not a cover-up
+
+A full search of both eman repos (Python `alpha-hwr` + C++ `esphome-alpha-hwr`) found **no readable flow-setpoint register on the ALPHA**:
+- The standard GENIbus reference registers (`ref_act`, `ref_rem`, `ref_norm`, `q_ref`, etc.) do **not exist** anywhere in the corpus (zero hits) — not mapped for this pump.
+- Read path = the known-garbage Class 10 Object 86/Sub 6 (fine for speed/pressure, fixed `0.000694` for flow).
+- Write path (`set_constant_flow`) = Object 86/**Sub 39**, but `SUB_FLOW_SETPOINT == SUB_FLOW_LIMIT == 39` (same sub-ID), so 86/39 is the **max-flow-LIMIT** object, not a target, and is never read back.
+- Only "setpoint" telemetry object defined is RPM (speed), reserved/unused; measured flow is a separate object and already works.
+
+**Fairness correction:** the earlier "echo = the Remote-Mode cover-up anti-pattern" critique (see the "Why I think this is incomplete" section above) does **not** hold. Remote Mode's `control_source` was readable and discarded (avoidable); the flow *target* is genuinely not readable, so the client echo is the only option and a correct one. eman was right on #44; nothing to raise with him.
+
+**Likely mechanism:** the `SUB_FLOW_SETPOINT == SUB_FLOW_LIMIT` collision suggests the ALPHA implements constant-flow as a flow-*limited* mode, not a true closed-loop target — which explains the absence of a readable flow setpoint.
+
+**One residual (theoretical):** definitive source is the external `geni_profile_52_7.xml` Grundfos profile, referenced in eman's `constants.py:193` (consumed by `profile_parser.py`, register addr = `(geni_class << 8) | geni_id`) but NOT committed to either repo. If it ever surfaces and maps a flow-reference object, revisit; since eman references it himself and still didn't map one, it's very likely not there.
+
+**Disposition: RESOLVED.** Echo is correct given no readable register. Local copies of the cited corpus files are in the session scratchpad (`ahwr/`: `services/control.py`, `constants.py`, `control_service.cpp`, `control_service.h`, `data_models.md`).
