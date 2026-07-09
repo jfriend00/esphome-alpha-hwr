@@ -1,0 +1,53 @@
+# Follow-ups to revisit
+
+Personal tracker for interim / incomplete fixes and open questions to check back on once eman appears finished with the related work.
+
+eman's pattern is often to first attenuate a problem's impact with a safe but not fully complete fix, then return to a more complete fix later. These notes flag where a first-pass fix left something on the table, so I can verify the complete fix eventually landed, or raise it myself if it stalled.
+
+---
+
+## #44 Constant Flow Setpoint display: interim echo fix, complete fix still open
+
+**Related:** issue #44, PR #48 (diagnostic), issue #43 (coupled, see below).
+
+**Status (2026-07-07):** eman confirmed the root cause on hardware and proposed an interim fix.
+
+**Root cause (confirmed on the live pump):** In Constant Flow mode, Class 10 Object 86 / Sub 6 does not carry a usable flow setpoint. It returns a fixed value (0.000694 m³/h, which converts to 0.003056 gal/min, exactly the bad value I originally reported) regardless of what setpoint was commanded. The same register reads the setpoint correctly for Constant Speed and Constant Pressure, so this is specific to flow mode. The register is simply the wrong source of truth for the flow setpoint display.
+
+**eman's proposed fix (interim):** For flow mode, display the last client-commanded value (cached optimistically in `cached_setpoint_` after `set_constant_flow_async()` writes it) and ignore the register readback, similar to how the pressure modes are special-cased.
+
+**Why I think this is incomplete:** It displays what the client last *commanded*, not what the pump actually *holds*. This is the same pattern that made the Remote Mode switch untrustworthy: reporting the local intent instead of the real pump state. For a setpoint that can drift, the pump clamping it to a min/max, an external change, or a silent write failure, the display would confidently show the wrong value. It covers up the symptom rather than reading the true value.
+
+**The complete fix I think is right:** Find where the pump actually reports its stored flow setpoint in telemetry and display that. This is the pump's *target* flow setpoint, which is distinct from the Flow Rate sensor (the *measured / achieved* flow, which already works fine).
+
+**Why the complete fix is likely achievable, not just a principle:**
+- The pump obviously has a flow setpoint. It is actively regulating to it.
+- Object 86 / Sub 6 reads the setpoint correctly for Constant Speed and Constant Pressure, so this pump can and does report setpoints. It is just that this one register's setpoint field is not the right source in flow mode.
+- So the real flow setpoint is almost certainly in a different register / object, which should be documented in eman's `resources/` reverse-engineering corpus (the GENI profiles / register map). He has not checked there yet. He tested one register, found it garbage, and moved to the echo.
+
+**Fair caveat (the case for eman's fix):** For a setpoint specifically (unlike a live sensor), an optimistic echo of the commanded value is a reasonably accepted Home Assistant pattern. Many setpoint entities are optimistic because devices do not echo them back. So the echo is a defensible *fallback*, but only if the pump genuinely does not expose the setpoint, which there is good reason to doubt.
+
+**Coupling with #43 (watch this too):** eman's #44 register-suppress is also what makes #43's flow-mode setpoint reuse correct. The register overwrites `cached_setpoint_` with 0.000694 for flow, and #43's `start()` reuses `cached_setpoint_` (flow is in its allow-list). So with #43 landed but #44 not, enabling the pump in flow mode would reuse 0.000694 and command essentially zero flow. #43's "flow already resolved" claim only holds once #44's register-suppress lands. Confirm they land together, or #44 first.
+
+**To check later (once eman appears done):**
+1. Did he follow up with a telemetry-sourced fix that reads the pump's actual flow setpoint from the correct register, or did the echo become the permanent solution?
+2. If the echo is permanent: is it because the pump genuinely does not expose the flow setpoint anywhere readable (confirmed from the profiles), or because it was not investigated? If the latter, raise the register question and/or propose the read-based fix.
+3. Confirm #44 and #43 landed together (or #44 first) so flow-enable was not broken in the interim.
+
+**Framing if I raise it (a question, not "your fix is wrong"):** "Before falling back to echoing the commanded value, is the flow setpoint readable from a different register than Object 86 / Sub 6? It reads fine for speed and pressure and the pump is clearly regulating to a flow target, so the true value is probably in the profiles. Displaying that would avoid the same 'shows local, not pump' weakness we hit with Remote Mode."
+
+**Update (2026-07-08):** PR #48 now includes the actual register-suppress fix (not just the diagnostic). Intended behavior: flow setpoint shows "unavailable" until the user explicitly sets one, then echoes the commanded value, so it fails safe rather than showing a wrong number (more defensible than a naive echo). BUT GitHub Copilot's automated review independently found the workaround already leaking: `cached_setpoint_` is a single variable shared across all modes, and the fix leaves it untouched in flow mode assuming it's NAN. It is NOT necessarily NAN, if the pump enters flow mode via a notification (pump-initiated switch, not a user `set_mode()` which clears it), `cached_setpoint_` retains the leftover value from the previous mode (e.g. a stray 2000 RPM from speed, or a pressure-in-meters value), so instead of "unavailable" the flow display shows that stale value. Copilot's suggested patch (reset cache to NAN on entering flow) is correct and is what makes eman's intended fail-safe actually hold. TAKEAWAY: this is (a) a real bug in the interim fix, and (b) independent corroboration of the architectural point above, an outside reviewer found the cache/echo workaround has cross-mode edge cases a true readback wouldn't. Copilot also flagged a stale PR description (changelog claims bench-verified 2026-07-08, PR description still says "hardware verification needed"); eman did bench-test, so the PR description just needs updating.
+
+**Better design than Copilot's reset patch (my idea, 2026-07-08): per-mode cached setpoints.** Copilot's "reset the shared cache on entering flow" patches one leak path but keeps the fragile single shared `cached_setpoint_`, so a future notification route / mode transition can reintroduce the same contamination. A SEPARATE cached setpoint per mode (speed / pressure / flow / etc.) makes cross-mode contamination structurally impossible (no shared slot for a stale value), needs no reset logic, and lines up one-to-one with the per-mode setpoint entities the component already exposes (bonus: each mode remembers its own last setpoint across switches). SCOPE NOTE: per-mode caches fix the CONTAMINATION only; orthogonal to the echo-vs-real-value concern (flow's cache is still the client echo until the real flow-setpoint register is found). Fully-robust design = per-mode caches (structure) + each cache sourced from the pump's actual value where the pump exposes it. TO CHECK LATER: does eman take the minimal reset patch, or the cleaner per-mode refactor? Consider floating per-mode as a design suggestion ("makes contamination structurally impossible + matches your per-mode entities"), his call on refactor-vs-patch.
+
+**Update (2026-07-08): now THREE cross-mode-contamination instances on the shared `cached_setpoint_`**, each patched individually: (1) `set_mode()` already clears it; (2) #44 flow path leaks a stale value (Copilot's reset-on-entry, pending); (3) #47/#43 `start(mode)` left a stale value a later `start()` resent under the wrong mode's units (eman fixed in 24c80b3 by mirroring set_mode's clear; example: 4.0m pressure resent as bogus 4.0 RPM speed; +test). So eman is now visibly playing whack-a-mole with the shared variable — strong, concrete validation of the per-mode-cache proposal (would eliminate the whole class, zero clears needed). GOOD MOMENT to float per-mode to eman with the three instances as evidence ("you've added cross-mode clears in set_mode, start(mode), and the flow path; a per-mode cache makes all three unnecessary + un-regressable + matches your per-mode entities") — reads as design, not criticism, since it's backed by his own bug trail.
+
+**RESOLVED into issue #51 (2026-07-08).** Floated per-mode caches as a review comment on PR #47; eman fully agreed and filed **issue #51** ("Refactor `ControlService::cached_setpoint_` to per-mode storage"), crediting the origin comment. He confirmed all three contamination sites, cited the existing `cached_temp_min_`/`cached_temp_max_` per-field precedent, and enumerated the full surface area himself: the field, the four setpoint setters, both mode-update paths (`update_mode_from_notification()`, `get_mode_async()`'s callback), `start()`'s setpoint-reuse logic, `get_cached_setpoint()`, and the four YAML number entities in `packages/alpha_hwr_controls.yaml`. Parked by design until #47/#48/#49/#50 merge and release, to avoid conflicting with the in-flight PRs.
+
+Two things to verify when #51 is picked up:
+
+1. **The refactor must DELETE the three now-redundant clear sites, not just add per-mode fields alongside them.** The whole point is to retire the "remember to invalidate on every transition" pattern, so the clears in `set_mode()`, in `start()` (added in #47), and in #48's flow path should come out. Once each mode has its own field, those clears guard nothing: a per-mode field can only ever hold its own mode's value. If the fields go in but the clears stay, the change is net *more* code and has not actually killed the fragility. #51's scope bullets list the additions but do not explicitly call out removing the clears, so this is the success criterion to watch.
+
+2. **#51 is contamination-scoped only. It does not resolve the flow echo-vs-real-value concern above.** Per-mode storage gives Constant Flow its own cache slot, but that slot is still fed by the client-commanded echo (the Object 86 / Sub 6 readback is the fixed 0.000694 garbage and is suppressed). So a later "setpoint caching is clean now" status must not be read as also closing the "read the pump's actual flow setpoint" question. Keep the two distinct.
+
+Bonus of per-mode fields: each mode naturally remembers its own last setpoint across mode switches. Open implementation choice (eman's call): named per-mode fields (matches the temp precedent) versus a small mode-indexed lookup (a slightly DRYer accessor).
