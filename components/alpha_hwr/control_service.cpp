@@ -455,7 +455,27 @@ bool ControlService::stop(uint8_t mode) {
     target = static_cast<ControlMode>(mode);
   }
   
-  if (!send_control_request(target, false)) {
+  // Resolve the setpoint to send, same as start(): the fused control write
+  // always carries a setpoint field, and passing none makes it fall back to
+  // the mode's default suffix (3671 for speed/pressure/flow modes), which the
+  // pump then stores -- clobbering the user's configured setpoint on every
+  // stop. #43 fixed this for start() but left the identical call in stop();
+  // mirror that fix here so stopping preserves the pump's setpoint.
+  float stop_setpoint = NAN;
+  if (mode == 255 && !std::isnan(cached_setpoint_) &&
+      (target == ControlMode::CONSTANT_PRESSURE || target == ControlMode::PROPORTIONAL_PRESSURE ||
+       target == ControlMode::CONSTANT_SPEED || target == ControlMode::CONSTANT_FLOW)) {
+    stop_setpoint = cached_setpoint_;
+    if (target == ControlMode::CONSTANT_PRESSURE || target == ControlMode::PROPORTIONAL_PRESSURE) {
+      stop_setpoint *= 9806.65f;
+    }
+  }
+
+  ESP_LOGI(TAG, "Stop setpoint: cached=%.2f, sending=%.2f (%s)",
+           cached_setpoint_, stop_setpoint,
+           std::isnan(stop_setpoint) ? "FELL BACK to default suffix -- will clobber" : "preserved");
+
+  if (!send_control_request(target, false, stop_setpoint)) {
     ESP_LOGE(TAG, "Failed to send stop command");
     return false;
   }
