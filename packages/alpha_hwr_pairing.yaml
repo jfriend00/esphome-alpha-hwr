@@ -34,9 +34,10 @@
 # Bonding keys are stored in NVS flash for automatic reconnection.
 # ==============================================================================
 
-external_components:
-  - source: github://eman/esphome-alpha-hwr@v0.7.0
-    components: [alpha_hwr, dhw_demand]
+# external_components declared by the wrapper (recirc-dev-v8.yaml) for a fully-local build:
+# external_components:
+#   - source: github://eman/esphome-alpha-hwr@v0.7.0
+#     components: [alpha_hwr, dhw_demand]
 
 esp32_ble_tracker:
   scan_parameters:
