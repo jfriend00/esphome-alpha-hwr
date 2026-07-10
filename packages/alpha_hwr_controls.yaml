@@ -37,8 +37,8 @@ switch:
       return id(pump).is_pump_enabled();
     turn_on_action:
       - lambda: |-
-          ESP_LOGI("switch", "Enabling pump (enabling remote mode first)...");
-          id(pump).enable_remote();
+          ESP_LOGI("switch", "Enabling pump (auto enable_remote DISABLED for v0.8.0 test)...");
+          // id(pump).enable_remote();  // v0.8.0 TEST: auto-enable-remote breaks constant-speed control
           id(pump).pump_start();
           // Immediate UI feedback
           id(pump_enabled_switch).publish_state(true);
