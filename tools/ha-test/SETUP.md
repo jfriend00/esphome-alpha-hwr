@@ -79,14 +79,32 @@ and pass the path as an argument instead -- see below.)
 **Deploy:**
 
 ```bat
-tools\ha-test\deploy.bat            REM uses ALPHA_HWR_TEST_HA_CONFIG
-tools\ha-test\deploy.bat X:\config  REM or pass the config root explicitly
-tools\ha-test\deploy.bat /L         REM dry run: list what WOULD change, copy nothing
+tools\ha-test\deploy.bat             REM uses ALPHA_HWR_TEST_HA_CONFIG
+tools\ha-test\deploy.bat X:\config   REM or pass the config root explicitly
+tools\ha-test\deploy.bat /L          REM dry run: list what WOULD change, copy nothing
+tools\ha-test\deploy.bat --no-reload REM deploy but do not reload afterward
 ```
 
 Running a dry run (`/L`) first is recommended. The script validates that the
 target exists and looks like a Home Assistant config (has `configuration.yaml`)
 before copying, and aborts otherwise.
+
+**Optional auto-reload.** After a successful (non-dry-run) deploy, deploy.bat
+can reload the app for you by calling `pyscript.reload` over the REST API. It
+uses a plain reload (no `global_ctx`): pyscript reloads only the files that
+*changed* (plus anything that imports them), so your other pyscript scripts --
+being unchanged -- are left alone. Enable it by setting two more environment
+variables:
+
+```bat
+setx ALPHA_HWR_TEST_HA_URL   "http://your-ha-host:8123"
+setx ALPHA_HWR_TEST_HA_TOKEN "your-long-lived-token"
+```
+
+(See Section 7 for creating and storing the token.) With both set, the dev loop
+becomes: edit -> `deploy.bat` -> the app is deployed *and* reloaded. If either
+variable is unset, or you pass `--no-reload`, the script skips the reload and
+prints a reminder to run `pyscript.reload` manually.
 
 > A cross-platform equivalent (e.g. `deploy.sh` / `deploy.py`) may be added
 > later for macOS/Linux; for now Option A covers those platforms.
