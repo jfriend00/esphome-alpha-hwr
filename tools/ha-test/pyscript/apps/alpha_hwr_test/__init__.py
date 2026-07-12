@@ -1,24 +1,29 @@
-"""ALPHA HWR HA test harness -- skeleton (proof of life).
+"""ALPHA HWR HA test harness.
 
-Minimal pyscript app that exposes a single service which logs a line when
-called. Its only job right now is to prove the plumbing end to end:
-
-  * the app loads from pyscript/apps/alpha_hwr_test/,
-  * its configuration block is delivered (controller_name echoed below),
-  * the service registers, and
-  * it can be invoked from both the HA UI and the REST API.
-
-No pump interaction yet -- this is the harness bootstrap. See SETUP.md
-(alongside this app, under tools/ha-test/) for install and test steps.
+Thin service shell. Entity access lives in entities.py; snapshot/restore in
+snapshot.py. See SETUP.md (under tools/ha-test/) for install and test steps.
 """
+
+import json
+
+# Import EVERY sibling module directly here, even ones __init__ doesn't call
+# itself (entities is used by snapshot, not by __init__). A direct import from
+# __init__ is what gives a sibling its own reloadable pyscript context
+# (apps.alpha_hwr_test.<name>). A module that is only imported transitively (by
+# a sibling) never becomes a reload target, so edits to it silently never load.
+from . import snapshot
+
 
 # --- App configuration ------------------------------------------------------
 # Delivered via the `pyscript: apps: alpha_hwr_test:` block in the HA config.
-# An app will not load at all without such a block (even an empty one), so this
-# is always present once the app is running. `.app_config` is None when the
-# block is empty; fall back to an empty dict so `.get(...)` is always safe.
+# app_config is only readable HERE, in the app's main file -- NOT in sibling
+# modules (confirmed: they get NameError on pyscript.app_config). So we read and
+# validate controller_name here and thread it into snapshot/restore.
 CFG = pyscript.app_config or {}
-CONTROLLER_NAME = CFG.get("controller_name", "<unset>")
+CONTROLLER_NAME = CFG.get("controller_name", "")
+if not CONTROLLER_NAME:
+    log.error("alpha_hwr_test: 'controller_name' is not set in the app config "
+              "(pyscript: apps: alpha_hwr_test:) -- entity resolution will fail")
 
 
 # --- Services ---------------------------------------------------------------
@@ -28,7 +33,14 @@ def alpha_hwr_test_ping():
 name: ALPHA HWR test ping
 description: Proof-of-life for the test harness. Logs a line when called.
 """
-    log.info(
-        f"alpha_hwr_test: ping -- harness skeleton alive; "
-        f"controller_name={CONTROLLER_NAME}"
-    )
+    log.info(f"alpha_hwr_test: ping -- controller_name={CONTROLLER_NAME}")
+
+
+@service
+def alpha_hwr_test_snapshot():
+    """yaml
+name: ALPHA HWR test snapshot
+description: Capture a pump-state snapshot and log it. Reads only; changes nothing.
+"""
+    snap = snapshot.get_snapshot(CONTROLLER_NAME)
+    log.info("alpha_hwr_test snapshot:\n" + json.dumps(snap, indent=2, default=str))
