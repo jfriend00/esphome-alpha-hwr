@@ -6,13 +6,24 @@ REM  deploy.bat -- copy the alpha_hwr_test pyscript app into a Home Assistant
 REM  config's pyscript/apps folder.
 REM
 REM  Usage:
-REM    deploy.bat                 Deploy using the ALPHA_HWR_TEST_HA_CONFIG env var
+REM    deploy.bat                 Deploy (env var target) then reload the app
 REM    deploy.bat <config-root>   Deploy to the given HA config root (overrides env)
 REM    deploy.bat /L              Dry run -- list what WOULD change, copy nothing
 REM    deploy.bat /L <config-root>  Dry run against an explicit config root
+REM    deploy.bat --no-reload     Deploy but do NOT reload the app afterward
+REM  (flags may be combined and given in either order before the target.)
 REM
 REM  The target must be a Home Assistant config ROOT (the folder containing
 REM  configuration.yaml). The script appends pyscript\apps\alpha_hwr_test itself.
+REM
+REM  RELOAD: after a successful (non-dry-run) deploy, the script calls
+REM  pyscript.reload with NO global_ctx -- a plain reload, which reloads every
+REM  CHANGED file (plus its dependents) and leaves unchanged contexts alone.
+REM  General (independent of our file names/structure) and surgical (a deploy
+REM  only changes our files; this is NOT the "*" force-reload-everything form).
+REM  Requires ALPHA_HWR_TEST_HA_URL (e.g. http://homeassistant.local:8123) and
+REM  ALPHA_HWR_TEST_HA_TOKEN. If either is unset, or --no-reload is given, it
+REM  just prints a manual reminder instead.
 REM
 REM  SAFETY: only ever writes inside ...\pyscript\apps\alpha_hwr_test. It copies
 REM  into that single app directory and never touches any other file under
@@ -22,10 +33,16 @@ REM ============================================================================
 set "APP_NAME=alpha_hwr_test"
 set "SRC=%~dp0pyscript\apps\%APP_NAME%"
 
-REM --- Optional dry-run flag as the first argument ---------------------------
+REM --- Optional leading flags (either order): /L | --dry-run, --no-reload ----
 set "DRYRUN="
-if /I "%~1"=="/L"        ( set "DRYRUN=1" & shift )
-if /I "%~1"=="--dry-run" ( set "DRYRUN=1" & shift )
+set "NORELOAD="
+REM two passes so the two flags may appear in either order before the target
+if /I "%~1"=="/L"          ( set "DRYRUN=1"   & shift )
+if /I "%~1"=="--dry-run"   ( set "DRYRUN=1"   & shift )
+if /I "%~1"=="--no-reload" ( set "NORELOAD=1" & shift )
+if /I "%~1"=="/L"          ( set "DRYRUN=1"   & shift )
+if /I "%~1"=="--dry-run"   ( set "DRYRUN=1"   & shift )
+if /I "%~1"=="--no-reload" ( set "NORELOAD=1" & shift )
 
 REM --- Resolve target: explicit arg overrides the env var -------------------
 if not "%~1"=="" (
@@ -108,8 +125,40 @@ if %RC% GEQ 8 (
 echo.
 if defined DRYRUN (
     echo Dry run complete -- nothing was changed.
-) else (
-    echo Done. Deployed %APP_NAME% to "%DEST%".
-    echo Reminder: run the pyscript.reload service in Home Assistant to load changes.
+    exit /b 0
 )
+
+echo Done. Deployed %APP_NAME% to "%DEST%".
+
+REM --- Reload the app in Home Assistant ------------------------------------
+REM Scoped pyscript.reload (only apps.%APP_NAME%) via REST. Needs URL + token.
+if defined NORELOAD (
+    echo Skipping reload ^(--no-reload^) -- run pyscript.reload yourself to load changes.
+    exit /b 0
+)
+
+set "CANRELOAD="
+if defined ALPHA_HWR_TEST_HA_URL if defined ALPHA_HWR_TEST_HA_TOKEN set "CANRELOAD=1"
+if not defined CANRELOAD (
+    echo Reminder: run the pyscript.reload service in Home Assistant to load changes.
+    echo   ^(Set ALPHA_HWR_TEST_HA_URL and ALPHA_HWR_TEST_HA_TOKEN to auto-reload from here.^)
+    exit /b 0
+)
+
+REM strip a trailing slash from the URL so path building is clean
+set "HA_URL=%ALPHA_HWR_TEST_HA_URL%"
+if "%HA_URL:~-1%"=="/" set "HA_URL=%HA_URL:~0,-1%"
+
+REM Plain reload (NO global_ctx): pyscript reloads every CHANGED script/app/
+REM module plus whatever depends on them, and leaves UNCHANGED contexts alone.
+REM Fully general -- needs no knowledge of our file names or import structure,
+REM so it keeps working as we add modules -- and surgical, because a deploy only
+REM changes our files (this is NOT "*", which would force-reload everything).
+echo Reloading changed pyscript files via %HA_URL% (plain reload) ...
+curl -sS --fail -o nul --connect-timeout 5 -m 30 -X POST -H "Authorization: Bearer %ALPHA_HWR_TEST_HA_TOKEN%" -H "Content-Type: application/json" -d "{}" "%HA_URL%/api/services/pyscript/reload" || (
+    echo WARNING: reload failed -- check URL/token, or reload manually.
+    exit /b 1
+)
+
+echo Reload complete.
 exit /b 0
