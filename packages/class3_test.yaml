@@ -1,0 +1,42 @@
+# --- Bench test: raw GENIbus Class 3 command buttons (throwaway, local-only) ---
+# Empirically determine ALPHA HWR Class 3 semantics -- notably whether 0x06 is
+# START ("Starts the pump", per canonical GENIbus) or eman's "Auto/disable-remote".
+# Each button sends a raw [03 C1 <id>] frame with NO local state side-effects.
+# Requires the send_class3() method in the LOCAL component build (not in stock
+# upstream), so this belongs here in the dev wrapper, not in shared recirc-core.
+# 0x09 RUN is intentionally omitted -- dictionary says "factory use only".
+# Ref: memory genibus-class3-command-reference. Merged as a package so it EXTENDS
+# (does not clobber) the button: block that recirc-core.yaml already defines.
+button:
+  - platform: template
+    name: "Test C3 START (0x06)"
+    on_press:
+      - lambda: 'id(pump).send_class3(0x06);'
+  - platform: template
+    name: "Test C3 STOP (0x05)"
+    on_press:
+      - lambda: 'id(pump).send_class3(0x05);'
+  - platform: template
+    name: "Test C3 REMOTE (0x07)"
+    on_press:
+      - lambda: 'id(pump).send_class3(0x07);'
+  - platform: template
+    name: "Test C3 LOCAL (0x08)"
+    on_press:
+      - lambda: 'id(pump).send_class3(0x08);'
+  - platform: template
+    name: "Read Remote State (Sub 7)"
+    on_press:
+      - lambda: 'id(pump).read_remote_state();'
+  - platform: template
+    name: "Read Temperature Range (Obj 91 Sub 430)"
+    on_press:
+      - lambda: 'id(pump).read_temp_range();'
+  - platform: template
+    name: "Test C10 Setpoint 1654 (start=off)"
+    on_press:
+      - lambda: 'id(pump).bench_set_speed_stopped(1654.0);'
+  - platform: template
+    name: "Test C10 Setpoint 3000 (start=off)"
+    on_press:
+      - lambda: 'id(pump).bench_set_speed_stopped(3000.0);'
