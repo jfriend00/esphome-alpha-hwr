@@ -362,6 +362,10 @@ public:
   bool send_class3(uint8_t command_id) { return control_service_.send_class3_command(command_id); }
   // Bench-test utility: write CONSTANT_SPEED setpoint with start=OFF (does not turn pump on).
   bool bench_set_speed_stopped(float rpm) { return control_service_.bench_set_speed_stopped(rpm); }
+  // Bench-test utility: read the pump's real remote/local state (Object 86 Sub 7) and log it.
+  bool read_remote_state() { return control_service_.read_remote_state_diag(); }
+  // Bench-test utility: read the pump's ACTUAL stored Temperature Range (Object 91 Sub 430) and log it.
+  bool read_temp_range() { return control_service_.read_temp_range_diag(); }
 
   // Setpoint configuration methods (for ESPHome number entities)
   void set_constant_pressure(float value_m,

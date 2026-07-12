@@ -263,6 +263,28 @@ class ControlService {
    */
   bool bench_set_speed_stopped(float rpm);
 
+  /**
+   * Diagnostic (bench-test): read the pump's real remote/local state from
+   * Object 86 SubID 7 (read-only "prioritized operation" status) and log it.
+   * SubID 6 (what get_mode_async reads) is a write-only echo that reads 0 on the
+   * ALPHA; SubID 7 carries the true control_source (2=Remote, 1=Local). Makes NO
+   * state changes. Use to confirm a Class 3 REMOTE command took effect and holds.
+   * See memory: genibus-class3-command-reference.
+   *
+   * @return true if queued (session READY), false otherwise.
+   */
+  bool read_remote_state_diag();
+
+  /**
+   * Diagnostic (bench-test): read the pump's ACTUAL stored Temperature Range
+   * (Object 91 Sub 430) on demand and log it, with NO side effects (no cache or
+   * UI update). Use to confirm whether a temperature-range write actually landed
+   * on the pump, without a mode switch or reboot confounding the result.
+   *
+   * @return true if queued (session READY), false otherwise.
+   */
+  bool read_temp_range_diag();
+
    /**
     * Get current control mode name as string.
     * 

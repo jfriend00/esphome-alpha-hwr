@@ -308,6 +308,128 @@ bool ControlService::get_mode_async(std::function<void(bool, ControlMode)> on_co
   return true;
 }
 
+// -----------------------------------------------------------------------------
+// DIAGNOSTIC (bench-test): read the pump's REAL remote/local state from
+// Object 86 SubID 7 (read-only "prioritized operation" status). SubID 6, which
+// get_mode_async() reads, is a write-only request echo that reads 0 on the
+// ALPHA; SubID 7 carries the true control_source (2=Remote/Digital, 1=Local/
+// Panel). Logs only, makes NO state changes. Use to confirm whether a Class 3
+// REMOTE command actually took effect and whether it holds over time.
+// See memory: genibus-class3-command-reference.
+// -----------------------------------------------------------------------------
+bool ControlService::read_remote_state_diag() {
+  if (session_.get_state() != core::SessionState::READY) {
+    ESP_LOGW(TAG, "[SUB7] Cannot read remote state: session not ready");
+    return false;
+  }
+
+  ESP_LOGD(TAG, "[SUB7] Reading remote state from pump (Object 86, SubID 7)...");
+
+  // Same Class 10 READ frame as get_mode_async(), but SubID 7 (was 6). The pump
+  // replies with the same OpSpec 0x0E notification (Obj 0x2F01 / Sub 0x0001),
+  // so response matching is identical; only the control_source field differs.
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x03;  // OpSpec: READ
+  apdu[2] = 0x56;  // Object 86
+  apdu[3] = 0x00;  // SubID 7 high byte
+  apdu[4] = 0x07;  // SubID 7 low byte  <-- Sub 7 (real remote state), vs 0x06 in get_mode
+
+  uint8_t packet_raw[64];
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, packet_raw);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  this->transport_.send_command(
+      packet,
+      0x0001,  // Match Sub-ID at bytes 6-7 of response frame
+      0x2F01,  // Match Obj-ID at bytes 8-9 of response frame
+      [](bool success, const uint8_t *payload, size_t payload_len) {
+        if (!success) {
+          ESP_LOGW(TAG, "[SUB7] Remote-state read failed (timeout)");
+          return;
+        }
+        if (payload_len >= 10) {
+          int offset = 0;
+          if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+            offset = 3;
+          }
+          if (payload_len >= (size_t)(offset + 7)) {
+            uint8_t control_source = payload[offset];
+            uint8_t operation_mode = payload[offset + 1];
+            uint8_t control_mode_byte = payload[offset + 2];
+            const char *cs_name = control_source == 2 ? "REMOTE/Digital"
+                                  : control_source == 1 ? "LOCAL/Panel"
+                                                        : "unknown";
+            ESP_LOGI(TAG,
+                     "[SUB7] Remote state: control_source=%d (%s), op_mode=%d, mode=%d (payload_len=%zu)",
+                     control_source, cs_name, operation_mode, control_mode_byte,
+                     payload_len);
+            return;
+          }
+        }
+        ESP_LOGW(TAG, "[SUB7] Remote-state response too short (payload_len=%zu)",
+                 payload_len);
+      },
+      5000);
+
+  return true;
+}
+
+// -----------------------------------------------------------------------------
+// DIAGNOSTIC (bench-test): read the pump's ACTUAL stored Temperature Range from
+// Object 91 Sub 430 on demand and log it, with NO side effects (does not touch
+// cached_temp_min_/max_ or the UI). Lets us confirm whether a temperature-range
+// write actually landed on the pump, without a mode switch or reboot confounding
+// the result. See dev/followups.md (temp-range write issue).
+// -----------------------------------------------------------------------------
+bool ControlService::read_temp_range_diag() {
+  if (session_.get_state() != core::SessionState::READY) {
+    ESP_LOGW(TAG, "[TEMPRANGE] Cannot read: session not ready");
+    return false;
+  }
+
+  ESP_LOGD(TAG, "[TEMPRANGE] Reading temperature range from pump (Object 91, Sub 430)...");
+
+  uint8_t apdu[5];
+  apdu[0] = 0x0A;  // Class 10
+  apdu[1] = 0x03;  // OpSpec: READ
+  apdu[2] = 91;    // Object 91
+  apdu[3] = 0x01;  // Sub 430 high byte (430 = 0x01AE)
+  apdu[4] = 0xAE;  // Sub 430 low byte
+
+  uint8_t packet_raw[64];
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 5, packet_raw);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Wildcard match (0,0), same as the existing temp-range read: the pump replies
+  // with OpSpec 0x15 whose frame layout doesn't follow the standard order.
+  this->transport_.send_command(
+      packet, 0, 0,
+      [](bool ok, const uint8_t *payload, size_t payload_len) {
+        if (!ok || payload_len < 12) {
+          ESP_LOGW(TAG, "[TEMPRANGE] Read failed (success=%d, len=%zu)", ok, payload_len);
+          return;
+        }
+        int offset = 0;
+        if (payload_len >= 3 && payload[0] == 0x00 && payload[1] == 0x00) {
+          offset = 3;
+        }
+        if (payload_len >= (size_t)(offset + 9)) {
+          bool autoadapt = payload[offset] != 0;
+          float min_t = protocol::decode_float_be(&payload[offset + 1]);
+          float max_t = protocol::decode_float_be(&payload[offset + 5]);
+          ESP_LOGI(TAG,
+                   "[TEMPRANGE] Pump-stored range: min=%.1f, max=%.1f, autoadapt=%s (read-only, no cache update)",
+                   min_t, max_t, autoadapt ? "ON" : "OFF");
+        } else {
+          ESP_LOGW(TAG, "[TEMPRANGE] Response too short (len=%zu)", payload_len);
+        }
+      },
+      5000);
+
+  return true;
+}
+
 bool ControlService::start(uint8_t mode, float speed_rpm) {
   // Verify session is authenticated
   if (session_.get_state() != core::SessionState::READY) {
