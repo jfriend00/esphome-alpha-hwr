@@ -38,6 +38,10 @@ SNAPSHOT_PER_MODE = {
 # Logical name of the mode selector (used to read/set the active pump mode).
 MODE_ENTITY = "select,pump_control_mode"
 
+# Read-only pump-ready gate (v0.10.1+): "on" means OK to read/write and reads
+# are valid; ANY other value (off / unavailable / unknown) means not OK.
+PUMP_READY = "binary_sensor,pump_ready"
+
 
 # --- Resolution + access ----------------------------------------------------
 # controller_name is threaded in from __init__ (the only place pyscript exposes
@@ -88,3 +92,62 @@ def set_value(ref, value, controller_name):
                     f"'{domain}' for {entity_id}")
         return False
     return True
+
+
+# --- Readiness / waits ------------------------------------------------------
+
+def is_valid_float(ref, controller_name):
+    """True if the ref's entity currently reads a parseable float value."""
+    entity_id = resolve(ref, controller_name)
+    if not state.exist(entity_id):
+        return False
+    value = state.get(entity_id)
+    if value in (None, "unknown", "unavailable"):
+        return False
+    try:
+        float(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def wait_until_valid_floats(refs, controller_name, timeout=15.0, poll=0.25):
+    """Poll until every ref reads a valid float, or until timeout.
+
+    Returns the list of refs still NOT valid at timeout (empty list = all became
+    valid). Uses task.sleep, which yields cooperatively, so it does not block
+    Home Assistant -- the caller just takes up to `timeout` seconds.
+    """
+    deadline = dt_now().timestamp() + timeout
+    pending = list(refs)
+    while pending:
+        pending = [r for r in pending if not is_valid_float(r, controller_name)]
+        if not pending:
+            return []
+        if dt_now().timestamp() >= deadline:
+            return pending
+        task.sleep(poll)
+    return []
+
+
+def is_ready(controller_name):
+    """True only if the pump-ready gate reads exactly 'on'."""
+    entity_id = resolve(PUMP_READY, controller_name)
+    if not state.exist(entity_id):
+        return False
+    return state.get(entity_id) == "on"
+
+
+def wait_until_ready(controller_name, timeout=30.0, poll=0.25):
+    """Poll until pump_ready is 'on', or timeout. Returns True if it became ready.
+
+    Handles the already-ready case naturally (the first check returns at once).
+    """
+    deadline = dt_now().timestamp() + timeout
+    while True:
+        if is_ready(controller_name):
+            return True
+        if dt_now().timestamp() >= deadline:
+            log.warning(f"wait_until_ready: pump_ready not 'on' within {timeout}s")
+            return False
+        task.sleep(poll)
