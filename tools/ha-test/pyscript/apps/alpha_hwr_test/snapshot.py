@@ -19,10 +19,32 @@ from . import entities
 # #2: how long to wait for a mode's setpoints to become readable after a mode
 #     change (component has a built-in ~5s settle before it reads them).
 READINESS_TIMEOUT = 15.0
-# #1: PROVISIONAL. The component caches writes, so an immediate read-back is our
-#     own value, not the pump's. We wait once for the pump to report the real
-#     value before verifying. Real timing is TBD from the component author.
-VERIFY_SETTLE = 15.0
+# #1 RESOLVED (eman, 2026-07-14): a setpoint write updates the C++ cache
+#    optimistically at ~0.4s, then a TRUE read-back from the pump lands at ~1.6s
+#    (catching clamp/reject), and the HA number entities are template sensors
+#    polled every 5.0s -- so HA only sees the real value at ~1.6 + 5.0 = ~7s.
+#    Reading sooner risks the optimistic cached value (false pass). 8s = 7 + margin.
+VERIFY_SETTLE = 8.0
+# After an actual mode CHANGE the component runs a post-change sync (reads the
+# pump's setpoints for the new mode) taking a few seconds; writing our setpoints
+# before it finishes lets the sync CLOBBER them (observed: loaded profile put the
+# mode back but left the setpoint at the pump's live value). Wait this out after
+# a real mode change. eman: set_mode schedules its read-back ~5.0s after the
+# switch, so a setpoint written sooner gets clobbered -- wait past it. 8s margin.
+# NOTE: pump_ready CANNOT gate this -- eman confirms ready_status stays ON through
+# a mode change BY DESIGN (is_cache_valid checks core state, not mode setpoints;
+# set_mode doesn't invalidate the core cache). So this fixed delay is THE approach.
+# And a "poll until valid float" alone is insufficient: a CACHED setpoint reads
+# valid immediately, so the poll returns too soon (that was the bug). See ISSUE #2.
+MODE_SETTLE = 8.0
+# PESSIMISTIC settle after EVERY ordinary write, before the next command. The
+# component doesn't cache a write until its pump read-back lands (~1.6s), and
+# some commands are FUSED (the on/off command re-sends the cached setpoint), so
+# firing the next command sooner can carry a STALE value and clobber ours
+# (OPEN_ISSUES #6). Until the component exposes readiness -- or we build a proper
+# per-command coupling model -- we serialize writes with a generous pause.
+# Deliberately long/safe for now; tune down once the interface is cleaner.
+WRITE_SETTLE = 5.0
 
 # Temperature range refs need safe-order handling on restore (pump rejects any
 # intermediate state where min > max). See restore_mode_params (TODO).
@@ -99,7 +121,18 @@ def restore_snapshot(snap, controller_name):
         return result
 
     # 1. Return to the original mode first (recorded so verify checks it too).
-    write_restore(entities.MODE_ENTITY, mode, controller_name, result)
+    #    On a real mode CHANGE the component runs a post-change sync that would
+    #    clobber setpoints written too soon, so wait out a fixed settle first.
+    current_mode = entities.get_value(entities.MODE_ENTITY, controller_name)
+    mode_changed = current_mode != mode
+    log.info(f"restore: mode current='{current_mode}' target='{mode}' changed={mode_changed}")
+    wrote_mode = write_restore(entities.MODE_ENTITY, mode, controller_name, result)
+    if mode_changed:
+        # Mode change needs the component's ~5s sync -- longer than an ordinary write.
+        log.info(f"restore: settling {MODE_SETTLE}s after mode change")
+        task.sleep(MODE_SETTLE)
+    elif wrote_mode:
+        task.sleep(WRITE_SETTLE)
 
     # 2. Wait for this mode's NUMBER setpoints (that we have values for) to
     #    become readable -- the component needs time to sync after a mode change.
@@ -113,17 +146,19 @@ def restore_snapshot(snap, controller_name):
         result.errors.append({"ref": ref, "reason":
             f"never became a valid float within {READINESS_TIMEOUT}s -- not written"})
 
-    # 3. Restore this mode's params (skipping any that timed out at readiness).
+    # 3. Restore this mode's params, settling after EACH write (writes race /
+    #    fuse otherwise -- OPEN_ISSUES #6).
     restore_mode_params(mode, mode_params, controller_name, not_ready, result)
 
-    # 4. Restore the remaining global writables (mode selector already done).
+    # 4. Restore the remaining global writables, settling after EACH write.
     for ref, value in snap.get("global", {}).items():
         if ref == entities.MODE_ENTITY:
             continue
-        write_restore(ref, value, controller_name, result)
+        if write_restore(ref, value, controller_name, result):
+            task.sleep(WRITE_SETTLE)
 
-    # 5. Let the pump report back the real values, then verify.
-    #    VERIFY_SETTLE is provisional -- see OPEN_ISSUES.md #1.
+    # 5. Let the pump report back the real values, then verify (HA poll latency).
+    #    See OPEN_ISSUES.md #1.
     task.sleep(VERIFY_SETTLE)
     verify_restored(snap, controller_name, result)
 
@@ -141,23 +176,29 @@ def restore_mode_params(mode, mode_params, controller_name, skip, result):
     for ref in entities.SNAPSHOT_PER_MODE.get(mode, []):
         if ref in skip:
             continue
-        write_restore(ref, mode_params.get(ref), controller_name, result)
+        target_val = mode_params.get(ref)
+        pre = entities.get_value(ref, controller_name)
+        log.info(f"restore: '{ref}' reads '{pre}' before write, writing '{target_val}'")
+        if write_restore(ref, target_val, controller_name, result):
+            task.sleep(WRITE_SETTLE)
 
 
 def write_restore(ref, value, controller_name, result):
-    """Write one restore value, recording the outcome in the RestoreResult."""
+    """Write one restore value, recording the outcome. Returns True if a write
+    was actually issued (so the caller can settle before the next command)."""
     if not has_value(value):
         result.skipped.append(ref)
-        return
+        return False
     domain = entities.domain_of(ref)
     if domain not in ("switch", "number", "select"):
         result.skipped.append(ref)
         log.info(f"restore: skipping read-only '{ref}' (domain '{domain}')")
-        return
+        return False
     if entities.set_value(ref, value, controller_name):
         result.restored.append(ref)
-    else:
-        result.errors.append({"ref": ref, "reason": "set_value failed (entity missing?)"})
+        return True
+    result.errors.append({"ref": ref, "reason": "set_value failed (entity missing?)"})
+    return False
 
 
 def verify_restored(snap, controller_name, result):

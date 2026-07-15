@@ -12,6 +12,9 @@ the name is read+validated there and threaded through:
     "select,pump_control_mode"  ->  select.<controller_name>_pump_control_mode
 """
 
+import time  # for monotonic timeout math (dt_now is NOT available in a sibling module)
+
+
 # --- Snapshot registry ------------------------------------------------------
 # Only WRITABLE entities are meant to live here (snapshot saves/restores them).
 # Read-only sensors used for later verification belong elsewhere.
@@ -118,13 +121,13 @@ def wait_until_valid_floats(refs, controller_name, timeout=15.0, poll=0.25):
     valid). Uses task.sleep, which yields cooperatively, so it does not block
     Home Assistant -- the caller just takes up to `timeout` seconds.
     """
-    deadline = dt_now().timestamp() + timeout
+    deadline = time.monotonic() + timeout
     pending = list(refs)
     while pending:
         pending = [r for r in pending if not is_valid_float(r, controller_name)]
         if not pending:
             return []
-        if dt_now().timestamp() >= deadline:
+        if time.monotonic() >= deadline:
             return pending
         task.sleep(poll)
     return []
@@ -143,11 +146,11 @@ def wait_until_ready(controller_name, timeout=30.0, poll=0.25):
 
     Handles the already-ready case naturally (the first check returns at once).
     """
-    deadline = dt_now().timestamp() + timeout
+    deadline = time.monotonic() + timeout
     while True:
         if is_ready(controller_name):
             return True
-        if dt_now().timestamp() >= deadline:
+        if time.monotonic() >= deadline:
             log.warning(f"wait_until_ready: pump_ready not 'on' within {timeout}s")
             return False
         task.sleep(poll)
