@@ -10,6 +10,7 @@ import json
 from . import snapshot
 from . import suspend
 from . import run
+from . import profiles
 
 
 # --- App configuration ------------------------------------------------------
@@ -26,6 +27,12 @@ if not CONTROLLER_NAME:
 # Entities that gate the user's pump automation: turned off during a test run
 # and restored to their captured state afterward. Absent/empty = suspend none.
 SUSPEND_ENTITIES = CFG.get("suspend_entities", []) or []
+
+# Where named profiles (saved snapshots) are stored. Default is inside the app
+# dir (gitignored; deploy.bat excludes it via /XD profiles). Override to put it
+# outside the app tree (e.g. if your deploy process mirrors/deletes).
+PROFILES_DIR = CFG.get("profiles_dir", "/config/pyscript/apps/alpha_hwr_test/profiles")
+PROFILE_NAME_ENTITY = "input_text.alpha_hwr_test_profile_name"
 
 
 # --- Module state -----------------------------------------------------------
@@ -107,3 +114,40 @@ description: Guarded run -- ready-gate, suspend automations, snapshot, restore, 
     result = run.run_guarded(CONTROLLER_NAME, SUSPEND_ENTITIES)
     log.info("alpha_hwr_test run: result =\n"
              + json.dumps(result.to_dict(), indent=2, default=str))
+
+
+def read_profile_name():
+    """Read the profile name from the input_text helper ('' if missing)."""
+    if not state.exist(PROFILE_NAME_ENTITY):
+        return ""
+    return state.get(PROFILE_NAME_ENTITY)
+
+
+@service
+def alpha_hwr_test_save_profile():
+    """yaml
+name: ALPHA HWR test save profile
+description: Save current pump settings as a named profile (name from input_text.alpha_hwr_test_profile_name).
+"""
+    result = profiles.save_profile(PROFILES_DIR, read_profile_name(), CONTROLLER_NAME)
+    log.info("alpha_hwr_test save_profile:\n" + json.dumps(result, indent=2, default=str))
+
+
+@service
+def alpha_hwr_test_load_profile():
+    """yaml
+name: ALPHA HWR test load profile
+description: Load a named profile and apply it to the pump (guard + restore). Writes to the pump.
+"""
+    result = profiles.load_profile(PROFILES_DIR, read_profile_name(), CONTROLLER_NAME)
+    log.info("alpha_hwr_test load_profile:\n" + json.dumps(result, indent=2, default=str))
+
+
+@service
+def alpha_hwr_test_list_profiles():
+    """yaml
+name: ALPHA HWR test list profiles
+description: Log the names of saved profiles.
+"""
+    names = profiles.list_profiles(PROFILES_DIR)
+    log.info("alpha_hwr_test profiles: " + json.dumps(names, default=str))

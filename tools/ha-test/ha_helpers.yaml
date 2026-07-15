@@ -1,0 +1,23 @@
+# Home Assistant helper(s) for the ALPHA HWR test harness dashboard.
+#
+# The Save/Load Profile buttons read the profile name from
+# input_text.alpha_hwr_test_profile_name. Create that helper one of two ways:
+#
+# 1) UI (easiest): Settings > Devices & Services > Helpers > Create Helper >
+#    Text. Set the entity id to input_text.alpha_hwr_test_profile_name.
+#
+# 2) YAML package: include this file from configuration.yaml, e.g.
+#      homeassistant:
+#        packages:
+#          alpha_hwr_test_helpers: !include <path-to>/ha_helpers.yaml
+#    then reload "Input Text" (Developer Tools > YAML) or restart HA.
+
+input_text:
+  alpha_hwr_test_profile_name:
+    name: ALPHA HWR test profile name
+    min: 1
+    max: 64
+    # Client-side (UI) validation only -- must match the server-side safe_name()
+    # whitelist in profiles.py. Letters, digits, dash, underscore; no spaces.
+    # (A service/API call bypasses this; safe_name() is the real guard.)
+    pattern: "[A-Za-z0-9_-]+"

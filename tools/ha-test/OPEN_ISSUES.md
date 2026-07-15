@@ -100,3 +100,27 @@ Open questions:
 **Needed:** author's view on whether the component could expose a "force refresh
 from pump" (bypass cache, no full reboot); and a harness decision on when to use
 reboot-based verification vs. cache read-back.
+
+---
+
+## 5. Cross-pump-model profile safety
+
+**Status:** OPEN -- noted, NOT implemented
+**Affects:** profiles (save/load)
+
+A profile is a saved snapshot of pump settings. Loading a profile saved on one
+pump **model** onto a different model could apply wrong or unsafe settings. eman
+targets multiple models; he and John currently share the same pump and have no
+others to test, so this is deferred.
+
+Idea: gate `load_profile` on pump identity from the diagnostic sensors.
+- **Product Name + Product Version** -- likely the right grain (model / family).
+- **Serial Number** -- per-unit; too strict (would block sharing a profile
+  between two *identical* pumps, which we want to allow).
+- **Software Version** (firmware) -- probably a soft WARN, not a hard block.
+- **Hardware Version** -- finer than needed.
+
+**Needed:** decide (with eman) the comparison field(s). Cheap forward step: save
+those identity fields into each profile's JSON now (metadata) so a future gate
+has the data for old profiles too. (Requires the diagnostic entities' leaf
+names.) A code comment marks the spot in `profiles.py`.

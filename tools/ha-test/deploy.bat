@@ -106,12 +106,14 @@ REM NOTE: purge is temporarily DISABLED pending review (John, 2026-07-11).
 REM   /MIR = /E + /PURGE  (mirror; deletes dest files not present in source)
 REM   /E   = copy subdirs incl. empty; does NOT delete anything in dest
 REM The commented /MIR lines are the originals -- re-enable to restore purge.
+REM /XD profiles excludes the runtime "profiles" folder from copy/purge so saved
+REM profiles are never touched by a deploy (even if /MIR is ever re-enabled).
 if defined DRYRUN (
-    REM robocopy "%SRC%" "%DEST%" /MIR /L
-    robocopy "%SRC%" "%DEST%" /E /L
+    REM robocopy "%SRC%" "%DEST%" /MIR /XD profiles /L
+    robocopy "%SRC%" "%DEST%" /E /XD profiles /L
 ) else (
-    REM robocopy "%SRC%" "%DEST%" /MIR /NFL /NDL /NJH /NJS /NP
-    robocopy "%SRC%" "%DEST%" /E /NFL /NDL /NJH /NJS /NP
+    REM robocopy "%SRC%" "%DEST%" /MIR /XD profiles /NFL /NDL /NJH /NJS /NP
+    robocopy "%SRC%" "%DEST%" /E /XD profiles /NFL /NDL /NJH /NJS /NP
 )
 set "RC=%ERRORLEVEL%"
 

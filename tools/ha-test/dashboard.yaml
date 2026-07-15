@@ -1,0 +1,94 @@
+# Reference Lovelace dashboard for the ALPHA HWR test harness.
+#
+# Easiest use: Settings > Dashboards > Add Dashboard > "New dashboard from
+# scratch" (give it a title + icon). Open it, click the pencil (Edit), then the
+# three-dots menu (top right) > "Raw configuration editor". Select-all, delete,
+# and paste THIS WHOLE FILE. Save.
+#
+# Requires the input_text helper (see ha_helpers.yaml). Every button calls one of
+# the pyscript.alpha_hwr_test_* services; the results are written to the HA log
+# (Settings > System > Logs). The Save/Load Profile buttons act on the name typed
+# into the text field at the top.
+
+views:
+  - title: ALPHA HWR Test
+    path: alpha-hwr-test
+    icon: mdi:water-pump
+    cards:
+      - type: entities
+        title: Profile
+        entities:
+          - entity: input_text.alpha_hwr_test_profile_name
+            name: Profile name
+
+      - type: grid
+        title: Profiles
+        columns: 3
+        square: false
+        cards:
+          - type: button
+            name: Save Profile
+            icon: mdi:content-save
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_save_profile
+          - type: button
+            name: Load Profile
+            icon: mdi:download
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_load_profile
+          - type: button
+            name: List Profiles
+            icon: mdi:format-list-bulleted
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_list_profiles
+
+      - type: grid
+        title: Snapshot / Restore
+        columns: 3
+        square: false
+        cards:
+          - type: button
+            name: Snapshot
+            icon: mdi:camera
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_snapshot
+          - type: button
+            name: Restore
+            icon: mdi:restore
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_restore
+          - type: button
+            name: Run (guarded)
+            icon: mdi:play-box-outline
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_run
+
+      - type: grid
+        title: Automation / Diagnostics
+        columns: 3
+        square: false
+        cards:
+          - type: button
+            name: Suspend Automation
+            icon: mdi:pause-circle
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_suspend
+          - type: button
+            name: Resume Automation
+            icon: mdi:play-circle
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_resume
+          - type: button
+            name: Ping
+            icon: mdi:bell-ring
+            tap_action:
+              action: call-service
+              service: pyscript.alpha_hwr_test_ping
