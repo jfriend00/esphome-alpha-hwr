@@ -1,14 +1,14 @@
-
+This is a design discussion rather than a bug report, and it runs a bit long. It comes in three parts: the problem, why it is structural rather than a set of bugs, and a proposed direction. One thing up front: this is not a request to tune a particular delay. Every time we pin down one timing value, the next client just hits the next one.
 
 # The Problem
 
 ## Background
 
-The impetus for writing this document comes out things I've learned when building the test harness discussed in #63. That tool saves and restores the pump's state through the Home Assistant entities and the idea is to set and verify various values as tests: it writes a mode, the setpoints for that mode, and the on/off state, and then it verifies that each value actually took. Verifying writes is a core part of its job, not an extra.
+The impetus for writing this document comes out of things I've learned when building the test harness discussed in #63. That tool saves and restores the pump's state through the Home Assistant entities and the idea is to set and verify various values as tests: it writes a mode, the setpoints for that mode, and the on/off state, and then it verifies that each value actually took. Verifying writes is a core part of its job, not an extra.
 
-The test tool has been a timing nightmare.  There are multiple complications involved in writing to different types of entities. When trying to write sequences of settings that include a mode change and/or a pump enabled changed, I would regularly get overwrites.  In one case, the pump speed was previously set to 2000, I'd set it to 1650, then turn the pump off and the speed would go back to 2000.  This wasn't an overwrite to a default, it was a collision of multiple commands all containing the speed being in flight at the same time and the cache being only partially optimistic so an older cache value could get into the pump on/off fused command overwriting a value that had already been sent to the pump.  
+The test tool has been a timing nightmare. There are multiple complications involved in writing to different types of entities. When trying to write sequences of settings that include a mode change and/or a pump enabled change, I would regularly get overwrites. In one case, the pump speed had been set to 2000; I set it to 1650, then turned the pump off, and the speed jumped back to 2000. This was not an overwrite to a default. It was a collision: several commands, each carrying the speed, were in flight at once, and because the cache was only partially optimistic, an older cached speed was folded into the fused on/off command and overwrote a value that had already reached the pump.
 
-After studying the component logs and realizing what was going on and reading your timing advice comments in #63, I realized there was a structural issue here that deserves some design discussion at a higher level than one particular overwrite or one particular timing issue.  In a nutshell, there has to be a better way.  Let's define the problem.
+After studying the component logs, working out what was going on, and reading your timing advice in #63, I concluded there is a structural issue here that deserves design discussion at a higher level than any one overwrite or timing value. In a nutshell, there has to be a better way. Let's define the problem.
 
 ## What a programmatic client has to do, and where it breaks
 
@@ -26,7 +26,7 @@ The timing required to do either of these correctly is real and specific. From y
 - After writing a setpoint, it must wait for the 1.6s readback plus the 5s poll, so roughly 7 seconds.
 - `ready_status` / `pump_ready` does not help here. It does not toggle during a mode change or a setpoint write, because `is_cache_valid()` intentionally does not track the per-mode setpoints, and `set_mode` does not invalidate the core cache.
 
-None of this is documented anywhere outside that issue thread, and there is no way a client could derive it from the interface itself. To get the harness working at all, I inserted fixed multi-second sleeps between every operation: set a value, wait 7 seconds, set the next, wait again. That sort of works with very cautious delays built in between every command, but is this really how you're supposed to program against the component?  Is this something we want to document and advise people to do?
+None of this is documented anywhere outside that issue thread, and there is no way a client could derive it from the interface itself. To get the harness working at all, I inserted fixed multi-second sleeps between every operation: set a value, wait 7 seconds, set the next, wait again. That sort of works with very cautious delays built in between every command, but is this really how you're supposed to program against the component? Is this something we want to document and advise people to do?
 
 ## Who this affects
 
@@ -34,7 +34,7 @@ The harness is one client, but it is not a special case. Anyone controlling the 
 
 # Why this is structural, not a set of bugs
 
-As I said earlier, I have already run into several of these overwrites just building the harness. Set a mode, set a setpoint, turn the pump off a moment later, and the off command carries a mode and setpoint that were still settling, so the pump ends up holding a value I never sent. I can work around each instance by spacing operations out with long waits, but that is exactly the burden I am trying to describe. To drive the pump programmatically today, a client has to understand the internal command structure and time around it, and even then it is fragile.
+As I said, these overwrites were not one-offs; I hit them repeatedly while building the harness. I can work around each one by spacing operations out with long waits, but that is exactly the burden I am describing: to drive the pump programmatically today, a client has to understand the internal command structure and time around it, and even then it is fragile.
 
 We also already know how much trouble the fused writes cause, because the record shows it. A number of the control issues you have fixed are the same problem surfacing in different places: the enable path sending a hardcoded setpoint instead of the stored one, a setpoint write turning the pump on and desyncing the on/off state, a mode change starting the pump, the pre-sync window overwriting a setpoint with the default. Each of those was a correct fix. The reason they keep appearing is that they are not really separate bugs. They are one architectural issue, the fused command reconstructed from an uncertain cache, showing up wherever a client touches more than one thing at a time.
 
@@ -83,8 +83,6 @@ Class 3 START and STOP were tracked separately after #43 and not adopted at the 
 
 ## Service calls for the write interface
 
-### Service calls for the write interface
-
 The guiding rule is simple: each service call carries exactly the fields the pump fuses into a single write, no more and no less. Where the pump packs several values into one write, the service takes them together. Where it uses separate writes, the services stay separate.
 
 There are a few of these fused writes. The Class 10 control command fuses the mode, the setpoint for that mode, and the on/off state, so the service that changes mode takes all three together, and the component sends exactly that with nothing reconstructed from a cache. The temperature range configuration is a separate fused write of its own, carrying the minimum, the maximum, and autoadapt together, so it becomes one service that takes those three. The cycle time configuration is another, carrying the on and off minutes together, so it becomes one service that takes those two. These configuration writes are their own objects, distinct from the mode and on/off control command, so their services carry only their own fields.
@@ -93,7 +91,7 @@ The individual entities do not go away. They remain for reading current state an
 
 ## Results come back on an event
 
-The read-back problem is solved by having the component report the result of each write on an event, instead of the client polling an entity and guessing. When a write settles, the component fires an event carrying what was written, the value the pump actually holds now, and whether it was accepted, clamped, or rejected, with a reason where there is one. The event is self-identifying, so a client can match a result to the write that produced it. Because the component is the only party that knows when the pump readback has landed, it decides when to send the event. The client times nothing. It makes the write and, if it cares about the result, waits for the event.  The event carries the exact same set of parameters the service function did.  If the service function had three parameters, the even contains all three with their settled values and status.
+The read-back problem is solved by having the component report the result of each write on an event, instead of the client polling an entity and guessing. When a write settles, the component fires an event carrying what was written, the value the pump actually holds now, and whether it was accepted, clamped, or rejected, with a reason where there is one. The event is self-identifying, so a client can match a result to the write that produced it. Because the component is the only party that knows when the pump readback has landed, it decides when to send the event. The client times nothing. It makes the write and, if it cares about the result, waits for the event. The event carries the exact same set of parameters the service function did. If the service function had three parameters, the event contains all three with their settled values and status.
 
 This is the same mechanism you already proposed for the backup and restore work in #79, where the component reports results back over an event rather than via an entity. This issue is asking for that same pattern applied to ordinary writes. An event is also a much better fit than an entity for reporting a specific error, such as a rejected temperature range, which entities communicate poorly.
 
@@ -107,7 +105,7 @@ The whole programmatic write interface, as service calls:
 
 ```
 set_pump_enabled(enabled, op_id=None)                    # on/off only, Class 3, nothing else touched
-set_mode(mode, setpoint, enabled, op_id=None)            # mode, setpoint, and on/off state  as one Class 10 command
+set_mode(mode, setpoint, enabled, op_id=None)            # mode, setpoint, and on/off state as one Class 10 command
 set_temperature_range(min, max, autoadapt, op_id=None)   # its own config object, written on its own
 set_cycle_times(on_minutes, off_minutes, op_id=None)     # its own config object, written on its own
 ```
@@ -119,12 +117,13 @@ When a write settles, the component fires one event:
 ```
 event: esphome.alpha_hwr_write_settled
 data:
-  op_id:     "restore-speed-1"     # the id the caller passed, if any
-  command:   "set_mode"            # which write this was
-  requested: 2500                  # what the client asked for
-  confirmed: 2500                  # what the pump actually holds now, or the clamped value
-  status:    "accepted"            # accepted, clamped, rejected, timeout, or superseded
-  detail:    ""                    # a short reason when relevant
+  op_id:    "restore-speed-1"     # the id the caller passed, if any
+  command:  "set_mode"            # which service this was
+  mode:     "constant_speed"      # settled value
+  setpoint: 2500                  # settled value, or the clamped value
+  enabled:  true                  # settled value
+  status:   "accepted"            # accepted, clamped, rejected, timeout, or superseded
+  detail:   ""                    # a short reason when relevant
 ```
 
 A serial client, such as the harness, then does the simplest possible thing: make the call, wait for the matching event, look at the result, move on. In pyscript that is:
@@ -138,10 +137,10 @@ result = task.wait_until(
     timeout=15,
 )
 if result["status"] == "clamped":
-    log.warning(f"speed clamped to {result['confirmed']}")
+    log.warning(f"speed clamped to {result['setpoint']}")
 ```
 
-There are no fixed delays in that code. The component decides when the write is settled and says so, and the client waits for it.  This removes all timing coupling between the client and the component for reading back values or knowing when things are settled or if they were successful. The component controls it all and the client just reacts to the events that the component sends.
+There are no fixed delays in that code. The component decides when the write is settled and says so, and the client waits for it. This removes all timing coupling between the client and the component for reading back values or knowing when things are settled or if they were successful. The component controls it all and the client just reacts to the events that the component sends.
 
 ## How this meets the goals
 
@@ -160,9 +159,7 @@ None of this is new capability. The services wrap methods the component already 
 
 The part that takes care is the strict event contract, making sure every write path ends in exactly one event across all of its outcomes. That is bounded by the same fact that makes the whole change practical: the write surface is small, so there are only a handful of paths to get right, and the logic that decides which result a write reached is the kind that can be unit tested on the host, as the existing control tests already are.
 
-# Closing
-
-## This is your call
+# This is your call
 
 There is no urgency here. I will say that I have paused work on the test harness while this direction settles. I have spent more time understanding and working around timing issues than building the tool, and I would rather build the harness against whatever interface comes out of this than keep layering workarounds on top of the current one.
 
