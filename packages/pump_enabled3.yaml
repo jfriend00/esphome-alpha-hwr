@@ -1,0 +1,44 @@
+# ==============================================================================
+# pump_enabled3 -- experimental Class 3 on/off switch (parallel to Pump Enabled)
+# ==============================================================================
+# Sends bare GENIbus Class 3 START (0x06) / STOP (0x05) instead of the fused
+# Class 10 command the stock "Pump Enabled" switch uses. Class 3 carries no
+# setpoint, so it cannot re-assert a stale cached setpoint -- structurally, not
+# by luck. Hardware-proven on the ALPHA (2026-07-06): 0x06/0x05 toggle the motor
+# at the pump's stored setpoint. See memory: genibus-class3-command-reference.
+#
+# Requires send_class3() in the LOCAL component build (branch v11.0-class3, not
+# stock upstream). Runs ALONGSIDE the existing Pump Enabled switch, which is left
+# untouched -- switch your automation between them by changing one entity id, and
+# revert instantly with no reflash.
+#
+# Both switches read is_pump_enabled() for state, so they always agree with the
+# pump and with each other (toggling one moves the other once the readback lands).
+#
+# Honest-instrument wiring: NO optimistic publish_state(). The switch reflects the
+# pump's ACTUAL op_mode via the get_mode readback that send_class3_command() does
+# ~500ms after each command. So a Class 3 command that doesn't take shows the
+# switch failing to latch, instead of a false ON. (The definitive "did it work"
+# signal is still the log op_mode flip + the Motor Speed / Flow Rate sensors.)
+#
+# Merged as a package so its switch: block EXTENDS, not clobbers, the existing one.
+#
+# Wire into a build wrapper with, e.g.:
+#   packages:
+#     alpha_hwr_pump_enabled3: !include <path>/packages/pump_enabled3.yaml
+switch:
+  - platform: template
+    name: "Pump Enabled3"
+    id: pump_enabled3
+    icon: "mdi:pump"
+    # State follows the pump's real enabled flag (same source as the stock switch).
+    lambda: |-
+      return id(pump).is_pump_enabled();
+    turn_on_action:
+      - lambda: |-
+          ESP_LOGI("switch", "pump_enabled3: sending Class 3 START (0x06)");
+          id(pump).send_class3(0x06);
+    turn_off_action:
+      - lambda: |-
+          ESP_LOGI("switch", "pump_enabled3: sending Class 3 STOP (0x05)");
+          id(pump).send_class3(0x05);

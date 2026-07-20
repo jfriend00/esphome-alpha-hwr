@@ -405,10 +405,17 @@ public:
     if (!check_ready("enable_remote")) return false;
     return control_service_.enable_remote_mode(); 
   }
-  bool disable_remote() { 
+  bool disable_remote() {
     if (!check_ready("disable_remote")) return false;
-    return control_service_.disable_remote_mode(); 
+    return control_service_.disable_remote_mode();
   }
+
+  // Class 3 bare on/off (decoupled from setpoint), for the experimental
+  // pump_enabled3 switch. No check_ready() gate on purpose: send_class3_command()
+  // has its own session-READY guard, and Class 3 START/STOP carry no setpoint so
+  // they don't depend on the cache that check_ready() waits for. This lets us test
+  // whether Class 3 on/off works before the full readiness gate is satisfied.
+  bool send_class3(uint8_t command_id) { return control_service_.send_class3_command(command_id); }
 
   // Setpoint configuration methods (for ESPHome number entities)
   void set_constant_pressure(float value_m,

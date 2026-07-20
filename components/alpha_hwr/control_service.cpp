@@ -782,6 +782,40 @@ bool ControlService::send_control_request(ControlMode mode, bool start_pump, flo
   return true;
 }
 
+bool ControlService::send_class3_command(uint8_t command_id) {
+  // Verify session is authenticated
+  if (session_.get_state() != core::SessionState::READY) {
+    ESP_LOGW(TAG, "Cannot send Class 3 command 0x%02X: session not ready", command_id);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Sending Class 3 SET command 0x%02X...", command_id);
+
+  // Class 3 SET: 03 81 <command_id>. Byte 0x81 = (SET=2)<<6 | len 1 -> EXECUTE.
+  // NOT 0xC1 = (INFO=3)<<6, which only queries the item and never runs it.
+  const uint8_t apdu[3] = {0x03, 0x81, command_id};
+
+  uint8_t packet_raw[32];
+  size_t packet_len = protocol::build_geni_packet(0xE7, 0xF8, apdu, 3, packet_raw);
+  std::vector<uint8_t> packet(packet_raw, packet_raw + packet_len);
+
+  // Send command via transport queue
+  this->transport_.send_command(packet);
+
+  ESP_LOGI(TAG, "Class 3 command 0x%02X queued", command_id);
+
+  // A Class 3 command does NOT trigger an unsolicited control-mode notification,
+  // so read back the live state ~500ms later to keep pump_enabled_ (and the
+  // Pump Enabled switch) in sync with the pump's actual op_mode.
+  if (schedule_callback_) {
+    schedule_callback_([this]() {
+      this->get_mode_async([](bool, ControlMode) {});
+    }, 500);
+  }
+
+  return true;
+}
+
 bool ControlService::send_set_mode_request(ControlMode mode) {
   // Change the control mode WITHOUT touching the mode's stored setpoint.
   //

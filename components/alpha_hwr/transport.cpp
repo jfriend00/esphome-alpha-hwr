@@ -230,12 +230,12 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
        reassembly_buffer_.size() >= expected_packet_length_) {
      ESP_LOGV(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
 
-     // Log first 12 bytes for debugging packet structure
-     if (reassembly_buffer_.size() >= 12) {
-       ESP_LOGV(TAG, "Packet bytes [0-11]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                reassembly_buffer_[0], reassembly_buffer_[1], reassembly_buffer_[2], reassembly_buffer_[3],
-                reassembly_buffer_[4], reassembly_buffer_[5], reassembly_buffer_[6], reassembly_buffer_[7],
-                reassembly_buffer_[8], reassembly_buffer_[9], reassembly_buffer_[10], reassembly_buffer_[11]);
+     // Log the WHOLE packet, not just the first 12 bytes (cycle-time write/read
+     // diagnostic). The >= 12 guard also hid short replies like the 9-byte write
+     // ack, which we need to decode; log any non-empty packet.
+     if (!reassembly_buffer_.empty()) {
+       ESP_LOGV(TAG, "Packet bytes [0-%u]: %s", (unsigned) (reassembly_buffer_.size() - 1),
+                format_hex_pretty(reassembly_buffer_.data(), reassembly_buffer_.size()).c_str());
      }
 
      // Try to dispatch to registered response handler first

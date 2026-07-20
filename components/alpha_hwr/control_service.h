@@ -251,7 +251,28 @@ class ControlService {
    * Python reference has the same 0xC1 bug, not yet fixed there)
    */
   bool disable_remote_mode();
-   
+
+  /**
+   * Send a raw GENIbus Class 3 command by ID.
+   *
+   * Builds and sends the frame [0x03, 0x81, <command_id>] (0x81 = SET/EXECUTE,
+   * NOT 0xC1 = INFO, which only queries an item and never runs it). Has NO local
+   * state side-effects itself; instead it schedules a get_mode readback ~500ms
+   * later, because a Class 3 command does not trigger an unsolicited control-mode
+   * notification -- that readback is what keeps pump_enabled_ (and the
+   * non-optimistic Pump Enabled switch) in sync with the pump's real op_mode.
+   *
+   * Hardware-proven on the ALPHA (2026-07-06): 0x06 START / 0x05 STOP toggle the
+   * motor, running at the pump's STORED setpoint with no Class 10 write (bare
+   * on/off decoupled from setpoint). Used by the experimental pump_enabled3
+   * switch. See memory: genibus-class3-command-reference.
+   *
+   * @param command_id Class 3 command ID (0x05 STOP, 0x06 START, 0x07 REMOTE,
+   *                   0x08 LOCAL). Do NOT send 0x09 RUN (factory use only).
+   * @return true if queued (session READY), false otherwise.
+   */
+  bool send_class3_command(uint8_t command_id);
+
    /**
     * Get current control mode name as string.
     * 
