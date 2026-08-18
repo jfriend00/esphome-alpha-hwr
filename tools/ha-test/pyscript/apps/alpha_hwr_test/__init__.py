@@ -7,10 +7,12 @@ in run.py. See SETUP.md (under tools/ha-test/) for install and test steps.
 
 import json
 
+from . import entities
 from . import snapshot
 from . import suspend
 from . import run
 from . import profiles
+from . import settle
 
 
 # --- App configuration ------------------------------------------------------
@@ -44,6 +46,11 @@ class State:
     last_suspend_capture = None   # last suspend capture dict (for resume)
 
 
+# The settled-write API. Constructed once here (the only place controller_name is
+# readable) and threaded into the modules that write to the pump.
+API = settle.PumpApi(CONTROLLER_NAME)
+
+
 # --- Services ---------------------------------------------------------------
 @service
 def alpha_hwr_test_ping():
@@ -52,6 +59,25 @@ name: ALPHA HWR test ping
 description: Proof-of-life for the test harness. Logs a line when called.
 """
     log.info(f"alpha_hwr_test: ping -- controller_name={CONTROLLER_NAME}")
+
+
+@service
+def alpha_hwr_test_api_smoke():
+    """yaml
+name: ALPHA HWR test API smoke
+description: Exercise the settled-write path end to end. Re-asserts the CURRENT pump mode via PumpApi.set_mode (no net change) and logs the ApiResult. Writes to the pump.
+"""
+    mode_disp = entities.get_value(entities.MODE_ENTITY, CONTROLLER_NAME)
+    machine = entities.MODE_DISPLAY_TO_MACHINE.get(mode_disp)
+    if machine is None:
+        log.error(f"alpha_hwr_test api_smoke: current mode '{mode_disp}' has no known "
+                  f"machine identifier -- cannot run smoke test")
+        return
+    log.info(f"alpha_hwr_test api_smoke: re-asserting mode '{mode_disp}' ({machine}) "
+             f"via PumpApi.set_mode")
+    result = API.set_mode(machine)
+    log.info("alpha_hwr_test api_smoke: result =\n"
+             + json.dumps(result.to_dict(), indent=2, default=str))
 
 
 @service

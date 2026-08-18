@@ -1,16 +1,30 @@
-# Home Assistant helper(s) for the ALPHA HWR test harness dashboard.
+# Home Assistant helpers for the ALPHA HWR test harness dashboard.
 #
-# The Save/Load Profile buttons read the profile name from
-# input_text.alpha_hwr_test_profile_name. Create that helper one of two ways:
+# These are the UI helpers the harness reads: the profile-name text box (for
+# SAVING a new profile) and the profile dropdown (for choosing an existing
+# profile to LOAD). Installing them from this file means NO hand-creating helpers
+# in the HA UI.
 #
-# 1) UI (easiest): Settings > Devices & Services > Helpers > Create Helper >
-#    Text. Set the entity id to input_text.alpha_hwr_test_profile_name.
+# INSTALL -- pick one:
 #
-# 2) YAML package: include this file from configuration.yaml, e.g.
-#      homeassistant:
-#        packages:
-#          alpha_hwr_test_helpers: !include <path-to>/ha_helpers.yaml
-#    then reload "Input Text" (Developer Tools > YAML) or restart HA.
+# 1) Drop-in package (recommended; matches this config's setup). If your
+#    configuration.yaml has:
+#        homeassistant:
+#          packages: !include_dir_named packages
+#    then just copy this file into /config/packages/ (any name, e.g.
+#    alpha_hwr_test.yaml). It is auto-loaded as a package on the next reload.
+#
+# 2) Named include. In configuration.yaml:
+#        homeassistant:
+#          packages:
+#            alpha_hwr_test: !include <path-to>/ha_helpers.yaml
+#
+# After copying, apply without a full restart via Developer Tools > YAML:
+# reload "Input Text" and "Input Select" (or just restart HA).
+#
+# NOTE: if you previously created input_text.alpha_hwr_test_profile_name by hand
+# in the UI, DELETE that UI helper first -- a UI helper and this package helper
+# cannot share the same entity_id.
 
 input_text:
   alpha_hwr_test_profile_name:
@@ -21,3 +35,13 @@ input_text:
     # whitelist in profiles.py. Letters, digits, dash, underscore; no spaces.
     # (A service/API call bypasses this; safe_name() is the real guard.)
     pattern: "[A-Za-z0-9_-]+"
+
+input_select:
+  alpha_hwr_test_profile:
+    name: ALPHA HWR test profile
+    # Placeholder only. The harness rewrites these options at startup, after each
+    # save, and on the Refresh Profiles service, from the profiles actually on
+    # disk (input_select.set_options). An input_select must declare at least one
+    # option, so this seeds it until the harness first populates it.
+    options:
+      - "(no profiles)"
