@@ -151,13 +151,19 @@ REM strip a trailing slash from the URL so path building is clean
 set "HA_URL=%ALPHA_HWR_TEST_HA_URL%"
 if "%HA_URL:~-1%"=="/" set "HA_URL=%HA_URL:~0,-1%"
 
-REM Plain reload (NO global_ctx): pyscript reloads every CHANGED script/app/
-REM module plus whatever depends on them, and leaves UNCHANGED contexts alone.
-REM Fully general -- needs no knowledge of our file names or import structure,
-REM so it keeps working as we add modules -- and surgical, because a deploy only
-REM changes our files (this is NOT "*", which would force-reload everything).
-echo Reloading changed pyscript files via %HA_URL% (plain reload) ...
-curl -sS --fail -o nul --connect-timeout 5 -m 30 -X POST -H "Authorization: Bearer %ALPHA_HWR_TEST_HA_TOKEN%" -H "Content-Type: application/json" -d "{}" "%HA_URL%/api/services/pyscript/reload" || (
+REM Scoped reload of THIS app only (global_ctx=apps.%APP_NAME%): pyscript tears
+REM down and rebuilds the app's context as a single unit, so __init__.py runs
+REM exactly ONCE. A plain reload (empty "{}") instead re-runs __init__ once per
+REM changed file it imports -- harmless for the app's idempotent @service
+REM handlers, but it double-registered a persistent @event_trigger during
+REM development. Scoped avoids that and still touches no other pyscript app.
+REM
+REM CAVEAT: this assumes the app is already configured AND loaded. A brand-new
+REM app (first-ever "apps: alpha_hwr_test:" entry in configuration.yaml, or a
+REM changed controller_name) still needs a one-time plain reload (empty "{}"),
+REM full reload (global_ctx "*"), or HA restart to be picked up.
+echo Reloading pyscript app %APP_NAME% via %HA_URL% (scoped reload) ...
+curl -sS --fail -o nul --connect-timeout 5 -m 30 -X POST -H "Authorization: Bearer %ALPHA_HWR_TEST_HA_TOKEN%" -H "Content-Type: application/json" -d "{\"global_ctx\":\"apps.%APP_NAME%\"}" "%HA_URL%/api/services/pyscript/reload" || (
     echo WARNING: reload failed -- check URL/token, or reload manually.
     exit /b 1
 )
