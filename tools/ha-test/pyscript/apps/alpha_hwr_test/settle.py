@@ -82,6 +82,37 @@ def await_settle(op_id, timeout=SETTLE_TIMEOUT):
     return result
 
 
+def await_settle_entity(command=None, timeout=SETTLE_TIMEOUT):
+    """Wait for the next ENTITY-origin settle event -- i.e. the settle for a write
+    made through an HA entity (number/switch/select), which carries NO op_id.
+
+    Entity writes route through the same write layer as the op_id services and
+    emit the same terminal event, tagged origin="entity" with an empty op_id
+    (component issue #92). With no op_id to correlate, this matches "the next
+    origin==entity event", which is only valid when we are the SOLE writer AND
+    serialize writes (await each before issuing the next). Pass `command`
+    (e.g. 'set_setpoint', 'set_mode') to also filter by write command for a second
+    layer of confidence.
+
+    Returns the flattened task.wait_until result dict, or None on timeout. Same
+    race-safety as await_settle(): the event round-trips from the ESP32, so it
+    cannot arrive before this wait registers on HA's single-threaded loop. Best
+    for single-value writes (setpoints, mode); coupled run-state entity writes
+    (engage/schedule) can fan out internally, so prefer the op_id pump_set_state
+    service there.
+    """
+    cond = "origin == 'entity'"
+    if command:
+        cond = f"origin == 'entity' and command == '{command}'"
+    result = task.wait_until(
+        event_trigger=[SETTLE_EVENT, cond],
+        timeout=timeout,
+    )
+    if result["trigger_type"] == "timeout":
+        return None
+    return result
+
+
 class ApiResult:
     """Outcome of one settled write (fixed shape -> dot access).
 
