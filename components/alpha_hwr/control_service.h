@@ -338,6 +338,8 @@ class ControlService {
      // connection must not be "confirmed" by a read on the next connection.
      mode_command_pending_ = false;
      mode_confirm_attempts_ = 0;
+     // TEMPORARY (probe branch): re-run the limiter probe on the next connection.
+     limiter_probe_done_ = false;
    }
 
    private:
@@ -434,6 +436,10 @@ class ControlService {
     // component historically sent, used only before the first read.
     uint8_t cached_temp_limits_tail_[5]{0x00, 0x00, 0x00, 0x16, 0x00};
     bool temp_limits_tail_valid_{false};
+    // TEMPORARY (probe branch): one limiter probe per connection. sync_cache_async()
+    // re-enters itself on the mode-confirm retry path, so without this the probe
+    // would run again on every retry. invalidate_cache() clears it on disconnect.
+    bool limiter_probe_done_{false};
 
    public:
     /// Has the pump's own on/off-time LIMITS block been read back yet?
@@ -670,6 +676,28 @@ class ControlService {
    * @param callback Called with true when the read parsed and caches updated.
    */
   void read_obj91_config(std::function<void(bool)> callback);
+
+  /**
+   * TEMPORARY (probe branch, not for upstream): read the Object 86 limiter
+   * family and let transport.cpp's reassembly dump log every reply frame.
+   *
+   * Answers the ask on issue #274: no capture in existence contains a limiter
+   * with `enable=1`, and this pump has MaxFlow enabled at 3.5 gpm. It also
+   * reads 86/602 onward, which distinguishes "the sub-id indexes the limiter"
+   * from "there is one instance per mode".
+   *
+   * Two properties are deliberate. The reads are SEQUENTIAL with exactly one
+   * request outstanding, so a reply can never be attributed to the wrong
+   * sub-id -- the same hazard #275 hit, where the transport matches on object
+   * type and a late reply shifts every later read by one slot. And the type
+   * expectation is the wildcard (0, 0), because the frame is dumped at
+   * transport.cpp reassembly BEFORE the CRC check and before any matching, so
+   * the bytes reach the log whether or not the match succeeds. That means a
+   * wrong guess at type 895's reply header costs a 3 s timeout, not the data.
+   *
+   * @param index Position in LIMITER_PROBE_SUBS; the chain advances itself.
+   */
+  void probe_limiters_(size_t index = 0);
 
   /**
    * Store a pump-native setpoint into the given mode's per-mode cache (issue #51),

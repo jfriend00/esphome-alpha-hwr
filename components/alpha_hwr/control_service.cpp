@@ -215,9 +215,78 @@ void ControlService::sync_cache_async(std::function<void(bool)> callback) {
           }
           callback(valid);
         }
+        // TEMPORARY (probe branch): fired AFTER the readiness verdict above, so
+        // time-to-ready and pump_ready are unaffected no matter how the probe goes.
+        if (!limiter_probe_done_) {
+          limiter_probe_done_ = true;
+          probe_limiters_();
+        }
       });
     });
   });
+}
+
+// TEMPORARY (probe branch, not for upstream). The Object 86 limiter family, per
+// the decode on issue #274: 600-619 user config (type 895), 620-639 factory
+// config (897), 640-659 status (896), 660 the limitation-manager status.
+//
+// 600 and 601 are the ask -- MaxFlow and MinFlow user config, and this pump is
+// the only one known to hold an ENABLED limiter. 602 and 603 test whether the
+// sub-id indexes the limiter or the mode. 640, 641 and 660 are the status
+// records, and they are the ones worth capturing WHILE MaxFlow is actually
+// limiting: every existing capture reads them on a pump with both limiters off,
+// so nobody has seen the limiting state that issue #274 exists to expose.
+//
+// 620/621 are omitted deliberately: those bounds are already decoded from the
+// GO-app corpus and are static, so they would cost two timeouts for nothing.
+static const uint16_t LIMITER_PROBE_SUBS[] = {600, 601, 602, 603, 640, 641, 660};
+static const size_t LIMITER_PROBE_COUNT =
+    sizeof(LIMITER_PROBE_SUBS) / sizeof(LIMITER_PROBE_SUBS[0]);
+
+void ControlService::probe_limiters_(size_t index) {
+  if (index >= LIMITER_PROBE_COUNT) {
+    ESP_LOGI(TAG, "LIMITER PROBE: done (%u sub-ids)", (unsigned) LIMITER_PROBE_COUNT);
+    return;
+  }
+  const uint16_t sub = LIMITER_PROBE_SUBS[index];
+  uint8_t apdu[5] = {0x0A, 0x03, 86, static_cast<uint8_t>(sub >> 8),
+                     static_cast<uint8_t>(sub & 0xFF)};
+  // The reassembly dump does not say which read a frame answers, so label the
+  // request first. With one request outstanding at a time, the next "Packet
+  // bytes" line in the log belongs to this sub-id and no other.
+  ESP_LOGI(TAG, "LIMITER PROBE: reading Obj 86 Sub %u [%u/%u]", (unsigned) sub,
+           (unsigned) (index + 1), (unsigned) LIMITER_PROBE_COUNT);
+  this->transport_.send_apdu_command(
+      apdu, 5, 0, 0,
+      [this, sub, index](bool ok, const uint8_t * /*payload*/, size_t payload_len) {
+        // The payload is not decoded here on purpose. The point of the probe is
+        // the raw frame, which transport.cpp has already logged by now; guessing
+        // at type 895's layout would only risk misreporting it.
+        ESP_LOGI(TAG, "LIMITER PROBE: Sub %u answered ok=%d len=%u", (unsigned) sub,
+                 (int) ok, (unsigned) payload_len);
+        // Advance on failure too: a sub-id the pump refuses is itself an answer,
+        // and stopping would hide every later read behind the first gap.
+        this->probe_limiters_(index + 1);
+      },
+      3000,
+      // allow_register_read. Without it, a reply whose APDU body length happens
+      // to be 48, 43, 20, 46, 45 or 9 bytes is rejected by the telemetry guard
+      // in try_dispatch_response(), falls through to TelemetryService::on_packet(),
+      // and is decoded as motor state / flow-pressure / temperature / alarms --
+      // because that switch keys on the SAME byte. One bogus sensor publish, and
+      // a spike in Home Assistant's long-term statistics, for a frame that was
+      // never telemetry. Type 895 and 896 are undecoded on the wire, so the
+      // collision cannot be ruled out by arithmetic; this rules it out by
+      // construction.
+      //
+      // The guard it disables exists so a telemetry reply cannot satisfy a
+      // wildcard command sitting at the head of the queue. That cannot happen
+      // here: telemetry reads are queued through this same FIFO, so none can be
+      // in flight while a probe read holds the head, and the only other source
+      // would be an unsolicited notification -- of which this pump has sent
+      // exactly zero across every capture we have (10 requests, 10 replies,
+      // class-matched, in the issue #174 accounting).
+      true);
 }
 
 void ControlService::read_obj91_config(std::function<void(bool)> callback) {
