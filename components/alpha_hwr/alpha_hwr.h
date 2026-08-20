@@ -301,6 +301,17 @@ public:
   // just-powered-up pump has time to be ready before encryption is requested.
   // 0 = disabled (immediate reconnect; the default/legacy behavior).
   void set_reconnect_settle_time(uint32_t ms) { this->reconnect_settle_ms_ = ms; }
+  // Delay (ms) after boot before the FIRST connection is allowed. The settle
+  // above covers every reconnect and cannot cover this one, because it is
+  // entered from the disconnect handler and no disconnect has happened yet.
+  //
+  // Its purpose is diagnostic: an `esphome logs` client reattaching after a
+  // reboot takes ~5.8 s to come back (measured), while the connect sequence
+  // completes ~4 s after boot, so the whole open/discover/subscribe sequence
+  // is missed on every reboot, including unplanned ones nobody can arrange to
+  // capture. A delay longer than the reattach time makes it observable.
+  // 0 = disabled (connect immediately; the default/legacy behavior).
+  void set_connect_after_boot_delay(uint32_t ms) { this->connect_after_boot_ms_ = ms; }
   // Budget (ms) the inbound-data watchdog allows between received
   // notifications before it tears the link down; timed from connection-open
   // while nothing has arrived yet. 0 = disabled. See link_watchdog.h for why
@@ -433,6 +444,7 @@ private:
       false; // Controls whether to attempt BLE pairing/bonding
 
   uint32_t reconnect_settle_ms_{0};   // Post-disconnect reconnect hold-off (ms)
+  uint32_t connect_after_boot_ms_{0}; // Hold-off before the FIRST connection after boot (ms)
   bool reconnect_settling_{false};    // True while holding off reconnect after a disconnect
   bool reconnect_timer_armed_{false}; // True once the settle timer has started this episode
 
