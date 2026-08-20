@@ -23,6 +23,25 @@ void AlphaHwrComponent::setup() {
 
   this->link_boot_ms_ = millis();  // Pump Link Status: mark the startup window
 
+  // Hold off the FIRST connection so a log client has time to reattach.
+  //
+  // reconnect_settle_time cannot cover this: it is entered from the disconnect
+  // handler, so at boot `reconnect_settling_` is false, parse_device() bails at
+  // its first guard, and nothing re-enables auto-connect behind this timer. The
+  // two mechanisms share a primitive but can never be live at once, since no
+  // disconnect can occur while there is no connection.
+  if (this->connect_after_boot_ms_ > 0 && this->parent_ != nullptr) {
+    ESP_LOGI(TAG, "Holding the first connection for %" PRIu32 " ms after boot",
+             this->connect_after_boot_ms_);
+    this->parent_->set_auto_connect(false);
+    this->set_timeout("boot_connect_delay", this->connect_after_boot_ms_, [this]() {
+      ESP_LOGI(TAG, "Boot connect delay elapsed; allowing connection");
+      if (this->parent_ != nullptr) {
+        this->parent_->set_auto_connect(true);
+      }
+    });
+  }
+
   // `time_id` is optional in the schema and load-bearing in practice, and its
   // absence used to be reported only at DEBUG -- invisible at the INFO level
   // this component ships. What the user sees instead is a pump whose schedule

@@ -97,6 +97,7 @@ CONF_READY_STATUS = "ready_status"
 CONF_INITIATE_PAIRING = "initiate_pairing"
 CONF_ENABLE_PAIRING = "enable_pairing"
 CONF_RECONNECT_SETTLE_TIME = "reconnect_settle_time"
+CONF_CONNECT_AFTER_BOOT_DELAY = "connect_after_boot_delay"
 CONF_CONTROL_STATE_POLL_INTERVAL = "control_state_poll_interval"
 CONF_DATA_TIMEOUT = "data_timeout"
 CONF_READY_TIMEOUT = "ready_timeout"
@@ -223,6 +224,12 @@ CONFIG_SCHEMA = (
             # 0x61 and erases the bond) with ~2.8x margin even assuming zero
             # host-side processing time. See issue #14 for the measurements.
             cv.Optional(CONF_RECONNECT_SETTLE_TIME, default="2s"): cv.positive_time_period_milliseconds,
+            # Hold off the FIRST connection after boot. The settle above covers
+            # every reconnect and structurally cannot cover this one. Diagnostic:
+            # an `esphome logs` client takes ~5.8s to reattach after a reboot while
+            # the connect sequence finishes ~4s in, so the open/discover/subscribe
+            # sequence is unobservable on every reboot. 0 disables it.
+            cv.Optional(CONF_CONNECT_AFTER_BOOT_DELAY, default="0s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_CONTROL_STATE_POLL_INTERVAL, default="30s"): cv.positive_time_period_milliseconds,
             # Inbound-data watchdog: tear the BLE link down when the pump stops
             # answering while the session still reports itself connected. A READY
@@ -634,6 +641,7 @@ async def to_code(config):
     cg.add(var.set_pairing_enabled(config[CONF_INITIATE_PAIRING]))
 
     cg.add(var.set_reconnect_settle_time(config[CONF_RECONNECT_SETTLE_TIME]))
+    cg.add(var.set_connect_after_boot_delay(config[CONF_CONNECT_AFTER_BOOT_DELAY]))
     cg.add(var.set_data_timeout(config[CONF_DATA_TIMEOUT]))
     cg.add(var.set_ready_timeout(config[CONF_READY_TIMEOUT]))
     cg.add(var.set_ready_recycle_limit(config[CONF_READY_RECYCLE]))
