@@ -312,6 +312,16 @@ public:
   // capture. A delay longer than the reattach time makes it observable.
   // 0 = disabled (connect immediately; the default/legacy behavior).
   void set_connect_after_boot_delay(uint32_t ms) { this->connect_after_boot_ms_ = ms; }
+
+  /// Release the pump's BLE link and hold it released until resumed, so the
+  /// Grundfos GO app can connect without power-cycling this node. The pump
+  /// accepts one client at a time. See the implementation for why a plain
+  /// disconnect does not work and which three re-enable paths are guarded.
+  ///
+  /// Not persisted: a reboot comes back unsuspended, which is the fail-safe
+  /// direction (pump control resumes rather than staying dark indefinitely).
+  void set_suspended(bool suspended);
+  bool is_suspended() const { return this->suspended_; }
   // Budget (ms) the inbound-data watchdog allows between received
   // notifications before it tears the link down; timed from connection-open
   // while nothing has arrived yet. 0 = disabled. See link_watchdog.h for why
@@ -447,6 +457,7 @@ private:
   uint32_t connect_after_boot_ms_{0}; // Hold-off before the FIRST connection after boot (ms)
   bool reconnect_settling_{false};    // True while holding off reconnect after a disconnect
   bool reconnect_timer_armed_{false}; // True once the settle timer has started this episode
+  bool suspended_{false};             // True while the link is deliberately released (GO app access)
 
   uint32_t link_data_timeout_ms_{60000};  // Inbound-data watchdog budget (ms); 0 = disabled
   // 300000, matching the schema default. Kept in step deliberately: while these

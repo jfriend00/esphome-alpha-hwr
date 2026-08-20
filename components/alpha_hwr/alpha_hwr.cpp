@@ -35,6 +35,12 @@ void AlphaHwrComponent::setup() {
              this->connect_after_boot_ms_);
     this->parent_->set_auto_connect(false);
     this->set_timeout("boot_connect_delay", this->connect_after_boot_ms_, [this]() {
+      // Suspend outranks the boot delay: if the link was suspended during this
+      // window, letting the timer re-enable auto-connect would undo it silently.
+      if (this->suspended_) {
+        ESP_LOGI(TAG, "Boot connect delay elapsed, but the link is suspended");
+        return;
+      }
       ESP_LOGI(TAG, "Boot connect delay elapsed; allowing connection");
       if (this->parent_ != nullptr) {
         this->parent_->set_auto_connect(true);
@@ -238,7 +244,16 @@ void AlphaHwrComponent::setup() {
     // off would only slow pairing. esp_ble_get_bond_device_num() > 0 is the same
     // bond test BLEConnectionManager::check_is_bonded() starts with; for this
     // single-pump node it means "the pump is bonded."
-    if (this->reconnect_settle_ms_ > 0 && this->parent_ != nullptr &&
+    //
+    // Skipped entirely while suspended, and that is the load-bearing guard
+    // rather than a tidiness one. This callback runs AFTER set_suspended(true)
+    // has already cleared the settle state, so without it the settle path would
+    // re-arm itself on the very disconnect the suspend requested: parse_device()
+    // would see the pump's next advertisement and its timer would call
+    // set_auto_connect(true) about two seconds later. The suspend would undo
+    // itself, which is exactly the behaviour that makes a plain disconnect
+    // button useless for this.
+    if (!this->suspended_ && this->reconnect_settle_ms_ > 0 && this->parent_ != nullptr &&
         esp_ble_get_bond_device_num() > 0) {
       ESP_LOGI(TAG, "Disconnected; holding reconnect until pump reappears + %" PRIu32 " ms",
                this->reconnect_settle_ms_);
@@ -514,6 +529,14 @@ bool AlphaHwrComponent::parse_device(
   ESP_LOGI(TAG, "Pump reappeared; holding reconnect %" PRIu32 " ms to let it settle",
            this->reconnect_settle_ms_);
   this->set_timeout("reconnect_settle", this->reconnect_settle_ms_, [this]() {
+    // Second guard on the same hazard as the disconnect handler's. A suspend
+    // raised between arming this timer and its expiry must not be undone by it.
+    if (this->suspended_) {
+      ESP_LOGI(TAG, "Reconnect settle window elapsed, but the link is suspended");
+      this->reconnect_settling_ = false;
+      this->reconnect_timer_armed_ = false;
+      return;
+    }
     ESP_LOGI(TAG, "Reconnect settle window elapsed; allowing reconnect");
     this->reconnect_settling_ = false;
     this->reconnect_timer_armed_ = false;
@@ -522,6 +545,51 @@ bool AlphaHwrComponent::parse_device(
     }
   });
   return false;
+}
+
+// Release the pump's BLE link and hold it released, so the Grundfos GO app can
+// connect without power-cycling this node. The pump accepts one BLE client at a
+// time, so "use the app" has meant "cut power to the ESP32" -- six times in one
+// night, in the logs that prompted this.
+//
+// A plain disconnect cannot do it. Three separate paths call
+// set_auto_connect(true) behind your back, and all three are guarded on
+// suspended_: the boot-delay timer, the disconnect handler's settle setup, and
+// the settle timer itself.
+//
+// Nothing here fights the watchdogs. Both check_link_liveness_() and
+// check_link_readiness_() take session_.is_connected() as their first argument
+// and do nothing on a down link, so a suspended link is not diagnosed as a
+// silent or stalled one and never draws a forced disconnect.
+//
+// What DOES change is Pump Link Status: after LINK_INIT_GRACE_MS it reports the
+// link as unhealthy, because nothing yet distinguishes "deliberately suspended"
+// from "the pump is gone". A Suspended status is the intended follow-up. Note
+// that pump_ready going false is correct and wanted -- an automation gated on it
+// declines to run the pump while the link is in someone else's hands.
+void AlphaHwrComponent::set_suspended(bool suspended) {
+  if (suspended == this->suspended_)
+    return;
+  this->suspended_ = suspended;
+  if (suspended) {
+    ESP_LOGW(TAG, "SUSPEND: releasing the pump link and holding it released");
+    // Tear down the settle state before disconnecting, so the disconnect this
+    // is about to request cannot be mistaken for one that should be followed by
+    // a reconnect.
+    this->cancel_timeout("reconnect_settle");
+    this->cancel_timeout("boot_connect_delay");
+    this->reconnect_settling_ = false;
+    this->reconnect_timer_armed_ = false;
+    if (this->parent_ != nullptr) {
+      this->parent_->set_auto_connect(false);
+      this->parent_->disconnect();
+    }
+  } else {
+    ESP_LOGW(TAG, "SUSPEND: released; allowing the link to reconnect");
+    if (this->parent_ != nullptr) {
+      this->parent_->set_auto_connect(true);
+    }
+  }
 }
 
 void AlphaHwrComponent::loop() {
