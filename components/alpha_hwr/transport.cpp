@@ -7,6 +7,7 @@
 #include "transport.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"  // TEMPORARY (logging branch): format_hex_pretty
 #include "frame_builder.h"
 #include "frame_parser.h"
 #include "response_match.h"
@@ -94,10 +95,20 @@ void Transport::loop() {
             this->state_ = State::AWAITING_RESPONSE;
             cmd.timestamp_ms = now;
             cmd.waiting_for_response = true;
-            ESP_LOGV(TAG, "Command sent, waiting for response (Obj %d Sub %d)", 
-                     cmd.expect_type_low_ver, cmd.expect_type_high);
+            // TEMPORARY (logging branch): was LOGV, and without the frame bytes.
+            // Since #256 every Class 10 SET is awaited, so this is the branch the
+            // setpoint writes take. The bytes are what identifies WHICH write drew
+            // a given reply -- and an Unknown Data Item error names an item ID we
+            // can only interpret against what we actually asked for.
+            ESP_LOGI(TAG, "Command sent, waiting for response (Obj %d Sub %d) [0-%u]: %s",
+                     cmd.expect_type_low_ver, cmd.expect_type_high,
+                     (unsigned) (cmd.packet.size() - 1),
+                     format_hex_pretty(cmd.packet.data(), cmd.packet.size(), ' ', false).c_str());
           } else {
-            ESP_LOGV(TAG, "Command sent (no response expected)");
+            // TEMPORARY (logging branch): was LOGV, and without the frame bytes.
+            ESP_LOGI(TAG, "Command sent (no response expected) [0-%u]: %s",
+                     (unsigned) (cmd.packet.size() - 1),
+                     format_hex_pretty(cmd.packet.data(), cmd.packet.size(), ' ', false).c_str());
             this->command_queue_.pop_front();
             this->state_ = State::IDLE;
           }
@@ -340,12 +351,16 @@ void Transport::on_notification(const uint8_t* data, size_t len) {
        reassembly_buffer_.size() >= expected_packet_length_) {
      ESP_LOGV(TAG, "Packet complete: %d bytes", reassembly_buffer_.size());
 
-     // Log first 12 bytes for debugging packet structure
-     if (reassembly_buffer_.size() >= 12) {
-       ESP_LOGV(TAG, "Packet bytes [0-11]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                reassembly_buffer_[0], reassembly_buffer_[1], reassembly_buffer_[2], reassembly_buffer_[3],
-                reassembly_buffer_[4], reassembly_buffer_[5], reassembly_buffer_[6], reassembly_buffer_[7],
-                reassembly_buffer_[8], reassembly_buffer_[9], reassembly_buffer_[10], reassembly_buffer_[11]);
+     // TEMPORARY (logging branch): the whole frame, not the first 12 bytes, and at
+     // INFO rather than VERBOSE. The truncation hid the tail of every reply longer
+     // than 12 bytes, and VERBOSE costs ~4 ms per line on this ESP32, which
+     // dominates the timing being measured. Separator ' ' with show_length false
+     // keeps the output byte-identical in format to the existing log corpus.
+     // Dumped BEFORE the trim below, so trailing bytes outside the declared frame
+     // length stay visible.
+     if (!reassembly_buffer_.empty()) {
+       ESP_LOGI(TAG, "Packet bytes [0-%u]: %s", (unsigned) (reassembly_buffer_.size() - 1),
+                format_hex_pretty(reassembly_buffer_.data(), reassembly_buffer_.size(), ' ', false).c_str());
      }
 
      // Trim to the declared frame length before anything looks at the bytes.
