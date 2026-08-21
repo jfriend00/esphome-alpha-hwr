@@ -163,10 +163,23 @@ regardless — this node cannot decline it — but answering is not bonding.)
 > one-connection constraint rather than something observed, and it was wrong for
 > the case this section is actually about.
 >
-> There is no built-in way to idle the link — no suspend switch that drops the
-> BLE connection and stops reconnecting until you release it. Powering the node
-> down is the workaround, which is easy on PoE and less so on USB beside the
-> pump.
+> **Suspend Pump Link** is the built-in way to do that. It drops the BLE
+> connection and holds it dropped, so the GO app can have the pump's one slot
+> without the node being powered down. Turn it back off and the link reconnects
+> on its own, typically in under a second, resuming the existing bond. A plain
+> disconnect will not do: three separate paths re-enable auto-connect on their
+> own, so a dropped link comes straight back.
+>
+> While it is on, `Pump Link Status` reads `Suspended` and `Pump Link Fault`
+> stays `None` — the link is down because it was asked to be, not because
+> anything failed. `Pump Ready` goes off, which is deliberate, so an automation
+> gated on it declines to run the pump while the link is in someone else's
+> hands. **Writes are refused for the same reason: you cannot start or stop the
+> pump until you turn the switch back off.** Decide what the pump should be
+> doing before you suspend it.
+>
+> It is not persisted. A reboot comes back unsuspended, which is the fail-safe
+> direction.
 
 Two caveats on the procedure. It is one owner's routine on one pump, not
 something this project has verified across models, and the panel-unlock step in

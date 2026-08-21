@@ -573,6 +573,10 @@ void AlphaHwrComponent::set_suspended(bool suspended) {
   this->suspended_ = suspended;
   if (suspended) {
     ESP_LOGW(TAG, "SUSPEND: releasing the pump link and holding it released");
+    // The drop this is about to cause is ours, so do not report it as a link
+    // failure. Cleared in evaluate_link_status() once the pump is ready again,
+    // not on resume -- see the comment there for why the difference matters.
+    this->suspend_failure_masked_ = true;
     // Tear down the settle state before disconnecting, so the disconnect this
     // is about to request cannot be mistaken for one that should be followed by
     // a reconnect.
@@ -586,6 +590,11 @@ void AlphaHwrComponent::set_suspended(bool suspended) {
     }
   } else {
     ESP_LOGW(TAG, "SUSPEND: released; allowing the link to reconnect");
+    // Restart the "unreachable" clock from here. It measures how long we have
+    // been trying and failing to reach the pump, and a suspension is time spent
+    // not trying -- so carrying the elapsed suspension into it would publish
+    // Unreachable for the ~500 ms between this and the link reopening.
+    this->link_last_open_ms_ = millis();
     if (this->parent_ != nullptr) {
       this->parent_->set_auto_connect(true);
     }
@@ -891,10 +900,21 @@ void AlphaHwrComponent::evaluate_link_status() {
   // for the 13-18 s between session-ready and pump-ready rather than being
   // hidden at the two-second mark. That is the honest reading: the link is not
   // usable yet during that window.
+  //
+  // A suspend is not a failure, and saying so is the point. The disconnect it
+  // requests latches "Local Host Terminated (0x16)" like any other drop, which
+  // read as "the pump vanished" on a link the user deliberately handed to the
+  // Grundfos GO app. The mask covers the resume as well as the suspension:
+  // clearing it the instant suspended_ goes false would publish that same
+  // self-inflicted reason for the ~15 s between reconnect and Pump Ready, which
+  // is precisely the window an automation is watching.
+  if (this->suspend_failure_masked_ && this->link_pump_ready_seen_)
+    this->suspend_failure_masked_ = false;
   if (this->pump_last_link_failure_sensor_ != nullptr) {
     const std::string &lf = this->ble_manager_.get_last_failure();
-    const std::string shown =
-        (this->link_pump_ready_seen_ || lf.empty()) ? std::string("None") : lf;
+    const bool hide = this->suspended_ || this->suspend_failure_masked_ ||
+                      this->link_pump_ready_seen_ || lf.empty();
+    const std::string shown = hide ? std::string("None") : lf;
     if (shown != this->link_last_failure_published_) {
       this->link_last_failure_published_ = shown;
       this->pump_last_link_failure_sensor_->publish_state(shown);
@@ -910,7 +930,21 @@ void AlphaHwrComponent::evaluate_link_status() {
   const uint32_t now = millis();
 
   const char *state;
-  if (this->session_.is_ready()) {
+  // Suspended outranks every other state, INCLUDING Connected. The disconnect
+  // set_suspended() requests is asynchronous, so for a tick or so the session
+  // can still report ready; reporting "Connected" in that window would be a
+  // flicker, and reporting anything else would be a diagnosis of a link that
+  // is not faulty. Intent is known here and it is the truest thing to publish.
+  //
+  // The "unreachable" clock is restarted on RESUME rather than held here, which
+  // is the same idea from the other end: that clock measures how long we have
+  // been trying and failing to reach the pump, and during a suspension we are
+  // not trying. Holding it here instead would make any suspension longer than
+  // LINK_UNREACHABLE_MS resume through a spurious Unreachable, because the first
+  // evaluation after resume lands in the ~500 ms before the link reopens.
+  if (this->suspended_) {
+    state = "Suspended";
+  } else if (this->session_.is_ready()) {
     state = "Connected";
     this->link_last_open_ms_ = now;  // measure "unreachable" from the drop, not the first open
   } else if (!this->link_ever_opened_) {
@@ -1293,6 +1327,11 @@ void AlphaHwrComponent::update() {
 
     // Check for timed-out response handlers (2 second timeout)
     transport_.check_timeouts(2000);
+  } else if (this->suspended_) {
+    // Not a warning: the link is down because it was asked to be. At WARN this
+    // fired every 10 s, 27 times in one 4.5-minute GO app session, burying real
+    // warnings in a log about a state the user chose.
+    ESP_LOGD(TAG, "Skipping polls - link suspended");
   } else {
     ESP_LOGW(TAG, "Skipping polls - not ready");
   }

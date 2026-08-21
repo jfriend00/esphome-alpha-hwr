@@ -458,6 +458,7 @@ private:
   bool reconnect_settling_{false};    // True while holding off reconnect after a disconnect
   bool reconnect_timer_armed_{false}; // True once the settle timer has started this episode
   bool suspended_{false};             // True while the link is deliberately released (GO app access)
+  bool suspend_failure_masked_{false}; // Hide the self-inflicted drop reason until the link is ready again
 
   uint32_t link_data_timeout_ms_{60000};  // Inbound-data watchdog budget (ms); 0 = disabled
   // 300000, matching the schema default. Kept in step deliberately: while these

@@ -139,6 +139,36 @@ switch:
             }
           });
 
+  # Suspend Pump Link — release the pump's BLE connection and hold it released,
+  # so the Grundfos GO app can connect. The pump accepts one BLE client at a
+  # time, so without this the only way to use the app is to cut power to this
+  # node. Turn it back off and the link reconnects on its own, typically in
+  # under a second.
+  #
+  # A plain disconnect cannot do this: three separate paths re-enable
+  # auto-connect on their own (the boot delay, the disconnect handler's settle
+  # setup, and the settle timer), so a dropped link comes straight back. See
+  # AlphaHwrComponent::set_suspended().
+  #
+  # While suspended, "Pump Link Status" reads Suspended and "Pump Link Fault"
+  # stays None: the link is down because it was asked to be, not because
+  # anything failed. "Pump Ready" goes off, which is deliberate — an automation
+  # gated on it will decline to run the pump while the link is in someone
+  # else's hands. WRITES ARE REFUSED for the same reason, so you cannot start or
+  # stop the pump until you turn this back off.
+  #
+  # Not persisted: a reboot comes back unsuspended, which is the fail-safe
+  # direction.
+  - platform: template
+    name: "Suspend Pump Link"
+    icon: "mdi:bluetooth-off"
+    optimistic: false
+    lambda: 'return id(pump).is_suspended();'
+    turn_on_action:
+      - lambda: 'id(pump).set_suspended(true);'
+    turn_off_action:
+      - lambda: 'id(pump).set_suspended(false);'
+
 button:
   - platform: restart
     name: "Restart HWR Pump"
