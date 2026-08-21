@@ -863,8 +863,9 @@ void AlphaHwrComponent::publish_link_diagnostics_(uint32_t now_ms) {
 //
 //   Connected     the GENI session has reached READY (session_.is_ready()): the
 //                 pump is fully usable, not merely BLE-linked.
-//   Initializing  no connection has opened since boot, still within the 15s boot
-//                 grace (LINK_INIT_GRACE_MS).
+//   Initializing  no connection has opened since boot, still within the boot
+//                 grace: LINK_INIT_GRACE_MS (15s) plus connect_after_boot_delay,
+//                 since the link cannot open until that hold elapses.
 //   Unpaired      pairing is enabled but there was no bond at the last open (the
 //                 pump has no stored bond: never paired yet, or the bond was
 //                 erased by an encryption failure like 0x61). NOTE: this also
@@ -873,8 +874,8 @@ void AlphaHwrComponent::publish_link_diagnostics_(uint32_t now_ms) {
 //                 persists only when the bond is genuinely absent (needs re-pair).
 //   Unreachable   no successful open for over 20s (LINK_UNREACHABLE_MS), measured
 //                 from the last open / last Connected; or never opened since boot
-//                 and past the 15s grace. Covers both an absent pump and a present
-//                 pump we cannot connect to (the two are not distinguished).
+//                 and past the boot grace above. Covers both an absent pump and a
+//                 present pump we cannot connect to (the two are not distinguished).
 //   Reconnecting  not ready, opened within 20s, but >= 3 consecutive failed
 //                 attempts (LINK_FAIL_K): links keep opening yet the session keeps
 //                 failing before READY.
@@ -948,8 +949,21 @@ void AlphaHwrComponent::evaluate_link_status() {
     state = "Connected";
     this->link_last_open_ms_ = now;  // measure "unreachable" from the drop, not the first open
   } else if (!this->link_ever_opened_) {
-    state = (now - this->link_boot_ms_ < LINK_INIT_GRACE_MS) ? "Initializing"
-                                                             : "Unreachable";
+    // The grace covers boot to the first connection. connect_after_boot_delay
+    // holds that connection off on purpose, so the window has to include it:
+    // the link CANNOT open before the delay elapses, and calling the pump
+    // Unreachable during a gap we created ourselves diagnoses an absence
+    // nothing has looked for yet. Both stamps start in setup() within a few
+    // instructions of each other, so adding them is the whole correction.
+    //
+    // Without this, any delay above about 14 s publishes a spurious
+    // Unreachable before the first open. The default 10 s escapes it by four
+    // seconds -- measured on this node, reboot to open is 10.74 s against the
+    // 15 s grace -- which is why it has never been seen. Raising the delay to
+    // capture a slower boot is exactly when it would bite.
+    const uint32_t init_grace_ms = LINK_INIT_GRACE_MS + this->connect_after_boot_ms_;
+    state = (now - this->link_boot_ms_ < init_grace_ms) ? "Initializing"
+                                                        : "Unreachable";
   } else if (this->pairing_enabled_ && !this->ble_manager_.was_bonded_at_open()) {
     state = "Unpaired";
   } else if (now - this->link_last_open_ms_ > LINK_UNREACHABLE_MS) {
