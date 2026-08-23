@@ -25,8 +25,6 @@ call. HA's single-threaded loop can't process the event until we yield inside
 await_settle(). Same reasoning the production recirc_pump.await_settle() relies on.
 """
 
-import json
-
 # The component's terminal settle event (fixed name, not controller-prefixed).
 SETTLE_EVENT = "esphome.alpha_hwr_write_settled"
 
@@ -232,19 +230,21 @@ class ApiWriter:
             result.timed_out = True
             result.status = "timeout"
             result.detail = f"no settle event within {self.timeout}s"
-            log.warning(f"ApiWriter {command} (op_id={op_id}): TIMEOUT after {self.timeout}s")
+            log.info(f"ApiWriter {command} (op_id={op_id}): timeout after {self.timeout}s")
             return result
 
         result.event = {k: v for k, v in event.items() if k not in _EVENT_META_KEYS}
         result.status = event.get("status")
         result.detail = event.get("detail")
         result.ok = (result.status == STATUS_ACCEPTED)
+        # Report the outcome only, always at INFO. Whether a non-accepted status
+        # is a PROBLEM is the caller's judgment -- an expected clamp/reject in a
+        # negative test is fine -- so the caller (engine settle-assert, or restore)
+        # is what warns. The full settle payload is on result.event for the caller.
         if result.ok:
             log.info(f"ApiWriter {command} (op_id={op_id}): accepted")
         else:
-            log.warning(f"ApiWriter {command} (op_id={op_id}): status={result.status} "
-                        f"detail={result.detail} "
-                        f"event={json.dumps(result.event, sort_keys=True, default=str)}")
+            log.info(f"ApiWriter {command} (op_id={op_id}): {result.status} -- {result.detail}")
         return result
 
     def error_result(self, command, detail):

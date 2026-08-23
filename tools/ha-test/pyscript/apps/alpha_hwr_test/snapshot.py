@@ -305,6 +305,10 @@ def record_result(result, refs, api_result):
     if api_result.ok:
         result.restored.extend(refs)
         return
+    # Restore NEEDS every write to take, so a non-accepted status here IS a
+    # problem (unlike a test that may expect a clamp/reject) -- warn.
+    log.warning(f"restore {api_result.command} {refs}: settle {api_result.status} "
+                f"-- {api_result.detail}")
     result.errors.append({
         "refs": refs,
         "command": api_result.command,

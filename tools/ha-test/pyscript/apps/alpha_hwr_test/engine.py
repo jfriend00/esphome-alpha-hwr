@@ -152,10 +152,11 @@ def run_action(action, writer):
         if not cr["passed"]:
             ar["ok"] = False
 
-    outcome = "OK"
-    if not ar["ok"]:
-        outcome = "FAIL"
-    log.info(f"alpha_hwr_test action {verb}: {outcome} (settle status={api_result.status})")
+    if ar["ok"]:
+        log.info(f"alpha_hwr_test action {verb}: OK (settle status={api_result.status})")
+    else:
+        log.warning(f"alpha_hwr_test action {verb}: FAIL -- a settle assertion did not match "
+                    f"(settle status={api_result.status})")
     return ar
 
 
