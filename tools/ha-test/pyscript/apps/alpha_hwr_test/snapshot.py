@@ -145,7 +145,7 @@ def restore_snapshot(snap, controller_name):
     rather than sending a guessed value.
     """
     result = RestoreResult()
-    api = settle.PumpApi(controller_name)
+    api = settle.ApiWriter(controller_name)
 
     version = snap.get("version")
     if version != SNAPSHOT_VERSION:
@@ -171,7 +171,7 @@ def restore_snapshot(snap, controller_name):
     #    including its post-change setpoint sync, so nothing written below can be
     #    clobbered -- the old fixed MODE_SETTLE wait is gone.
     log.info(f"restore: setting mode '{mode}' ({machine})")
-    record_result(result, [entities.MODE_ENTITY], api.set_mode(machine))
+    record_result(result, [entities.MODE_ENTITY], api.call("set_mode", [machine]))
 
     # 2. This mode's parameters, via the matching atomic service.
     restore_mode_params(api, mode, machine, mode_params, result)
@@ -220,7 +220,7 @@ def restore_scalar_setpoint(api, mode, machine, mode_params, result):
             result.errors.append({"refs": [ref], "reason": detail})
             continue
         log.info(f"restore: set_setpoint {machine}={value} ({detail})")
-        record_result(result, [ref], api.set_setpoint(machine, value))
+        record_result(result, [ref], api.call("set_setpoint", [machine, value]))
 
 
 def restore_temperature_range(api, mode_params, result):
@@ -241,7 +241,7 @@ def restore_temperature_range(api, mode_params, result):
         autoadapt = False
         log.warning("restore: temperature autoadapt not captured; defaulting to off")
     log.info(f"restore: set_temperature_range min={min_c} max={max_c} autoadapt={autoadapt}")
-    record_result(result, refs, api.set_temperature_range(min_c, max_c, autoadapt))
+    record_result(result, refs, api.call("set_temperature_range", [min_c, max_c, autoadapt]))
 
 
 def restore_cycle_times(api, mode_params, result):
@@ -262,7 +262,7 @@ def restore_cycle_times(api, mode_params, result):
         log.info("restore: no cycle-time values captured; skipping")
         return
     log.info(f"restore: set_cycle_times on={on} off={off} flow={flow}")
-    record_result(result, refs, api.set_cycle_times(on, off, flow))
+    record_result(result, refs, api.call("set_cycle_times", [on, off, flow]))
 
 
 def cycle_field(ref, mode_params):
@@ -294,7 +294,7 @@ def restore_run_state(api, global_vals, result):
                               "reason": f"run state '{raw}' is not settable (off/engaged/scheduled)"})
         return
     log.info(f"restore: set_pump_state {target}")
-    record_result(result, [entities.RUN_STATE_REF], api.set_pump_state(target))
+    record_result(result, [entities.RUN_STATE_REF], api.call("set_pump_state", [target]))
 
 
 def record_result(result, refs, api_result):

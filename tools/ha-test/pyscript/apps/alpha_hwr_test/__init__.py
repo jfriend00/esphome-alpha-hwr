@@ -36,6 +36,14 @@ SUSPEND_ENTITIES = CFG.get("suspend_entities", []) or []
 PROFILES_DIR = CFG.get("profiles_dir", "/config/pyscript/apps/alpha_hwr_test/profiles")
 PROFILE_NAME_ENTITY = "input_text.alpha_hwr_test_profile_name"
 
+# Where the test engine writes its JSON results (last run). MUST live OUTSIDE the
+# pyscript tree: writing any file under /config/pyscript trips pyscript's
+# file-watcher, which reloads the app MID-RUN (a burst of "Unloaded" messages,
+# a reload racing the in-flight run). Anywhere under /config that is not below
+# /config/pyscript is fine.
+RESULTS_DIR = CFG.get("results_dir", "/config/alpha_hwr_test/results")
+RESULTS_PATH = f"{RESULTS_DIR}/last_run.json"
+
 
 # --- Module state -----------------------------------------------------------
 # Class-static state (the recirc_pump.py Status pattern) -- groups the harness's
@@ -48,7 +56,7 @@ class State:
 
 # The settled-write API. Constructed once here (the only place controller_name is
 # readable) and threaded into the modules that write to the pump.
-API = settle.PumpApi(CONTROLLER_NAME)
+API = settle.ApiWriter(CONTROLLER_NAME)
 
 
 # --- Services ---------------------------------------------------------------
@@ -65,7 +73,7 @@ description: Proof-of-life for the test harness. Logs a line when called.
 def alpha_hwr_test_api_smoke():
     """yaml
 name: ALPHA HWR test API smoke
-description: Exercise the settled-write path end to end. Re-asserts the CURRENT pump mode via PumpApi.set_mode (no net change) and logs the ApiResult. Writes to the pump.
+description: Exercise the settled-write path end to end. Re-asserts the CURRENT pump mode via ApiWriter.call (no net change) and logs the ApiResult. Writes to the pump.
 """
     mode_disp = entities.get_value(entities.MODE_ENTITY, CONTROLLER_NAME)
     machine = entities.MODE_DISPLAY_TO_MACHINE.get(mode_disp)
@@ -74,8 +82,8 @@ description: Exercise the settled-write path end to end. Re-asserts the CURRENT 
                   f"machine identifier -- cannot run smoke test")
         return
     log.info(f"alpha_hwr_test api_smoke: re-asserting mode '{mode_disp}' ({machine}) "
-             f"via PumpApi.set_mode")
-    result = API.set_mode(machine)
+             f"via ApiWriter.call")
+    result = API.call("set_mode", [machine])
     log.info("alpha_hwr_test api_smoke: result =\n"
              + json.dumps(result.to_dict(), indent=2, default=str))
 
@@ -137,7 +145,7 @@ def alpha_hwr_test_run():
 name: ALPHA HWR test run (guarded cycle)
 description: Guarded run -- ready-gate, suspend automations, snapshot, restore, resume. Writes to the pump.
 """
-    result = run.run_guarded(CONTROLLER_NAME, SUSPEND_ENTITIES)
+    result = run.run_guarded(CONTROLLER_NAME, SUSPEND_ENTITIES, RESULTS_PATH)
     log.info("alpha_hwr_test run: result =\n"
              + json.dumps(result.to_dict(), indent=2, default=str))
 

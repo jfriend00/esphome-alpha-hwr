@@ -114,6 +114,18 @@ def get_unit(ref, controller_name):
     return attrs.get("unit_of_measurement")
 
 
+def read_value(ref, controller_name):
+    """Quiet current-state read for assertion polling: the state string, or None
+    if the entity does not exist. Like get_value but without the missing-entity
+    warning (polling would repeat it); a None actual surfaces the problem once in
+    the assertion result instead. Signature is (ref, controller_name) so it can be
+    passed to assertions.evaluate as a plain reader (no closure)."""
+    entity_id = resolve(ref, controller_name)
+    if not state.exist(entity_id):
+        return None
+    return str(state.get(entity_id))
+
+
 def set_value(ref, value, controller_name):
     """Write a value to a ref, dispatching by domain.
 

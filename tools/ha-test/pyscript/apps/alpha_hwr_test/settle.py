@@ -1,22 +1,21 @@
 """Settled writes to the ALPHA HWR pump via the component's op_id API (issue #92).
 
 Every write here goes through one of the component's programmatic services
-(esphome.<controller>_pump_set_*), each of which carries an `op_id` and emits
-exactly one terminal `esphome.alpha_hwr_write_settled` event correlated by that
-op_id. We wait for that event and turn its `status` into a plain pass/fail the
-caller can read off the returned ApiResult -- no arbitrary settle delays, no
-read-back verification. "Settled" means the pump has confirmed the outcome, so
-the caller is also free to issue the NEXT write immediately (the component
-queues writes and runs them strictly one at a time).
+(esphome.<controller>_<verb>), each of which carries an `op_id` and emits exactly
+one terminal `esphome.alpha_hwr_write_settled` event correlated by that op_id. We
+wait for that event and turn its `status` into a plain pass/fail the caller can
+read off the returned ApiResult -- no arbitrary settle delays, no read-back
+verification. "Settled" means the pump has confirmed the outcome, so the caller
+is also free to issue the NEXT write immediately (the component queues writes and
+runs them strictly one at a time).
 
 Two layers:
   * await_settle()  -- module-level primitive (mirrors recirc_pump.await_settle):
                        wait for one settle event by op_id, or time out.
-  * PumpApi         -- one method per service. Each mints an op_id, calls the
-                       service, awaits the settle, logs any non-accepted outcome,
-                       and returns an ApiResult. This is the SINGLE home for the
-                       service names -- when upstream renames them (a release is
-                       pending that does), only this file changes.
+  * ApiWriter       -- data-driven wrapper: call(verb, args) dispatches any CAP
+                       verb via WRITER_SPEC (which names the service args and their
+                       coercions), mints an op_id, calls the service, awaits the
+                       settle, logs any non-accepted outcome, returns an ApiResult.
 
 Race safety: we call the service and THEN wait. That is safe even for a locally
 rejected command because every settle event -- success or rejection -- originates
@@ -32,9 +31,8 @@ import json
 SETTLE_EVENT = "esphome.alpha_hwr_write_settled"
 
 # How long to wait for a settle event, in seconds. The docs say 30s covers
-# everything except refresh_single_events (which this harness does not use), so
-# a real lost command comes back as an authoritative 'timeout' rather than a
-# silent client-side give-up.
+# everything except refresh_single_events, so a real lost command comes back as
+# an authoritative 'timeout' rather than a silent client-side give-up.
 SETTLE_TIMEOUT = 30
 
 # The one settle status that means "the pump confirmed exactly what we asked
@@ -98,7 +96,7 @@ def await_settle_entity(command=None, timeout=SETTLE_TIMEOUT):
     race-safety as await_settle(): the event round-trips from the ESP32, so it
     cannot arrive before this wait registers on HA's single-threaded loop. Best
     for single-value writes (setpoints, mode); coupled run-state entity writes
-    (engage/schedule) can fan out internally, so prefer the op_id pump_set_state
+    (engage/schedule) can fan out internally, so prefer the op_id set_pump_state
     service there.
     """
     cond = "origin == 'entity'"
@@ -142,114 +140,118 @@ class ApiResult:
         }
 
 
-class PumpApi:
-    """Typed wrapper over the component's op_id write services.
+# --- Argument coercions used by WRITER_SPEC --------------------------------
+def to_float(x):
+    return float(x)
 
-    Construct once with the install's controller_name (read from app_config in
-    __init__, the only place pyscript exposes it) and reuse. Every method returns
-    an ApiResult; the caller just checks result.ok.
+
+def to_bool(x):
+    return bool(x)
+
+
+def to_str(x):
+    return str(x)
+
+
+def to_bit(x):
+    """bool -> '1'/'0' for set_schedule_enabled's string 'data' arg."""
+    if x:
+        return "1"
+    return "0"
+
+
+# verb -> [(service_arg_name, coerce), ...]. The dispatcher builds the service
+# kwargs from this (op_id added automatically). Service arg names match the
+# canonical verb EXCEPT set_schedule_enabled, whose service takes a string 'data'
+# of "1"/"0" rather than a bool. Arg counts here must match capabilities.CAP
+# (guarded by tests/test_writers.py).
+WRITER_SPEC = {
+    "set_mode":              [("mode", to_str)],
+    "set_setpoint":          [("mode", to_str), ("value", to_float)],
+    "set_temperature_range": [("min_c", to_float), ("max_c", to_float), ("autoadapt", to_bool)],
+    "set_cycle_times":       [("on_minutes", to_float), ("off_minutes", to_float), ("flow", to_float)],
+    "set_pump_enabled":      [("enabled", to_bool)],
+    "set_pump_state":        [("state", to_str)],
+    "set_schedule_enabled":  [("data", to_bit)],
+    "set_flow_limiter":      [("limiter", to_str), ("enabled", to_bool), ("limit_gpm", to_float)],
+    "upload_schedule":       [("data", to_str)],
+    "set_schedule_entry":    [("data", to_str)],
+    "clear_schedule_entry":  [("data", to_str)],
+    "set_single_event":      [("data", to_str)],
+    "clear_single_event":    [("data", to_str)],
+    "set_vacation":          [("data", to_str)],
+    "refresh_schedule":      [],
+    "refresh_single_events": [],
+    "clear_vacation":        [],
+}
+
+
+class ApiWriter:
+    """Data-driven wrapper over the component's op_id write services (the API
+    backend). Construct once with the install's controller_name (read from
+    app_config in __init__, the only place pyscript exposes it) and reuse.
+    call(verb, args) dispatches any CAP verb; every call returns an ApiResult, so
+    the caller just checks result.ok. restore and the engine both go through call().
     """
     def __init__(self, controller_name, timeout=SETTLE_TIMEOUT):
         self.controller_name = controller_name
         self.timeout = timeout
 
-    def service_name(self, suffix):
-        """Full ESPHome service name for this install (controller prefix + suffix)."""
-        return f"{self.controller_name}_{suffix}"
+    def service_name(self, verb):
+        """Full esphome service name for a verb on this install."""
+        return f"{self.controller_name}_{verb}"
+
+    def call(self, verb, args):
+        """Run a CAP verb with positional args (per capabilities.arg_names(verb)),
+        returning an ApiResult. Builds the service kwargs from WRITER_SPEC (op_id
+        added), calls the service, and awaits the settle. Unknown verb or wrong arg
+        count returns an error result without touching the wire."""
+        spec = WRITER_SPEC.get(verb)
+        if spec is None:
+            return self.error_result(verb, f"unknown API verb '{verb}'")
+        if len(args) != len(spec):
+            return self.error_result(verb, f"{verb} expects {len(spec)} args, got {len(args)}: {args}")
+
+        op_id = next_op_id()
+        kwargs = {"op_id": op_id}
+        idx = 0
+        for arg_name, coerce in spec:
+            kwargs[arg_name] = coerce(args[idx])
+            idx += 1
+
+        log.info(f"ApiWriter {verb} (op_id={op_id}): {kwargs}")
+        service.call("esphome", self.service_name(verb), **kwargs)
+        return self.settle_for(verb, op_id)
 
     def settle_for(self, command, op_id):
-        """Await the settle event for an ALREADY-ISSUED op_id, then build, log, and
-        return the ApiResult. Split from the service call so each method can issue
-        its own service.call with explicit named kwargs -- pyscript's AST
-        interpreter does not implement call-site **dict unpacking, so a generic
-        'call with an args dict' dispatcher is not safe here.
-        """
+        """Await the settle for an ALREADY-ISSUED op_id, then build/log/return the
+        ApiResult."""
         result = ApiResult(command, op_id)
         event = await_settle(op_id, self.timeout)
         if event is None:
             result.timed_out = True
             result.status = "timeout"
             result.detail = f"no settle event within {self.timeout}s"
-            log.warning(f"PumpApi {command} (op_id={op_id}): TIMEOUT after {self.timeout}s")
+            log.warning(f"ApiWriter {command} (op_id={op_id}): TIMEOUT after {self.timeout}s")
             return result
 
-        result.event = dict([(k, v) for k, v in event.items() if k not in _EVENT_META_KEYS])
+        result.event = {k: v for k, v in event.items() if k not in _EVENT_META_KEYS}
         result.status = event.get("status")
         result.detail = event.get("detail")
         result.ok = (result.status == STATUS_ACCEPTED)
         if result.ok:
-            log.info(f"PumpApi {command} (op_id={op_id}): accepted")
+            log.info(f"ApiWriter {command} (op_id={op_id}): accepted")
         else:
-            log.warning(f"PumpApi {command} (op_id={op_id}): status={result.status} "
+            log.warning(f"ApiWriter {command} (op_id={op_id}): status={result.status} "
                         f"detail={result.detail} "
                         f"event={json.dumps(result.event, sort_keys=True, default=str)}")
         return result
 
-    # --- Control services (carry the 'pump_' prefix) -----------------------
-
-    def set_mode(self, mode):
-        """Switch control mode. mode is the machine identifier (e.g. 'constant_speed')."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_mode (op_id={op_id}): mode={mode}")
-        service.call("esphome", self.service_name("pump_set_mode"),
-                     mode=mode, op_id=op_id)
-        return self.settle_for("set_mode", op_id)
-
-    def set_setpoint(self, mode, value):
-        """Set the setpoint for a scalar-setpoint mode (constant speed/flow/pressure,
-        proportional pressure). mode is the machine identifier."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_setpoint (op_id={op_id}): mode={mode} value={value}")
-        service.call("esphome", self.service_name("pump_set_setpoint"),
-                     mode=mode, value=float(value), op_id=op_id)
-        return self.settle_for("set_setpoint", op_id)
-
-    def set_pump_enabled(self, enabled):
-        """Enable (run in configured mode) or disable (stop) the pump."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_pump_enabled (op_id={op_id}): enabled={enabled}")
-        service.call("esphome", self.service_name("pump_set_enabled"),
-                     enabled=bool(enabled), op_id=op_id)
-        return self.settle_for("set_pump_enabled", op_id)
-
-    def set_pump_state(self, pump_state):
-        """Set the coupled run state: 'off' | 'engaged' | 'scheduled'."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_pump_state (op_id={op_id}): state={pump_state}")
-        service.call("esphome", self.service_name("pump_set_state"),
-                     state=pump_state, op_id=op_id)
-        return self.settle_for("set_pump_state", op_id)
-
-    def set_temperature_range(self, min_c, max_c, autoadapt):
-        """Set the Temperature Control range and AutoAdapt in one atomic write --
-        no min>max intermediate state to order around."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_temperature_range (op_id={op_id}): "
-                 f"min_c={min_c} max_c={max_c} autoadapt={autoadapt}")
-        service.call("esphome", self.service_name("pump_set_temperature_range"),
-                     min_c=float(min_c), max_c=float(max_c),
-                     autoadapt=bool(autoadapt), op_id=op_id)
-        return self.settle_for("set_temperature_range", op_id)
-
-    def set_cycle_times(self, on_minutes, off_minutes, flow):
-        """Set Cycle Time on/off minutes and flow in one atomic write. A 0 in any
-        field means 'keep the pump's existing value' (component sentinel)."""
-        op_id = next_op_id()
-        log.info(f"PumpApi set_cycle_times (op_id={op_id}): "
-                 f"on={on_minutes} off={off_minutes} flow={flow}")
-        service.call("esphome", self.service_name("pump_set_cycle_times"),
-                     on_minutes=float(on_minutes), off_minutes=float(off_minutes),
-                     flow=float(flow), op_id=op_id)
-        return self.settle_for("set_cycle_times", op_id)
-
-    # --- Schedule services (NO 'pump_' prefix; take data='1'/'0') -----------
-
-    def set_schedule_enabled(self, enabled):
-        """Enable/disable the pump's internal weekly schedule. Note the different
-        service shape: no 'pump_' prefix and a string 'data' arg, not a bool."""
-        op_id = next_op_id()
-        data = "1" if enabled else "0"
-        log.info(f"PumpApi set_schedule_enabled (op_id={op_id}): data={data}")
-        service.call("esphome", self.service_name("set_schedule_enabled"),
-                     data=data, op_id=op_id)
-        return self.settle_for("set_schedule_enabled", op_id)
+    def error_result(self, command, detail):
+        """An ApiResult for a call that never reached the wire (bad verb/args)."""
+        result = ApiResult(command, "")
+        result.status = "invalid"
+        result.detail = detail
+        result.ok = False
+        log.error(f"ApiWriter {command}: {detail}")
+        return result

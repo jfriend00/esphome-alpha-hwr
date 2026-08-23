@@ -17,6 +17,8 @@ and always resumes the automations.
 from . import entities
 from . import snapshot
 from . import suspend
+from . import engine
+from . import tests_table
 
 # How long to wait for pump_ready before giving up and aborting the run (the
 # component may be mid-restart). See OPEN_ISSUES.md #2.
@@ -45,8 +47,12 @@ class RunResult:
         }
 
 
-def run_guarded(controller_name, suspend_entity_ids):
-    """Run the guarded snapshot/restore lifecycle. Returns a RunResult."""
+def run_guarded(controller_name, suspend_entity_ids, results_path=None):
+    """Run the guarded snapshot/restore lifecycle. Returns a RunResult.
+
+    results_path (optional) is where the engine writes its JSON results file; the
+    results are always logged regardless.
+    """
     result = RunResult()
 
     # 1. GUARD: the component must report ready before we touch anything.
@@ -63,8 +69,9 @@ def run_guarded(controller_name, suspend_entity_ids):
         snap = snapshot.get_snapshot(controller_name)
         result.snapshot = snap
 
-        # 4. RUN TESTS -- placeholder. The test table/engine plugs in here:
-        #    result.tests = engine.run(snap, controller_name, ...)
+        # 4. RUN TESTS -- validate + run the table via the engine (API backend).
+        result.tests = engine.run_tests(tests_table.TESTS, tests_table.CONDITIONS,
+                                        controller_name, results_path)
 
         # 5. RESTORE the pump state.
         result.restore = snapshot.restore_snapshot(snap, controller_name)
