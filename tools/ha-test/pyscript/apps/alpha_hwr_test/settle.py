@@ -1,29 +1,32 @@
-"""Settled writes to the ALPHA HWR pump via the component's op_id API (issue #92).
+"""Settled writes to the ALPHA HWR pump (issue #92) -- two backends, one result.
 
-Every write here goes through one of the component's programmatic services
-(esphome.<controller>_<verb>), each of which carries an `op_id` and emits exactly
-one terminal `esphome.alpha_hwr_write_settled` event correlated by that op_id. We
-wait for that event and turn its `status` into a plain pass/fail the caller can
-read off the returned ApiResult -- no arbitrary settle delays, no read-back
-verification. "Settled" means the pump has confirmed the outcome, so the caller
-is also free to issue the NEXT write immediately (the component queues writes and
-runs them strictly one at a time).
+Every write is confirmed by the component's terminal `esphome.alpha_hwr_write_settled`
+event (fixed name), whose `status` becomes a plain pass/fail on the returned
+ApiResult -- no arbitrary delays, no read-back verification.
 
-Two layers:
-  * await_settle()  -- module-level primitive (mirrors recirc_pump.await_settle):
-                       wait for one settle event by op_id, or time out.
-  * ApiWriter       -- data-driven wrapper: call(verb, args) dispatches any CAP
-                       verb via WRITER_SPEC (which names the service args and their
-                       coercions), mints an op_id, calls the service, awaits the
-                       settle, logs any non-accepted outcome, returns an ApiResult.
+  * await_settle(op_id)        -- wait for one op_id-correlated settle, or time out.
+  * await_settle_entity()      -- wait for the next origin=entity settle (entity
+                                  writes carry no op_id; valid under sole-writer +
+                                  serialized writes).
+  * ApiWriter                  -- API backend: call(verb,args) -> op_id service.
+  * EntityWriter               -- ENTITY backend: call(verb-or-ref,args) -> HA
+                                  entity write(s) (number/switch/select), the same
+                                  path a UI user drives. Same ApiResult shape.
 
-Race safety: we call the service and THEN wait. That is safe even for a locally
-rejected command because every settle event -- success or rejection -- originates
-in the component on the ESP32 and travels back over the ESPHome API connection,
-so it cannot arrive in the same event-loop tick as the (fire-and-return) service
-call. HA's single-threaded loop can't process the event until we yield inside
-await_settle(). Same reasoning the production recirc_pump.await_settle() relies on.
+Race safety: call the service/entity, THEN wait. Every settle event originates in
+the component on the ESP32 and returns over the API connection, so it cannot
+arrive in the same event-loop tick as the fire-and-return call; HA's
+single-threaded loop can't process it until we yield inside the wait.
 """
+
+# EntityWriter needs the entity registry + unit conversion. Dual-import so settle
+# loads both as a pyscript-app sibling (`from .`) and standalone in host tests.
+try:
+    from . import entities
+    from . import units
+except ImportError:  # host-test context: app dir on sys.path
+    import entities
+    import units
 
 # The component's terminal settle event (fixed name, not controller-prefixed).
 SETTLE_EVENT = "esphome.alpha_hwr_write_settled"
@@ -33,11 +36,7 @@ SETTLE_EVENT = "esphome.alpha_hwr_write_settled"
 # an authoritative 'timeout' rather than a silent client-side give-up.
 SETTLE_TIMEOUT = 30
 
-# The one settle status that means "the pump confirmed exactly what we asked
-# for". Everything else (clamped / rejected / invalid / timeout / superseded) is
-# surfaced on the ApiResult and logged, and the caller decides what it means in
-# context (e.g. a clamp on a restore is a problem; a clamp on a deliberate
-# out-of-range test is the expected result).
+# The one settle status that means "the pump confirmed exactly what we asked for".
 STATUS_ACCEPTED = "accepted"
 
 # Keys in the task.wait_until result that are trigger/event plumbing, not part of
@@ -47,10 +46,7 @@ _EVENT_META_KEYS = ("trigger_type", "event_type", "context")
 
 class ApiState:
     """Cross-call counter for op_id uniqueness (the recirc_pump Status pattern).
-
-    Reset on reload, which is fine: a reload also cancels any in-flight settle
-    wait, so a reused number can never collide with a still-pending operation.
-    """
+    Reset on reload, which is fine: a reload also cancels any in-flight wait."""
     op_seq = 0
 
 
@@ -61,14 +57,8 @@ def next_op_id():
 
 
 def await_settle(op_id, timeout=SETTLE_TIMEOUT):
-    """Wait for the settle event matching op_id.
-
-    Returns the flattened task.wait_until result dict (which carries the event's
-    fields -- status, command, value, requested_*, etc. -- directly as keys), or
-    None if the wait times out. No register-before-send race: the event is
-    causally downstream of the service call (it needs the BLE round-trip), so it
-    cannot fire before we start waiting.
-    """
+    """Wait for the settle event matching op_id. Returns the flattened
+    task.wait_until result dict (event fields as keys), or None on timeout."""
     result = task.wait_until(
         event_trigger=[SETTLE_EVENT, f"op_id == '{op_id}'"],
         timeout=timeout,
@@ -79,24 +69,10 @@ def await_settle(op_id, timeout=SETTLE_TIMEOUT):
 
 
 def await_settle_entity(command=None, timeout=SETTLE_TIMEOUT):
-    """Wait for the next ENTITY-origin settle event -- i.e. the settle for a write
-    made through an HA entity (number/switch/select), which carries NO op_id.
-
-    Entity writes route through the same write layer as the op_id services and
-    emit the same terminal event, tagged origin="entity" with an empty op_id
-    (component issue #92). With no op_id to correlate, this matches "the next
-    origin==entity event", which is only valid when we are the SOLE writer AND
-    serialize writes (await each before issuing the next). Pass `command`
-    (e.g. 'set_setpoint', 'set_mode') to also filter by write command for a second
-    layer of confidence.
-
-    Returns the flattened task.wait_until result dict, or None on timeout. Same
-    race-safety as await_settle(): the event round-trips from the ESP32, so it
-    cannot arrive before this wait registers on HA's single-threaded loop. Best
-    for single-value writes (setpoints, mode); coupled run-state entity writes
-    (engage/schedule) can fan out internally, so prefer the op_id set_pump_state
-    service there.
-    """
+    """Wait for the next ENTITY-origin settle event (an entity write, which carries
+    NO op_id). Correlates by 'the next origin==entity event', valid only when we are
+    the SOLE writer AND serialize writes. Optionally narrow by command. Returns the
+    flattened result dict, or None on timeout."""
     cond = "origin == 'entity'"
     if command:
         cond = f"origin == 'entity' and command == '{command}'"
@@ -113,9 +89,8 @@ class ApiResult:
     """Outcome of one settled write (fixed shape -> dot access).
 
     ok is the simple success flag (status == accepted). status/detail/event carry
-    the full picture for logging or for a caller that wants to treat clamped etc.
-    specially. event is the pump's settle payload with plumbing keys removed, so
-    it holds the requested_* echoes and settled values side by side.
+    the full picture. event is the settle payload with plumbing keys removed, so it
+    holds the requested_* echoes and settled values side by side.
     """
     def __init__(self, command, op_id):
         self.command = command
@@ -138,7 +113,33 @@ class ApiResult:
         }
 
 
-# --- Argument coercions used by WRITER_SPEC --------------------------------
+def result_from_event(command, op_id, event):
+    """Build an ApiResult from a settle event dict (or None -> timeout). Shared by
+    both writers; does NOT log (the caller logs at the right granularity)."""
+    result = ApiResult(command, op_id)
+    if event is None:
+        result.timed_out = True
+        result.status = "timeout"
+        result.detail = "no settle event within budget"
+        return result
+    result.event = {k: v for k, v in event.items() if k not in _EVENT_META_KEYS}
+    result.status = event.get("status")
+    result.detail = event.get("detail")
+    result.ok = (result.status == STATUS_ACCEPTED)
+    return result
+
+
+def error_result(command, detail):
+    """An ApiResult for a call that never reached the wire (bad verb/args/entity)."""
+    result = ApiResult(command, "")
+    result.status = "invalid"
+    result.detail = detail
+    result.ok = False
+    log.error(f"writer {command}: {detail}")
+    return result
+
+
+# --- Argument coercions used by WRITER_SPEC (API backend) -------------------
 def to_float(x):
     return float(x)
 
@@ -158,11 +159,10 @@ def to_bit(x):
     return "0"
 
 
-# verb -> [(service_arg_name, coerce), ...]. The dispatcher builds the service
-# kwargs from this (op_id added automatically). Service arg names match the
-# canonical verb EXCEPT set_schedule_enabled, whose service takes a string 'data'
-# of "1"/"0" rather than a bool. Arg counts here must match capabilities.CAP
-# (guarded by tests/test_writers.py).
+# verb -> [(service_arg_name, coerce), ...]. The API dispatcher builds the service
+# kwargs from this (op_id added). Service arg names match the canonical verb EXCEPT
+# set_schedule_enabled (string 'data' of "1"/"0"). Arg counts must match
+# capabilities.CAP (guarded by tests/test_writers.py).
 WRITER_SPEC = {
     "set_mode":              [("mode", to_str)],
     "set_setpoint":          [("mode", to_str), ("value", to_float)],
@@ -185,30 +185,22 @@ WRITER_SPEC = {
 
 
 class ApiWriter:
-    """Data-driven wrapper over the component's op_id write services (the API
-    backend). Construct once with the install's controller_name (read from
-    app_config in __init__, the only place pyscript exposes it) and reuse.
-    call(verb, args) dispatches any CAP verb; every call returns an ApiResult, so
-    the caller just checks result.ok. restore and the engine both go through call().
-    """
+    """API backend -- op_id write services. call(verb, args) dispatches any CAP
+    verb via WRITER_SPEC and returns an ApiResult (caller checks result.ok)."""
     def __init__(self, controller_name, timeout=SETTLE_TIMEOUT):
         self.controller_name = controller_name
         self.timeout = timeout
 
     def service_name(self, verb):
-        """Full esphome service name for a verb on this install."""
         return f"{self.controller_name}_{verb}"
 
     def call(self, verb, args):
-        """Run a CAP verb with positional args (per capabilities.arg_names(verb)),
-        returning an ApiResult. Builds the service kwargs from WRITER_SPEC (op_id
-        added), calls the service, and awaits the settle. Unknown verb or wrong arg
-        count returns an error result without touching the wire."""
+        """Run a CAP verb with positional args (per capabilities.arg_names(verb))."""
         spec = WRITER_SPEC.get(verb)
         if spec is None:
-            return self.error_result(verb, f"unknown API verb '{verb}'")
+            return error_result(verb, f"unknown API verb '{verb}'")
         if len(args) != len(spec):
-            return self.error_result(verb, f"{verb} expects {len(spec)} args, got {len(args)}: {args}")
+            return error_result(verb, f"{verb} expects {len(spec)} args, got {len(args)}: {args}")
 
         op_id = next_op_id()
         kwargs = {"op_id": op_id}
@@ -222,36 +214,116 @@ class ApiWriter:
         return self.settle_for(verb, op_id)
 
     def settle_for(self, command, op_id):
-        """Await the settle for an ALREADY-ISSUED op_id, then build/log/return the
-        ApiResult."""
-        result = ApiResult(command, op_id)
+        """Await the settle for an ALREADY-ISSUED op_id, then build/log/return."""
         event = await_settle(op_id, self.timeout)
-        if event is None:
-            result.timed_out = True
-            result.status = "timeout"
-            result.detail = f"no settle event within {self.timeout}s"
-            log.info(f"ApiWriter {command} (op_id={op_id}): timeout after {self.timeout}s")
-            return result
-
-        result.event = {k: v for k, v in event.items() if k not in _EVENT_META_KEYS}
-        result.status = event.get("status")
-        result.detail = event.get("detail")
-        result.ok = (result.status == STATUS_ACCEPTED)
-        # Report the outcome only, always at INFO. Whether a non-accepted status
-        # is a PROBLEM is the caller's judgment -- an expected clamp/reject in a
-        # negative test is fine -- so the caller (engine settle-assert, or restore)
-        # is what warns. The full settle payload is on result.event for the caller.
-        if result.ok:
-            log.info(f"ApiWriter {command} (op_id={op_id}): accepted")
-        else:
-            log.info(f"ApiWriter {command} (op_id={op_id}): {result.status} -- {result.detail}")
+        result = result_from_event(command, op_id, event)
+        _log_outcome("ApiWriter", command, f"op_id={op_id}", result, self.timeout)
         return result
 
-    def error_result(self, command, detail):
-        """An ApiResult for a call that never reached the wire (bad verb/args)."""
-        result = ApiResult(command, "")
-        result.status = "invalid"
-        result.detail = detail
-        result.ok = False
-        log.error(f"ApiWriter {command}: {detail}")
+
+class EntityWriter:
+    """ENTITY backend -- drives the pump through the SAME HA entities a UI user
+    touches (number/switch/select), confirming each via an origin=entity settle.
+    call(key, args) accepts an API verb (decomposed to entity writes) or a raw
+    'domain,leaf' ref (written directly). Same ApiResult shape as ApiWriter.
+
+    v1 covers the single-entity verbs (set_mode/set_setpoint/set_pump_enabled/
+    set_pump_state/set_schedule_enabled) plus raw entity-ref writes. The multi-
+    entity atomic verbs (set_temperature_range/set_cycle_times) and the API-only
+    verbs have no entity path here yet -> error_result.
+    """
+    def __init__(self, controller_name, timeout=SETTLE_TIMEOUT):
+        self.controller_name = controller_name
+        self.timeout = timeout
+
+    def call(self, key, args):
+        if "," in key:                      # raw entity-ref write
+            return self.write_ref_action(key, args[0])
+        if key == "set_mode":
+            return self.write_mode(args[0])
+        if key == "set_setpoint":
+            return self.write_setpoint(args[0], args[1])
+        if key == "set_pump_enabled":
+            return self.write_pump_enabled(args[0])
+        if key == "set_schedule_enabled":
+            return self.write_schedule_enabled(args[0])
+        if key == "set_pump_state":
+            return self.write_pump_state(args[0])
+        return error_result(key, f"'{key}' has no entity-backend path "
+                                 f"(API-only, or multi-entity not yet implemented)")
+
+    # --- one confirmed entity write ---
+    def write_settled(self, ref, value, command):
+        """Write one entity (via entities.set_value) and await its origin=entity
+        settle. Returns an ApiResult labeled `command`."""
+        if not entities.set_value(ref, value, self.controller_name):
+            return error_result(command, f"entity write failed for '{ref}' (missing/read-only?)")
+        event = await_settle_entity(timeout=self.timeout)
+        result = result_from_event(command, "", event)
+        _log_outcome("EntityWriter", command, f"{ref}={value}", result, self.timeout)
         return result
+
+    def display_for(self, ref, native_value):
+        """Convert a NATIVE numeric value to the entity's current display unit
+        (HA converts it back to native on write). Returns (ok, value)."""
+        unit = entities.get_unit(ref, self.controller_name)
+        ok, value, detail = units.to_display(ref, float(native_value), unit)
+        if not ok:
+            log.warning(f"EntityWriter: {detail}")
+            return (False, None)
+        return (True, value)
+
+    # --- semantic verbs -> entity writes ---
+    def write_mode(self, machine):
+        display = entities.MODE_MACHINE_TO_DISPLAY.get(machine)
+        if display is None:
+            return error_result("set_mode", f"unknown mode '{machine}'")
+        return self.write_settled(entities.MODE_ENTITY, display, "set_mode")
+
+    def write_setpoint(self, machine, native_value):
+        ref = entities.SETPOINT_REF_BY_MODE.get(machine)
+        if ref is None:
+            return error_result("set_setpoint", f"mode '{machine}' has no scalar setpoint entity")
+        ok, value = self.display_for(ref, native_value)
+        if not ok:
+            return error_result("set_setpoint", f"could not convert {native_value} for {ref}")
+        return self.write_settled(ref, value, "set_setpoint")
+
+    def write_pump_enabled(self, enabled):
+        value = "off"
+        if enabled:
+            value = "on"
+        return self.write_settled("switch,engage_pump", value, "set_pump_enabled")
+
+    def write_schedule_enabled(self, enabled):
+        value = "off"
+        if enabled:
+            value = "on"
+        return self.write_settled("switch,schedule_enabled", value, "set_schedule_enabled")
+
+    def write_pump_state(self, state):
+        mapping = entities.RUN_STATE_ENTITY.get(state)
+        if mapping is None:
+            return error_result("set_pump_state", f"unknown run state '{state}'")
+        ref, value = mapping
+        return self.write_settled(ref, value, "set_pump_state")
+
+    # --- raw entity-ref write ---
+    def write_ref_action(self, ref, value):
+        if entities.domain_of(ref) == "number":
+            ok, disp = self.display_for(ref, value)
+            if not ok:
+                return error_result(ref, f"could not convert {value} for {ref}")
+            return self.write_settled(ref, disp, ref)
+        return self.write_settled(ref, value, ref)
+
+
+def _log_outcome(who, command, ctx, result, timeout):
+    """Shared INFO logging for a settle outcome (severity judgment is the caller's,
+    e.g. the engine warns on a failed settle assertion)."""
+    if result.timed_out:
+        log.info(f"{who} {command} ({ctx}): timeout after {timeout}s")
+    elif result.ok:
+        log.info(f"{who} {command} ({ctx}): accepted")
+    else:
+        log.info(f"{who} {command} ({ctx}): {result.status} -- {result.detail}")

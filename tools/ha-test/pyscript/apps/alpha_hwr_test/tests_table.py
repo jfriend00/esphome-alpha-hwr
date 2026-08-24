@@ -37,6 +37,23 @@ TESTS = [
         ],
     },
     {
+        # Same actions as constant_speed_2000_runs, but driven through the HA
+        # ENTITY path (number/switch/select writes) instead of the op_id API --
+        # exercises EntityWriter and HA's own unit handling. Expects are identical
+        # (they read the same sensors regardless of how the write happened).
+        "name": "constant_speed_via_entities",
+        "backend": "entity",
+        "actions": [
+            {"set_mode": "constant_speed"},
+            {"set_setpoint": ["constant_speed", 2000]},
+            {"set_pump_state": "engaged"},
+        ],
+        "expect": [
+            "@pump_running",
+            "sensor,motor_speed ~= 2000 +/- 5% within 20s",
+        ],
+    },
+    {
         "name": "underspeed_clamps_to_min",
         "actions": [
             {"set_mode": "constant_speed"},

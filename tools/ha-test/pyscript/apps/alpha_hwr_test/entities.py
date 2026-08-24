@@ -73,6 +73,41 @@ MODE_DISPLAY_TO_MACHINE = {
     "Temperature Control": "temperature_range",
 }
 
+# Reverse of the above -- machine identifier -> display label. Used by the ENTITY
+# write path (set_mode writes the display label into the select entity). Written
+# out (not a comprehension) so it's inert at import.
+MODE_MACHINE_TO_DISPLAY = {
+    "constant_pressure": "Constant Pressure",
+    "proportional_pressure": "Proportional Pressure",
+    "constant_speed": "Constant Speed",
+    "constant_flow": "Constant Flow",
+    "cycle_time": "Cycle Time Control",
+    "temperature_range": "Temperature Control",
+}
+
+# --- Entity-write decomposition (EntityWriter) ------------------------------
+# The ENTITY backend reaches the pump through the same entities a UI user touches.
+# These map the harness's semantic ops onto the specific writable entity(ies).
+
+# machine mode -> its scalar-setpoint NUMBER ref (set_setpoint via the entity).
+# Only the scalar-setpoint modes; temperature_range/cycle_time aren't set this way.
+SETPOINT_REF_BY_MODE = {
+    "constant_speed": "number,constant_speed_setpoint",
+    "constant_flow": "number,constant_flow_setpoint",
+    "constant_pressure": "number,constant_pressure_setpoint",
+    "proportional_pressure": "number,proportional_pressure_setpoint",
+}
+
+# Coupled run state -> the SINGLE switch write that reaches it; the component
+# handles the engage/schedule coupling from that one write (see pump_schedule_ux
+# / snapshot.restore_run_state). "off"/"engaged" ride the Engage Pump switch;
+# "scheduled" rides Schedule Enabled.
+RUN_STATE_ENTITY = {
+    "off":       ("switch,engage_pump", "off"),
+    "engaged":   ("switch,engage_pump", "on"),
+    "scheduled": ("switch,schedule_enabled", "on"),
+}
+
 # Read-only pump-ready gate (v0.10.1+): "on" means OK to read/write and reads
 # are valid; ANY other value (off / unavailable / unknown) means not OK.
 PUMP_READY = "binary_sensor,pump_ready"

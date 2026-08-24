@@ -59,6 +59,19 @@ class State:
 API = settle.ApiWriter(CONTROLLER_NAME)
 
 
+# --- Diagnostic: tap EVERY settle event -------------------------------------
+# Logs every esphome.alpha_hwr_write_settled event with ALL its fields, with NO
+# op_id/origin filter of any kind. The writers await a filtered subset (by op_id,
+# or origin=='entity'); this tap shows the full stream, so we can tell whether a
+# write we think "emitted nothing" actually emitted a settle we simply weren't
+# matching (e.g. a different origin/command) vs. genuinely emitted nothing.
+# Always on, logging only -- grep the log for SETTLE-TAP.
+#@event_trigger("esphome.alpha_hwr_write_settled")
+def alpha_hwr_test_settle_tap(**kwargs):
+    payload = {k: v for k, v in kwargs.items() if k != "context"}
+    log.info("alpha_hwr_test SETTLE-TAP: " + json.dumps(payload, default=str))
+
+
 # --- Services ---------------------------------------------------------------
 @service
 def alpha_hwr_test_ping():

@@ -23,7 +23,7 @@ from . import testspec
 
 # Backends the engine can execute today. testspec.VALID_BACKENDS is wider (what a
 # table may DECLARE); a valid-but-unrunnable backend is skipped, not failed.
-SUPPORTED_BACKENDS = ("api",)
+SUPPORTED_BACKENDS = ("api", "entity")
 
 # Settle expectation applied when an action declares none: the write must succeed.
 DEFAULT_SETTLE = ["status == accepted"]
@@ -43,7 +43,8 @@ def run_tests(tests, conditions, controller_name, results_path=None):
         emit_results(result, results_path)
         return result
 
-    writer = settle.ApiWriter(controller_name)
+    api_writer = settle.ApiWriter(controller_name)
+    entity_writer = settle.EntityWriter(controller_name)
 
     def reader(ref):
         return entities.read_value(ref, controller_name)
@@ -53,7 +54,7 @@ def run_tests(tests, conditions, controller_name, results_path=None):
     n_fail = 0
     n_skip = 0
     for test in tests:
-        tr = run_one_test(test, conditions, writer, reader)
+        tr = run_one_test(test, conditions, api_writer, entity_writer, reader)
         test_results.append(tr)
         if tr["skipped"]:
             n_skip += 1
@@ -71,35 +72,32 @@ def run_tests(tests, conditions, controller_name, results_path=None):
     return result
 
 
-def run_one_test(test, conditions, writer, reader):
+def run_one_test(test, conditions, api_writer, entity_writer, reader):
     name = test.get("name", "<unnamed>")
     backend = test.get("backend", testspec.DEFAULT_BACKEND)
     tr = {"name": name, "backend": backend, "passed": False, "skipped": False,
           "reason": None, "actions": [], "expects": []}
 
-    # v1: only the API backend runs.
+    # "both" is not runnable yet (would run the suite twice); api/entity are.
     if backend not in SUPPORTED_BACKENDS:
         tr["skipped"] = True
-        tr["reason"] = f"backend '{backend}' not runnable yet (v1 supports {SUPPORTED_BACKENDS})"
+        tr["reason"] = f"backend '{backend}' not runnable yet (supported: {SUPPORTED_BACKENDS})"
         log.warning(f"alpha_hwr_test '{name}': SKIPPED -- {tr['reason']}")
         return tr
 
-    # v1: a raw entity-ref action needs the entity backend -> skip the whole test.
-    for action in test.get("actions", []):
-        verb, args, settle_list, perr = testspec.parse_action(action)
-        if perr is None and verb is not None and not capabilities.is_verb(verb):
-            tr["skipped"] = True
-            tr["reason"] = f"entity-ref action '{verb}' needs the entity backend (not built yet)"
-            log.warning(f"alpha_hwr_test '{name}': SKIPPED -- {tr['reason']}")
-            return tr
+    # The test's backend writer for API verbs; entity-ref actions always use the
+    # entity writer (they ARE entity writes).
+    backend_writer = api_writer
+    if backend == "entity":
+        backend_writer = entity_writer
 
-    log.info(f"alpha_hwr_test '{name}': running ({len(test.get('actions', []))} actions)")
+    log.info(f"alpha_hwr_test '{name}' [{backend}]: running ({len(test.get('actions', []))} actions)")
 
     # Actions, in order. Stop on the first failed action -- the test's premise is
     # broken -- but the suite keeps going to the next test.
     all_actions_ok = True
     for action in test.get("actions", []):
-        ar = run_action(action, writer)
+        ar = run_action(action, backend_writer, entity_writer)
         tr["actions"].append(ar)
         if not ar["ok"]:
             all_actions_ok = False
@@ -127,7 +125,7 @@ def run_one_test(test, conditions, writer, reader):
     return tr
 
 
-def run_action(action, writer):
+def run_action(action, backend_writer, entity_writer):
     verb, args, settle_list, perr = testspec.parse_action(action)
     ar = {"action": action, "ok": True, "reason": None, "settle": [], "result": None}
     if perr:
@@ -136,6 +134,11 @@ def run_action(action, writer):
         log.warning(f"alpha_hwr_test action: {perr}")
         return ar
 
+    # An API verb goes to the test's backend writer; a raw entity-ref action is
+    # inherently an entity write, so it always uses the entity writer.
+    writer = backend_writer
+    if not capabilities.is_verb(verb):
+        writer = entity_writer
     api_result = writer.call(verb, args)
     ar["result"] = api_result.to_dict()
 
